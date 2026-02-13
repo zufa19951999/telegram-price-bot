@@ -72,46 +72,48 @@ class BybitWebSocket:
                     ticker_data = data['data']
                     symbol = ticker_data['symbol']
                     
+                    # Lấy giá
                     last_price = ticker_data.get('lastPrice')
                     if last_price in [None, 'N/A', '']:
                         last_price = ticker_data.get('bid1Price', 'N/A')
                     
                     # Lấy volume - thử nhiều field khác nhau
-volume = ticker_data.get('volume24h')
-if volume in [None, 'N/A', '']:
-    volume = ticker_data.get('turnover24h')
-if volume in [None, 'N/A', '']:
-    volume = ticker_data.get('volume')
-if volume in [None, 'N/A', '']:
-    volume = ticker_data.get('turnover24hUsd')
-if volume in [None, 'N/A', '']:
-    volume = '0'
-    
-# Format volume nếu có số
-if volume not in [None, 'N/A', '']:
-    try:
-        vol_float = float(volume)
-        if vol_float > 0:
-            volume = str(vol_float)
-    except:
-        pass
+                    volume = 'N/A'
+                    for field in ['volume24h', 'turnover24h', 'volume', 'turnover24hUsd']:
+                        val = ticker_data.get(field)
+                        if val not in [None, 'N/A', '']:
+                            try:
+                                # Thử convert sang float để kiểm tra
+                                float(val)
+                                volume = val
+                                break
+                            except:
+                                continue
                     
                     bid = ticker_data.get('bid1Price', 'N/A')
                     ask = ticker_data.get('ask1Price', 'N/A')
                     
+                    # Lưu lịch sử giá
                     if symbol not in price_history:
                         price_history[symbol] = []
                     
                     if last_price != 'N/A':
-                        price_history[symbol].append(float(last_price))
-                        if len(price_history[symbol]) > 100:
-                            price_history[symbol].pop(0)
+                        try:
+                            price_history[symbol].append(float(last_price))
+                            if len(price_history[symbol]) > 100:
+                                price_history[symbol].pop(0)
+                        except:
+                            pass
                     
+                    # Tính high/low
                     high = 'N/A'
                     low = 'N/A'
                     if price_history[symbol]:
-                        high = f"{max(price_history[symbol]):.2f}"
-                        low = f"{min(price_history[symbol]):.2f}"
+                        try:
+                            high = f"{max(price_history[symbol]):.2f}"
+                            low = f"{min(price_history[symbol]):.2f}"
+                        except:
+                            pass
                     
                     price_data[symbol] = {
                         'last_price': last_price,
@@ -124,7 +126,7 @@ if volume not in [None, 'N/A', '']:
                     }
                     
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"Error processing message: {e}")
     
     def on_error(self, ws, error):
         print(f"❌ WebSocket error: {error}")
@@ -211,23 +213,38 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             bybit_ws.subscribe_ticker(symbol)
             time.sleep(1)
         
+        found = False
         for i in range(6):
             if formatted_symbol in price_data:
                 data = price_data[formatted_symbol]
+                
+                # Lấy giá
                 price = data['last_price']
                 if price in [None, 'N/A', '']:
                     price = data['bid_price']
-                # Xử lý bid/ask
+                if price in [None, 'N/A', '']:
+                    price = data['ask_price']
+                
+                # Format bid/ask
                 bid = data['bid_price'] if data['bid_price'] not in [None, 'N/A', ''] else '?'
                 ask = data['ask_price'] if data['ask_price'] not in [None, 'N/A', ''] else '?'
-
-                # Xử lý volume
-                vol_display = format_volume(data['volume']) if data['volume'] not in [None, 'N/A', ''] else 'N/A'
-                msg = f"📊 *{formatted_symbol}*\n💰 *Giá:* `{format_price(price)}`\n💵 *Bid/Ask:* `{format_price(data['bid_price'])}` / `{format_price(data['ask_price'])}`\n📦 *Volume:* `{format_volume(data['volume'])}`\n🕐 `{data['timestamp']}`"
+                
+                # Format volume
+                vol_display = format_volume(data['volume'])
+                
+                msg = (
+                    f"📊 *{formatted_symbol}*\n"
+                    f"💰 *Giá:* `{format_price(price)}`\n"
+                    f"💵 *Bid/Ask:* `{format_price(bid)}` / `{format_price(ask)}`\n"
+                    f"📦 *Volume:* `{vol_display}`\n"
+                    f"🕐 `{data['timestamp']}`"
+                )
                 responses.append(msg)
+                found = True
                 break
             time.sleep(0.5)
-        else:
+        
+        if not found:
             responses.append(f"❌ *{formatted_symbol}*: Không lấy được giá")
     
     for response in responses:
@@ -276,6 +293,8 @@ async def mylist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 price = price_data[symbol]['last_price']
                 if price in [None, 'N/A', '']:
                     price = price_data[symbol]['bid_price']
+                if price in [None, 'N/A', '']:
+                    price = price_data[symbol]['ask_price']
                 msg += f"• *{symbol}*: `{format_price(price)}`\n"
             else:
                 msg += f"• *{symbol}*: `Đang cập nhật...`\n"
@@ -315,6 +334,8 @@ def auto_update_worker(app):
                     price = price_data[symbol]['last_price']
                     if price in [None, 'N/A', '']:
                         price = price_data[symbol]['bid_price']
+                    if price in [None, 'N/A', '']:
+                        price = price_data[symbol]['ask_price']
                     if price not in [None, 'N/A', '']:
                         updates.append(f"• *{symbol}*: `{format_price(price)}`")
             if updates:
@@ -336,11 +357,14 @@ def main():
     print("🤖 BYBIT CRYPTO PRICE BOT")
     print("=" * 50)
     
+    # Start health check server
     health_thread = threading.Thread(target=run_health_server, daemon=True)
     health_thread.start()
     
+    # Create application
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
+    # Add handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("price", price_command))
@@ -349,6 +373,7 @@ def main():
     app.add_handler(CommandHandler("mylist", mylist_command))
     app.add_handler(CommandHandler("status", status_command))
     
+    # Start auto update
     update_thread = threading.Thread(target=auto_update_worker, args=(app,), daemon=True)
     update_thread.start()
     
