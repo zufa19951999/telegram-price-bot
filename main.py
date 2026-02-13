@@ -364,9 +364,9 @@ def get_invest_menu_keyboard():
         [InlineKeyboardButton("📋 DS theo dõi", callback_data="show_mylist"),
          InlineKeyboardButton("💼 Danh mục", callback_data="show_portfolio")],
         [InlineKeyboardButton("📈 Lợi nhuận", callback_data="show_profit"),
-         InlineKeyboardButton("➕ Mua coin", callback_data="show_buy")],
+         InlineKeyboardButton("✏️ Sửa/Xóa", callback_data="edit_transactions")],
         [InlineKeyboardButton("➖ Bán coin", callback_data="show_sell"),
-         InlineKeyboardButton("✏️ Sửa/Xóa", callback_data="edit_transactions")]
+         InlineKeyboardButton("➕ Mua coin", callback_data="show_buy")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
