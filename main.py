@@ -39,7 +39,12 @@ def run_health_server():
 def get_price(symbol):
     """Lấy giá coin từ CoinMarketCap"""
     try:
-        clean = symbol.upper().replace('USDT', '').replace('USD', '')
+        # Xử lý symbol
+        if symbol.upper() == 'USDT':
+            clean = 'USDT'
+        else:
+            clean = symbol.upper().replace('USDT', '').replace('USD', '')
+        
         res = requests.get(f"{CMC_API_URL}/cryptocurrency/quotes/latest", 
                           headers={'X-CMC_PRO_API_KEY': CMC_API_KEY},
                           params={'symbol': clean, 'convert': 'USD'}, timeout=10)
@@ -47,12 +52,15 @@ def get_price(symbol):
         if res.status_code == 200:
             data = res.json()['data'][clean]['quote']['USD']
             return {
-                'p': data['price'], 'v': data['volume_24h'], 
-                'c': data['percent_change_24h'], 'm': data['market_cap'],
+                'p': data['price'], 
+                'v': data['volume_24h'], 
+                'c': data['percent_change_24h'], 
+                'm': data['market_cap'],
                 'n': res.json()['data'][clean]['name'],
                 'r': res.json()['data'][clean].get('cmc_rank', 'N/A')
             }
-    except: 
+    except Exception as e:
+        print(f"Lỗi get_price {symbol}: {e}")
         return None
 
 # ==================== HÀM LẤY TỶ GIÁ USDT/VND ====================
@@ -63,7 +71,7 @@ def get_usdt_vnd_rate():
     # Kiểm tra cache (3 phút)
     if usdt_cache['rate'] and usdt_cache['time']:
         time_diff = (datetime.now() - usdt_cache['time']).total_seconds()
-        if time_diff < 180:  # 3 phút
+        if time_diff < 180:
             return usdt_cache['rate']
     
     # Nguồn 1: CoinGecko
@@ -111,7 +119,7 @@ def get_usdt_vnd_rate():
     except:
         pass
     
-    # Nguồn 3: Binance + Exchange Rate
+    # Nguồn 3: Exchange Rate
     try:
         url = "https://api.exchangerate-api.com/v4/latest/USD"
         res = requests.get(url, timeout=5)
@@ -120,7 +128,7 @@ def get_usdt_vnd_rate():
             
             result = {
                 'source': 'ExchangeRate',
-                'vnd': usd_vnd,  # USDT ≈ 1 USD
+                'vnd': usd_vnd,
                 'update_time': datetime.now().strftime('%H:%M:%S %d/%m/%Y')
             }
             usdt_cache['rate'] = result
@@ -129,12 +137,10 @@ def get_usdt_vnd_rate():
     except:
         pass
     
-    # Fallback - giá ước lượng
-    vnd_rate = 25500
-    
+    # Fallback
     result = {
         'source': 'Fallback',
-        'vnd': vnd_rate,
+        'vnd': 25500,
         'update_time': datetime.now().strftime('%H:%M:%S %d/%m/%Y')
     }
     usdt_cache['rate'] = result
@@ -157,7 +163,7 @@ def fmt_price(p):
         return f"${p}"
 
 def fmt_vnd(p):
-    """Định dạng giá VND - không có K, chỉ số nguyên"""
+    """Định dạng giá VND"""
     try:
         p = float(p)
         return f"₫{p:,.0f}"
@@ -202,17 +208,20 @@ def get_main_keyboard():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def get_price_keyboard():
-    """Keyboard cho xem giá"""
+    """Keyboard cho xem giá coin"""
     keyboard = [
         [InlineKeyboardButton("₿ BTC", callback_data="price_BTC"),
          InlineKeyboardButton("Ξ ETH", callback_data="price_ETH"),
-         InlineKeyboardButton("✴️ BNB", callback_data="price_BNB")],
-        [InlineKeyboardButton("◎ SOL", callback_data="price_SOL"),
-         InlineKeyboardButton("❌ XRP", callback_data="price_XRP"),
-         InlineKeyboardButton("💎 ADA", callback_data="price_ADA")],
-        [InlineKeyboardButton("🐕 DOGE", callback_data="price_DOGE"),
-         InlineKeyboardButton("⚡ DOT", callback_data="price_DOT"),
-         InlineKeyboardButton("🔷 MATIC", callback_data="price_MATIC")],
+         InlineKeyboardButton("💵 USDT", callback_data="price_USDT")],
+        [InlineKeyboardButton("✴️ BNB", callback_data="price_BNB"),
+         InlineKeyboardButton("◎ SOL", callback_data="price_SOL"),
+         InlineKeyboardButton("❌ XRP", callback_data="price_XRP")],
+        [InlineKeyboardButton("💎 ADA", callback_data="price_ADA"),
+         InlineKeyboardButton("🐕 DOGE", callback_data="price_DOGE"),
+         InlineKeyboardButton("⚡ DOT", callback_data="price_DOT")],
+        [InlineKeyboardButton("🔷 MATIC", callback_data="price_MATIC"),
+         InlineKeyboardButton("🔶 LINK", callback_data="price_LINK"),
+         InlineKeyboardButton("⚪️ LTC", callback_data="price_LTC")],
         [InlineKeyboardButton("🏠 Về menu", callback_data="back_to_menu")]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -224,7 +233,7 @@ async def start(update, ctx):
     welcome_msg = (
         "🚀 *Crypto Bot*\n\n"
         "🤖 Bot hỗ trợ:\n"
-        "• Xem giá coin real-time\n"
+        "• Xem giá coin real-time (có USDT/VND)\n"
         "• Xem tỷ giá USDT/VND (/usdt)\n"
         "• Theo dõi biến động giá\n"
         "• Quản lý danh mục đầu tư\n"
@@ -282,14 +291,32 @@ async def usdt_command(update, ctx):
     )
 
 async def s(update, ctx):
-    """Xem giá coin"""
+    """Xem giá coin bằng lệnh"""
     if not ctx.args:
         return await update.message.reply_text("❌ /s btc eth")
     
     for arg in ctx.args:
         d = get_price(arg)
         if d:
-            msg = f"*{d['n']}* #{d['r']}\n💰 `{fmt_price(d['p'])}`\n📈 `{d['c']:.2f}%`\n📦 `{fmt_vol(d['v'])}`\n💎 `{fmt_vol(d['m'])}`"
+            if arg.upper() == 'USDT':
+                rate_data = get_usdt_vnd_rate()
+                vnd_price = rate_data['vnd']
+                msg = (
+                    f"*{d['n']}* #{d['r']}\n"
+                    f"💰 USD: `{fmt_price(d['p'])}`\n"
+                    f"🇻🇳 VND: `{fmt_vnd(vnd_price)}`\n"
+                    f"📈 24h: `{d['c']:.2f}%`\n"
+                    f"📦 Volume: `{fmt_vol(d['v'])}`\n"
+                    f"💎 Market Cap: `{fmt_vol(d['m'])}`"
+                )
+            else:
+                msg = (
+                    f"*{d['n']}* #{d['r']}\n"
+                    f"💰 Giá: `{fmt_price(d['p'])}`\n"
+                    f"📈 24h: `{d['c']:.2f}%`\n"
+                    f"📦 Volume: `{fmt_vol(d['v'])}`\n"
+                    f"💎 Market Cap: `{fmt_vol(d['m'])}`"
+                )
             price_cache[arg.upper()] = d
         else:
             msg = f"❌ *{arg.upper()}*: Ko có data"
@@ -396,7 +423,6 @@ async def sell(update, ctx):
     if uid not in user_portfolios or not user_portfolios[uid]:
         return await update.message.reply_text("📭 Danh mục trống!")
     
-    # FIFO
     symbol_txs = [tx for tx in user_portfolios[uid] if tx['symbol'] == symbol]
     if not symbol_txs:
         return await update.message.reply_text(f"❌ Không có *{symbol}*", parse_mode='Markdown')
@@ -549,8 +575,8 @@ async def show_top10(update):
             await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
         else:
             await update.message.reply_text("❌ Không thể lấy dữ liệu top 10")
-    except:
-        await update.message.reply_text("❌ Lỗi khi lấy dữ liệu")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Lỗi: {e}")
 
 # ==================== HANDLE MESSAGE ====================
 
@@ -609,7 +635,8 @@ async def handle_callback(update, ctx):
             f"📊 *Nguồn:* `{rate_data['source']}`"
         )
         
-        keyboard = [[InlineKeyboardButton("🔄 Làm mới", callback_data="refresh_usdt")]]
+        keyboard = [[InlineKeyboardButton("🔄 Làm mới", callback_data="refresh_usdt")],
+                    [InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]]
         
         await query.edit_message_text(
             text,
@@ -620,10 +647,30 @@ async def handle_callback(update, ctx):
     elif data.startswith("price_"):
         symbol = data.replace("price_", "")
         d = get_price(symbol)
+        
         if d:
-            msg = f"*{d['n']}* #{d['r']}\n💰 `{fmt_price(d['p'])}`\n📈 `{d['c']:.2f}%`\n📦 `{fmt_vol(d['v'])}`\n💎 `{fmt_vol(d['m'])}`"
+            if symbol == 'USDT':
+                rate_data = get_usdt_vnd_rate()
+                vnd_price = rate_data['vnd']
+                
+                msg = (
+                    f"*{d['n']}* #{d['r']}\n"
+                    f"💰 USD: `{fmt_price(d['p'])}`\n"
+                    f"🇻🇳 VND: `{fmt_vnd(vnd_price)}`\n"
+                    f"📈 24h: `{d['c']:.2f}%`\n"
+                    f"📦 Volume: `{fmt_vol(d['v'])}`\n"
+                    f"💎 Market Cap: `{fmt_vol(d['m'])}`"
+                )
+            else:
+                msg = (
+                    f"*{d['n']}* #{d['r']}\n"
+                    f"💰 Giá: `{fmt_price(d['p'])}`\n"
+                    f"📈 24h: `{d['c']:.2f}%`\n"
+                    f"📦 Volume: `{fmt_vol(d['v'])}`\n"
+                    f"💎 Market Cap: `{fmt_vol(d['m'])}`"
+                )
         else:
-            msg = f"❌ *{symbol}*: Ko có data"
+            msg = f"❌ *{symbol}*: Không có dữ liệu"
         
         keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]]
         await query.edit_message_text(
@@ -631,6 +678,8 @@ async def handle_callback(update, ctx):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
+
+# ==================== AUTO UPDATE ====================
 
 def auto_update():
     """Tự động cập nhật giá"""
@@ -660,6 +709,7 @@ if __name__ == '__main__':
         print("⚠️ Cảnh báo: Thiếu CMC_API_KEY")
     
     print("🚀 Khởi động bot...")
+    print("✅ Tính năng: USDT/VND trong phần giá coin")
     
     threading.Thread(target=run_health_server, daemon=True).start()
     
@@ -688,6 +738,7 @@ if __name__ == '__main__':
     threading.Thread(target=auto_update, daemon=True).start()
     
     print("✅ Bot đã sẵn sàng!")
-    print("📝 Gõ /usdt để xem tỷ giá USDT/VND")
+    print("📝 Gõ /usdt để xem tỷ giá")
+    print("💰 Bấm 'Giá coin' để xem USDT/VND")
     
     app.run_polling()
