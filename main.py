@@ -3,8 +3,7 @@ import threading
 import time
 import requests
 import json
-import random
-from datetime import datetime, timedelta
+from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
@@ -20,266 +19,132 @@ CMC_API_URL = "https://pro-api.coinmarketcap.com/v1"
 price_cache = {}
 user_subs = {}
 user_portfolios = {}
+usdt_cache = {'rate': None, 'time': None}
 
-# ==================== SIÊU CẤP DỰ PHÒNG USDT/VND ====================
+# Health check server
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b'Bot is running!')
+    def log_message(self, format, *args): pass
 
-class USDTRateManager:
-    """Quản lý tỷ giá USDT/VND với 100% uptime"""
-    
-    def __init__(self):
-        self.cache = {
-            'rate': None,
-            'time': None,
-            'source': None
-        }
-        self.fallback_rates = [
-            25000, 25100, 25200, 25300, 25400, 25500, 25600, 25700, 25800, 25900, 26000,
-            25150, 25250, 25350, 25450, 25550, 25650, 25750, 25850, 25950
-        ]
-        self.last_successful_rate = 25500  # Giá mặc định
-        self.consecutive_failures = 0
+def run_health_server():
+    port = int(os.environ.get('PORT', 10000))
+    HTTPServer(('0.0.0.0', port), HealthCheckHandler).serve_forever()
+
+# ==================== HÀM LẤY GIÁ COIN ====================
+
+def get_price(symbol):
+    """Lấy giá coin từ CoinMarketCap"""
+    try:
+        clean = symbol.upper().replace('USDT', '').replace('USD', '')
+        res = requests.get(f"{CMC_API_URL}/cryptocurrency/quotes/latest", 
+                          headers={'X-CMC_PRO_API_KEY': CMC_API_KEY},
+                          params={'symbol': clean, 'convert': 'USD'}, timeout=10)
         
-    def get_rate(self):
-        """Lấy tỷ giá với nhiều lớp dự phòng"""
-        
-        # LỚP 1: Kiểm tra cache (5 phút)
-        if self.cache['rate'] and self.cache['time']:
-            time_diff = (datetime.now() - self.cache['time']).total_seconds()
-            if time_diff < 300:  # 5 phút
-                return self.cache['rate']
-        
-        print(f"\n🔄 [{datetime.now().strftime('%H:%M:%S')}] Đang lấy tỷ giá USDT/VND...")
-        
-        # LỚP 2: CoinGecko (nguồn chính)
-        rate = self._get_from_coingecko()
-        if rate:
-            self.consecutive_failures = 0
-            self.last_successful_rate = rate['vnd']
-            self.cache = rate
-            return rate
-        
-        # LỚP 3: Binance + Exchange Rate
-        rate = self._get_from_binance()
-        if rate:
-            self.consecutive_failures = 0
-            self.last_successful_rate = rate['vnd']
-            self.cache = rate
-            return rate
-        
-        # LỚP 4: Coinbase
-        rate = self._get_from_coinbase()
-        if rate:
-            self.consecutive_failures = 0
-            self.last_successful_rate = rate['vnd']
-            self.cache = rate
-            return rate
-        
-        # LỚP 5: CMC + Exchange Rate
-        rate = self._get_from_cmc()
-        if rate:
-            self.consecutive_failures = 0
-            self.last_successful_rate = rate['vnd']
-            self.cache = rate
-            return rate
-        
-        # LỚP 6: API tỷ giá ngân hàng nhà nước (giả lập)
-        rate = self._get_from_bank_api()
-        if rate:
-            self.consecutive_failures = 0
-            self.last_successful_rate = rate['vnd']
-            self.cache = rate
-            return rate
-        
-        # LỚP 7: Dùng giá gần nhất
-        self.consecutive_failures += 1
-        if self.last_successful_rate:
-            # Thêm biến động nhẹ dựa trên số lần fail
-            variation = self.consecutive_failures * 10
-            current_rate = self.last_successful_rate + random.randint(-variation, variation)
-            
-            rate = {
-                'source': f'Last Known (cách {self.consecutive_failures} lần)',
-                'vnd': current_rate,
-                'usd': 1.0,
-                'change_24h': 0.1 * self.consecutive_failures,
-                'update_time': datetime.now().strftime('%H:%M:%S %d/%m/%Y'),
-                'timestamp': int(time.time()),
-                'note': '⚠️ Dữ liệu từ lần gần nhất'
-            }
-            self.cache = rate
-            return rate
-        
-        # LỚP 8: ULTIMATE FALLBACK - Không bao giờ lỗi
-        ultimate_rate = self._get_ultimate_fallback()
-        self.cache = ultimate_rate
-        return ultimate_rate
-    
-    def _get_from_coingecko(self):
-        """Nguồn 1: CoinGecko"""
-        try:
-            url = "https://api.coingecko.com/api/v3/simple/price"
-            params = {
-                'ids': 'tether',
-                'vs_currencies': 'vnd,usd',
-                'include_24hr_change': 'true'
-            }
-            res = requests.get(url, params=params, timeout=5)
-            if res.status_code == 200:
-                data = res.json()
-                if 'tether' in data:
-                    vnd = float(data['tether']['vnd'])
-                    usd = float(data['tether']['usd'])
-                    change = float(data['tether'].get('vnd_24h_change', 0))
-                    
-                    print(f"✅ [CoinGecko] 1 USDT = {vnd:,.0f} VND")
-                    return {
-                        'source': 'CoinGecko',
-                        'vnd': vnd,
-                        'usd': usd,
-                        'change_24h': change,
-                        'update_time': datetime.now().strftime('%H:%M:%S %d/%m/%Y'),
-                        'timestamp': int(time.time()),
-                        'note': 'Nguồn chính'
-                    }
-        except Exception as e:
-            print(f"❌ CoinGecko lỗi: {e}")
-        return None
-    
-    def _get_from_binance(self):
-        """Nguồn 2: Binance"""
-        try:
-            # Binance không có USDT/VND, dùng USDT/USDT + Exchange Rate
-            url = "https://api.exchangerate-api.com/v4/latest/USD"
-            res = requests.get(url, timeout=5)
-            if res.status_code == 200:
-                usd_vnd = float(res.json()['rates']['VND'])
-                vnd = usd_vnd  # USDT ≈ 1 USD
-                
-                print(f"✅ [Binance+Exchange] 1 USDT = {vnd:,.0f} VND")
-                return {
-                    'source': 'Binance + ExchangeRate',
-                    'vnd': vnd,
-                    'usd': 1.0,
-                    'change_24h': 0.05,
-                    'update_time': datetime.now().strftime('%H:%M:%S %d/%m/%Y'),
-                    'timestamp': int(time.time()),
-                    'note': 'Nguồn dự phòng 1'
-                }
-        except Exception as e:
-            print(f"❌ Binance lỗi: {e}")
-        return None
-    
-    def _get_from_coinbase(self):
-        """Nguồn 3: Coinbase"""
-        try:
-            url = "https://api.coinbase.com/v2/prices/USDT-VND/spot"
-            res = requests.get(url, timeout=5)
-            if res.status_code == 200:
-                vnd = float(res.json()['data']['amount'])
-                
-                print(f"✅ [Coinbase] 1 USDT = {vnd:,.0f} VND")
-                return {
-                    'source': 'Coinbase',
-                    'vnd': vnd,
-                    'usd': vnd / 25000,
-                    'change_24h': 0.03,
-                    'update_time': datetime.now().strftime('%H:%M:%S %d/%m/%Y'),
-                    'timestamp': int(time.time()),
-                    'note': 'Nguồn dự phòng 2'
-                }
-        except Exception as e:
-            print(f"❌ Coinbase lỗi: {e}")
-        return None
-    
-    def _get_from_cmc(self):
-        """Nguồn 4: CoinMarketCap"""
-        try:
-            if CMC_API_KEY:
-                # Lấy USDT/USD từ CMC
-                usdt_data = get_price('USDT')
-                if usdt_data and 'p' in usdt_data:
-                    usdt_usd = float(usdt_data['p'])
-                    
-                    # Lấy USD/VND từ Exchange Rate
-                    url = "https://api.exchangerate-api.com/v4/latest/USD"
-                    res = requests.get(url, timeout=5)
-                    if res.status_code == 200:
-                        usd_vnd = float(res.json()['rates']['VND'])
-                        vnd = usdt_usd * usd_vnd
-                        
-                        print(f"✅ [CMC+Exchange] 1 USDT = {vnd:,.0f} VND")
-                        return {
-                            'source': 'CoinMarketCap + ExchangeRate',
-                            'vnd': vnd,
-                            'usd': usdt_usd,
-                            'change_24h': 0.02,
-                            'update_time': datetime.now().strftime('%H:%M:%S %d/%m/%Y'),
-                            'timestamp': int(time.time()),
-                            'note': 'Nguồn dự phòng 3'
-                        }
-        except Exception as e:
-            print(f"❌ CMC lỗi: {e}")
-        return None
-    
-    def _get_from_bank_api(self):
-        """Nguồn 5: Giả lập API ngân hàng"""
-        try:
-            # Mô phỏng lấy từ API ngân hàng nhà nước
-            # Trong thực tế, có thể dùng https://api.vietcombank.com.vn/
-            
-            # Giá cố định gần đúng
-            vnd = 25500 + random.randint(-50, 50)
-            
-            print(f"✅ [Bank API] 1 USDT = {vnd:,.0f} VND (mô phỏng)")
+        if res.status_code == 200:
+            data = res.json()['data'][clean]['quote']['USD']
             return {
-                'source': 'Vietcombank (mô phỏng)',
-                'vnd': vnd,
-                'usd': 1.0,
-                'change_24h': 0.01,
-                'update_time': datetime.now().strftime('%H:%M:%S %d/%m/%Y'),
-                'timestamp': int(time.time()),
-                'note': 'Dữ liệu mô phỏng từ ngân hàng'
+                'p': data['price'], 'v': data['volume_24h'], 
+                'c': data['percent_change_24h'], 'm': data['market_cap'],
+                'n': res.json()['data'][clean]['name'],
+                'r': res.json()['data'][clean].get('cmc_rank', 'N/A')
             }
-        except Exception as e:
-            print(f"❌ Bank API lỗi: {e}")
+    except: 
         return None
-    
-    def _get_ultimate_fallback(self):
-        """LỚP CUỐI CÙNG: Không bao giờ lỗi"""
-        
-        # Dựa vào thời gian thực để tạo giá động
-        now = datetime.now()
-        hour = now.hour
-        minute = now.minute
-        second = now.second
-        
-        # Tạo giá biến động theo giờ (23,000 - 27,000)
-        base_rate = 25000
-        variation = ((hour * 60 + minute) % 200) - 100  # -100 đến +100
-        vnd = base_rate + variation + (second % 20)
-        
-        print(f"✅ [ULTIMATE FALLBACK] 1 USDT = {vnd:,.0f} VND")
-        
-        return {
-            'source': 'Ultimate Fallback',
-            'vnd': vnd,
-            'usd': 1.0,
-            'change_24h': (variation / base_rate) * 100,
-            'update_time': now.strftime('%H:%M:%S %d/%m/%Y'),
-            'timestamp': int(now.timestamp()),
-            'note': '🔒 Dữ liệu nội bộ - An toàn 100%'
-        }
 
-# Khởi tạo manager
-usdt_manager = USDTRateManager()
+# ==================== HÀM LẤY TỶ GIÁ USDT/VND ====================
 
 def get_usdt_vnd_rate():
-    """Hàm lấy tỷ giá (đảm bảo luôn có kết quả)"""
-    return usdt_manager.get_rate()
+    """Lấy tỷ giá USDT/VND từ nhiều nguồn"""
+    
+    # Kiểm tra cache (3 phút)
+    if usdt_cache['rate'] and usdt_cache['time']:
+        time_diff = (datetime.now() - usdt_cache['time']).total_seconds()
+        if time_diff < 180:  # 3 phút
+            return usdt_cache['rate']
+    
+    # Nguồn 1: CoinGecko
+    try:
+        url = "https://api.coingecko.com/api/v3/simple/price"
+        params = {
+            'ids': 'tether',
+            'vs_currencies': 'vnd',
+            'include_last_updated_at': 'true'
+        }
+        res = requests.get(url, params=params, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            if 'tether' in data:
+                vnd_rate = float(data['tether']['vnd'])
+                last_update = data['tether'].get('last_updated_at', int(time.time()))
+                
+                result = {
+                    'source': 'CoinGecko',
+                    'vnd': vnd_rate,
+                    'update_time': datetime.fromtimestamp(last_update).strftime('%H:%M:%S %d/%m/%Y')
+                }
+                usdt_cache['rate'] = result
+                usdt_cache['time'] = datetime.now()
+                return result
+    except:
+        pass
+    
+    # Nguồn 2: Coinbase
+    try:
+        url = "https://api.coinbase.com/v2/prices/USDT-VND/spot"
+        res = requests.get(url, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            vnd_rate = float(data['data']['amount'])
+            
+            result = {
+                'source': 'Coinbase',
+                'vnd': vnd_rate,
+                'update_time': datetime.now().strftime('%H:%M:%S %d/%m/%Y')
+            }
+            usdt_cache['rate'] = result
+            usdt_cache['time'] = datetime.now()
+            return result
+    except:
+        pass
+    
+    # Nguồn 3: Binance + Exchange Rate
+    try:
+        url = "https://api.exchangerate-api.com/v4/latest/USD"
+        res = requests.get(url, timeout=5)
+        if res.status_code == 200:
+            usd_vnd = float(res.json()['rates']['VND'])
+            
+            result = {
+                'source': 'ExchangeRate',
+                'vnd': usd_vnd,  # USDT ≈ 1 USD
+                'update_time': datetime.now().strftime('%H:%M:%S %d/%m/%Y')
+            }
+            usdt_cache['rate'] = result
+            usdt_cache['time'] = datetime.now()
+            return result
+    except:
+        pass
+    
+    # Fallback - giá ước lượng
+    vnd_rate = 25500
+    
+    result = {
+        'source': 'Fallback',
+        'vnd': vnd_rate,
+        'update_time': datetime.now().strftime('%H:%M:%S %d/%m/%Y')
+    }
+    usdt_cache['rate'] = result
+    usdt_cache['time'] = datetime.now()
+    return result
 
 # ==================== HÀM ĐỊNH DẠNG ====================
 
 def fmt_price(p):
+    """Định dạng giá USD"""
     try:
         p = float(p)
         if p < 0.01:
@@ -291,22 +156,31 @@ def fmt_price(p):
     except: 
         return f"${p}"
 
-def fmt_vnd_price(p):
-    """Định dạng giá VND"""
+def fmt_vnd(p):
+    """Định dạng giá VND - không có K, chỉ số nguyên"""
     try:
         p = float(p)
-        if p >= 1_000_000_000:  # Tỷ
-            return f"₫{p/1_000_000_000:.2f} tỷ"
-        elif p >= 1_000_000:  # Triệu
-            return f"₫{p/1_000_000:.2f} triệu"
-        elif p >= 1_000:  # Nghìn
-            return f"₫{p/1_000:.2f}K"
-        else:
-            return f"₫{p:,.0f}"
+        return f"₫{p:,.0f}"
     except:
         return f"₫{p}"
 
+def fmt_vol(v):
+    """Định dạng volume"""
+    try:
+        v = float(v)
+        if v > 1e9:
+            return f"${v/1e9:.2f}B"
+        elif v > 1e6:
+            return f"${v/1e6:.2f}M"
+        elif v > 1e3:
+            return f"${v/1e3:.2f}K"
+        else:
+            return f"${v:,.2f}"
+    except: 
+        return str(v)
+
 def fmt_percent(value):
+    """Định dạng phần trăm"""
     try:
         value = float(value)
         emoji = "📈" if value > 0 else "📉" if value < 0 else "➡️"
@@ -317,26 +191,45 @@ def fmt_percent(value):
 # ==================== KEYBOARD ====================
 
 def get_main_keyboard():
+    """Tạo main keyboard"""
     keyboard = [
-        [KeyboardButton("💰 Giá coin"), KeyboardButton("🇻🇳 USDT/VND")],
-        [KeyboardButton("📊 Top 10"), KeyboardButton("🔔 Theo dõi")],
-        [KeyboardButton("📋 DS theo dõi"), KeyboardButton("💼 Danh mục")],
-        [KeyboardButton("📈 Lợi nhuận"), KeyboardButton("➕ Mua coin")],
-        [KeyboardButton("➖ Bán coin"), KeyboardButton("❓ Hướng dẫn")]
+        [KeyboardButton("💰 Giá coin"), KeyboardButton("📊 Top 10")],
+        [KeyboardButton("🔔 Theo dõi"), KeyboardButton("📋 DS theo dõi")],
+        [KeyboardButton("💼 Danh mục"), KeyboardButton("📈 Lợi nhuận")],
+        [KeyboardButton("➕ Mua coin"), KeyboardButton("➖ Bán coin")],
+        [KeyboardButton("❓ Hướng dẫn")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_price_keyboard():
+    """Keyboard cho xem giá"""
+    keyboard = [
+        [InlineKeyboardButton("₿ BTC", callback_data="price_BTC"),
+         InlineKeyboardButton("Ξ ETH", callback_data="price_ETH"),
+         InlineKeyboardButton("✴️ BNB", callback_data="price_BNB")],
+        [InlineKeyboardButton("◎ SOL", callback_data="price_SOL"),
+         InlineKeyboardButton("❌ XRP", callback_data="price_XRP"),
+         InlineKeyboardButton("💎 ADA", callback_data="price_ADA")],
+        [InlineKeyboardButton("🐕 DOGE", callback_data="price_DOGE"),
+         InlineKeyboardButton("⚡ DOT", callback_data="price_DOT"),
+         InlineKeyboardButton("🔷 MATIC", callback_data="price_MATIC")],
+        [InlineKeyboardButton("🏠 Về menu", callback_data="back_to_menu")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
 # ==================== COMMAND HANDLERS ====================
 
 async def start(update, ctx):
+    """Start command"""
     welcome_msg = (
-        "🚀 *Crypto Bot - SIÊU CẤP DỰ PHÒNG*\n\n"
+        "🚀 *Crypto Bot*\n\n"
         "🤖 Bot hỗ trợ:\n"
-        "• 🇻🇳 *Tỷ giá USDT/VND* - 100% không bao giờ lỗi\n"
         "• Xem giá coin real-time\n"
+        "• Xem tỷ giá USDT/VND (/usdt)\n"
+        "• Theo dõi biến động giá\n"
         "• Quản lý danh mục đầu tư\n"
         "• Tính lợi nhuận\n\n"
-        "👇 *Bấm nút bên dưới để dùng*"
+        "👇 *Sử dụng keyboard bên dưới*"
     )
     await update.message.reply_text(
         welcome_msg,
@@ -344,90 +237,353 @@ async def start(update, ctx):
         reply_markup=get_main_keyboard()
     )
 
-async def usdt_rate_command(update, ctx):
-    """Lệnh /usdt - SIÊU CẤP DỰ PHÒNG"""
+async def help(update, ctx):
+    """Help command"""
+    help_msg = (
+        "📘 *HƯỚNG DẪN*\n\n"
+        "*Lệnh:*\n"
+        "/usdt - Xem tỷ giá USDT/VND\n"
+        "/s btc - Xem giá BTC\n"
+        "/su btc - Theo dõi BTC\n"
+        "/uns btc - Hủy theo dõi\n"
+        "/my - DS theo dõi\n"
+        "/portfolio - Xem danh mục\n"
+        "/profit - Chi tiết lợi nhuận\n"
+        "/buy btc 0.5 40000 - Mua BTC\n"
+        "/sell btc 0.2 - Bán BTC\n\n"
+        "*Nút bấm:* Dùng keyboard bên dưới"
+    )
+    await update.message.reply_text(help_msg, parse_mode=ParseMode.MARKDOWN)
+
+async def usdt_command(update, ctx):
+    """Lệnh /usdt - Xem tỷ giá USDT/VND"""
     
-    # Gửi tin nhắn đang xử lý
-    processing_msg = await update.message.reply_text("🔄 ĐANG TRA CỨU...\n━━━━━━━━━━━━━━━━")
+    msg = await update.message.reply_text("🔄 Đang tra cứu...")
     
-    # Lấy tỷ giá (100% có kết quả)
     rate_data = get_usdt_vnd_rate()
-    
-    # Tạo message đẹp
     vnd = rate_data['vnd']
     
-    msg = (
+    text = (
         "💱 *TỶ GIÁ USDT/VND*\n"
         "━━━━━━━━━━━━━━━━\n\n"
-        f"📊 *Nguồn:* `{rate_data.get('source', 'N/A')}`\n"
-        f"📝 *Ghi chú:* {rate_data.get('note', 'Cập nhật realtime')}\n\n"
-        f"🇺🇸 *1 USDT* = `{fmt_vnd_price(vnd)}`\n"
+        f"🇺🇸 *1 USDT* = `{fmt_vnd(vnd)}`\n"
         f"🇻🇳 *1,000,000 VND* = `{1000000/vnd:.4f} USDT`\n\n"
-        "📊 *BẢNG QUY ĐỔI NHANH*\n"
+        f"⏱ *Thời gian:* `{rate_data['update_time']}`\n"
+        f"📊 *Nguồn:* `{rate_data['source']}`"
     )
     
-    # USDT -> VND
-    usdt_amounts = [1, 5, 10, 50, 100, 500, 1000, 5000, 10000]
-    for amt in usdt_amounts:
-        msg += f"• `{amt:5} USDT` = `{fmt_vnd_price(amt * vnd)}`\n"
+    keyboard = [[InlineKeyboardButton("🔄 Làm mới", callback_data="refresh_usdt")]]
     
-    msg += "\n• *VND → USDT:*\n"
-    vnd_amounts = [100000, 500000, 1000000, 5000000, 10000000, 50000000, 100000000]
-    for amt in vnd_amounts:
-        msg += f"• `{fmt_vnd_price(amt)}` = `{amt/vnd:.4f} USDT`\n"
-    
-    if rate_data.get('change_24h', 0) != 0:
-        msg += f"\n📈 *Biến động 24h:* {fmt_percent(rate_data['change_24h'])}\n"
-    
-    msg += f"\n🕐 *Cập nhật:* {rate_data.get('update_time')}\n"
-    msg += "━━━━━━━━━━━━━━━━\n"
-    msg += "_✅ Đảm bảo 100% không lỗi - 8 lớp dự phòng_"
-    
-    # Xóa tin nhắn đang xử lý
-    await processing_msg.delete()
-    
-    # Gửi kết quả
-    keyboard = [[InlineKeyboardButton("🔄 Làm mới", callback_data="usdt_rate")],
-                [InlineKeyboardButton("📊 Nguồn dữ liệu", callback_data="show_sources")],
-                [InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]]
-    
+    await msg.delete()
     await update.message.reply_text(
-        msg,
+        text,
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-async def show_sources(update, ctx):
-    """Hiển thị các lớp dự phòng"""
-    query = update.callback_query
-    await query.answer()
+async def s(update, ctx):
+    """Xem giá coin"""
+    if not ctx.args:
+        return await update.message.reply_text("❌ /s btc eth")
+    
+    for arg in ctx.args:
+        d = get_price(arg)
+        if d:
+            msg = f"*{d['n']}* #{d['r']}\n💰 `{fmt_price(d['p'])}`\n📈 `{d['c']:.2f}%`\n📦 `{fmt_vol(d['v'])}`\n💎 `{fmt_vol(d['m'])}`"
+            price_cache[arg.upper()] = d
+        else:
+            msg = f"❌ *{arg.upper()}*: Ko có data"
+        await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def su(update, ctx):
+    """Theo dõi coin"""
+    uid = update.effective_user.id
+    if not ctx.args: 
+        return await update.message.reply_text("❌ /su btc")
+    
+    s = ctx.args[0].upper()
+    if not get_price(s): 
+        return await update.message.reply_text(f"❌ *{s}* ko tồn tại", parse_mode='Markdown')
+    
+    if uid not in user_subs: 
+        user_subs[uid] = []
+    
+    if s not in user_subs[uid]:
+        user_subs[uid].append(s)
+        await update.message.reply_text(f"✅ Đã theo dõi *{s}*", parse_mode='Markdown')
+    else:
+        await update.message.reply_text(f"ℹ️ Đang theo *{s}* rồi", parse_mode='Markdown')
+
+async def uns(update, ctx):
+    """Hủy theo dõi coin"""
+    uid = update.effective_user.id
+    if not ctx.args: 
+        return await update.message.reply_text("❌ /uns btc")
+    
+    s = ctx.args[0].upper()
+    if uid in user_subs and s in user_subs[uid]:
+        user_subs[uid].remove(s)
+        await update.message.reply_text(f"✅ Đã hủy *{s}*", parse_mode='Markdown')
+    else:
+        await update.message.reply_text(f"❌ Ko theo *{s}*", parse_mode='Markdown')
+
+async def my(update, ctx):
+    """Danh sách theo dõi"""
+    uid = update.effective_user.id
+    if uid in user_subs and user_subs[uid]:
+        msg = "📋 *DS theo dõi:*\n"
+        for s in sorted(user_subs[uid]):
+            c = price_cache.get(s, {})
+            msg += f"• *{s}*: `{fmt_price(c.get('p', '?'))}`\n"
+        await update.message.reply_text(msg, parse_mode='Markdown')
+    else:
+        await update.message.reply_text("📭 Chưa theo dõi coin nào!")
+
+async def buy(update, ctx):
+    """Mua coin"""
+    uid = update.effective_user.id
+    if len(ctx.args) < 3:
+        return await update.message.reply_text("❌ /buy btc 0.5 40000")
+    
+    symbol = ctx.args[0].upper()
+    try:
+        amount = float(ctx.args[1])
+        buy_price = float(ctx.args[2])
+    except:
+        return await update.message.reply_text("❌ Số lượng/giá không hợp lệ!")
+    
+    price_data = get_price(symbol)
+    if not price_data:
+        return await update.message.reply_text(f"❌ Coin *{symbol}* không tồn tại!", parse_mode='Markdown')
+    
+    if uid not in user_portfolios:
+        user_portfolios[uid] = []
+    
+    user_portfolios[uid].append({
+        'symbol': symbol,
+        'amount': amount,
+        'buy_price': buy_price,
+        'buy_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        'total_cost': amount * buy_price
+    })
+    
+    current_price = price_data['p']
+    profit_loss = (current_price - buy_price) * amount
+    profit_loss_percent = ((current_price - buy_price) / buy_price) * 100
     
     msg = (
-        "🛡️ *8 LỚP DỰ PHÒNG*\n"
-        "━━━━━━━━━━━━━━━━\n\n"
-        "1️⃣ *CoinGecko* - Nguồn chính\n"
-        "2️⃣ *Binance + ExchangeRate* - Dự phòng 1\n"
-        "3️⃣ *Coinbase* - Dự phòng 2\n"
-        "4️⃣ *CMC + ExchangeRate* - Dự phòng 3\n"
-        "5️⃣ *Bank API* - Dự phòng 4 (mô phỏng)\n"
-        "6️⃣ *Last Known* - Giá gần nhất\n"
-        "7️⃣ *Dynamic Fallback* - Biến động theo giờ\n"
-        "8️⃣ *Ultimate Fallback* - AN TOÀN 100%\n\n"
-        "✅ *ĐẢM BẢO KHÔNG BAO GIỜ LỖI*\n"
-        "Dù API ngoài có chết hết, bot vẫn có giá!"
+        f"✅ Đã mua *{symbol}*\n"
+        f"📊 SL: `{amount}`\n"
+        f"💰 Giá mua: `{fmt_price(buy_price)}`\n"
+        f"💵 Vốn: `{fmt_price(amount * buy_price)}`\n"
+        f"📈 Giá hiện: `{fmt_price(current_price)}`\n"
+        f"📊 LN: `{fmt_price(profit_loss)}` ({profit_loss_percent:+.2f}%)"
     )
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def sell(update, ctx):
+    """Bán coin"""
+    uid = update.effective_user.id
+    if len(ctx.args) < 2:
+        return await update.message.reply_text("❌ /sell btc 0.2")
     
-    keyboard = [[InlineKeyboardButton("🔄 Xem tỷ giá", callback_data="usdt_rate")],
-                [InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]]
+    symbol = ctx.args[0].upper()
+    try:
+        sell_amount = float(ctx.args[1])
+    except:
+        return await update.message.reply_text("❌ Số lượng không hợp lệ!")
     
-    await query.edit_message_text(
-        msg,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=InlineKeyboardMarkup(keyboard)
+    if uid not in user_portfolios or not user_portfolios[uid]:
+        return await update.message.reply_text("📭 Danh mục trống!")
+    
+    # FIFO
+    symbol_txs = [tx for tx in user_portfolios[uid] if tx['symbol'] == symbol]
+    if not symbol_txs:
+        return await update.message.reply_text(f"❌ Không có *{symbol}*", parse_mode='Markdown')
+    
+    total_amount = sum(tx['amount'] for tx in symbol_txs)
+    if sell_amount > total_amount:
+        return await update.message.reply_text(f"❌ Chỉ có {total_amount} {symbol}")
+    
+    remaining_sell = sell_amount
+    new_portfolio = []
+    sold_value = 0
+    sold_cost = 0
+    
+    for tx in user_portfolios[uid]:
+        if tx['symbol'] == symbol and remaining_sell > 0:
+            if tx['amount'] <= remaining_sell:
+                sold_cost += tx['total_cost']
+                sold_value += tx['amount'] * get_price(symbol)['p']
+                remaining_sell -= tx['amount']
+            else:
+                sell_part = remaining_sell
+                sold_cost += sell_part * tx['buy_price']
+                sold_value += sell_part * get_price(symbol)['p']
+                tx['amount'] -= sell_part
+                tx['total_cost'] = tx['amount'] * tx['buy_price']
+                new_portfolio.append(tx)
+                remaining_sell = 0
+        else:
+            new_portfolio.append(tx)
+    
+    user_portfolios[uid] = new_portfolio
+    
+    profit = sold_value - sold_cost
+    profit_percent = (profit / sold_cost) * 100 if sold_cost > 0 else 0
+    
+    msg = (
+        f"✅ Đã bán {sell_amount} {symbol}\n"
+        f"💰 Giá trị: `{fmt_price(sold_value)}`\n"
+        f"📊 Vốn: `{fmt_price(sold_cost)}`\n"
+        f"{'✅' if profit>=0 else '❌'} LN: `{fmt_price(profit)}` ({profit_percent:+.2f}%)"
     )
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def portfolio(update, ctx):
+    """Xem danh mục"""
+    uid = update.effective_user.id
+    if uid not in user_portfolios or not user_portfolios[uid]:
+        return await update.message.reply_text("📭 Danh mục trống!")
+    
+    portfolio_summary = {}
+    total_investment = 0
+    total_current_value = 0
+    
+    for tx in user_portfolios[uid]:
+        symbol = tx['symbol']
+        if symbol not in portfolio_summary:
+            portfolio_summary[symbol] = {'amount': 0, 'cost': 0}
+        portfolio_summary[symbol]['amount'] += tx['amount']
+        portfolio_summary[symbol]['cost'] += tx['total_cost']
+    
+    msg = "📊 *DANH MỤC*\n━━━━━━━━━━━━\n\n"
+    
+    for symbol, data in portfolio_summary.items():
+        price_data = get_price(symbol)
+        if price_data:
+            current_value = data['amount'] * price_data['p']
+            profit = current_value - data['cost']
+            profit_percent = (profit / data['cost']) * 100 if data['cost'] > 0 else 0
+            
+            total_investment += data['cost']
+            total_current_value += current_value
+            
+            msg += f"*{symbol}*\n"
+            msg += f"📊 SL: `{data['amount']:.4f}`\n"
+            msg += f"💰 TB: `{fmt_price(data['cost']/data['amount'])}`\n"
+            msg += f"💎 TT: `{fmt_price(current_value)}`\n"
+            msg += f"{'✅' if profit>=0 else '❌'} LN: `{fmt_price(profit)}` ({profit_percent:+.2f}%)\n\n"
+    
+    total_profit = total_current_value - total_investment
+    total_profit_percent = (total_profit / total_investment) * 100 if total_investment > 0 else 0
+    
+    msg += "━━━━━━━━━━━━\n"
+    msg += f"💵 Vốn: `{fmt_price(total_investment)}`\n"
+    msg += f"💰 GT: `{fmt_price(total_current_value)}`\n"
+    msg += f"{'✅' if total_profit>=0 else '❌'} Tổng LN: `{fmt_price(total_profit)}` ({total_profit_percent:+.2f}%)"
+    
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def profit(update, ctx):
+    """Chi tiết lợi nhuận"""
+    uid = update.effective_user.id
+    if uid not in user_portfolios or not user_portfolios[uid]:
+        return await update.message.reply_text("📭 Danh mục trống!")
+    
+    msg = "📈 *CHI TIẾT LỢI NHUẬN*\n━━━━━━━━━━━━\n\n"
+    
+    total_investment = 0
+    total_current_value = 0
+    
+    for i, tx in enumerate(user_portfolios[uid], 1):
+        symbol = tx['symbol']
+        price_data = get_price(symbol)
+        
+        if price_data:
+            current_value = tx['amount'] * price_data['p']
+            profit = current_value - tx['total_cost']
+            profit_percent = (profit / tx['total_cost']) * 100
+            
+            total_investment += tx['total_cost']
+            total_current_value += current_value
+            
+            msg += f"*GD #{i}: {symbol}*\n"
+            msg += f"📅 {tx['buy_date']}\n"
+            msg += f"📊 SL: `{tx['amount']:.4f}`\n"
+            msg += f"💰 Giá mua: `{fmt_price(tx['buy_price'])}`\n"
+            msg += f"💎 Giá trị: `{fmt_price(current_value)}`\n"
+            msg += f"{'✅' if profit>=0 else '❌'} LN: `{fmt_price(profit)}` ({profit_percent:+.2f}%)\n\n"
+    
+    total_profit = total_current_value - total_investment
+    total_profit_percent = (total_profit / total_investment) * 100
+    
+    msg += "━━━━━━━━━━━━\n"
+    msg += f"💵 Vốn: `{fmt_price(total_investment)}`\n"
+    msg += f"💰 GT: `{fmt_price(total_current_value)}`\n"
+    msg += f"{'✅' if total_profit>=0 else '❌'} Tổng LN: `{fmt_price(total_profit)}` ({total_profit_percent:+.2f}%)"
+    
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def show_top10(update):
+    """Hiển thị top 10 coin"""
+    try:
+        res = requests.get(
+            f"{CMC_API_URL}/cryptocurrency/listings/latest",
+            headers={'X-CMC_PRO_API_KEY': CMC_API_KEY},
+            params={'limit': 10, 'convert': 'USD'}
+        )
+        
+        if res.status_code == 200:
+            data = res.json()['data']
+            msg = "📊 *TOP 10 COIN*\n━━━━━━━━━━━━\n\n"
+            
+            for i, coin in enumerate(data, 1):
+                quote = coin['quote']['USD']
+                msg += (
+                    f"{i}. *{coin['symbol']}* - {coin['name']}\n"
+                    f"   💰 {fmt_price(quote['price'])}\n"
+                    f"   📈 {quote['percent_change_24h']:+.2f}%\n"
+                )
+            
+            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await update.message.reply_text("❌ Không thể lấy dữ liệu top 10")
+    except:
+        await update.message.reply_text("❌ Lỗi khi lấy dữ liệu")
+
+# ==================== HANDLE MESSAGE ====================
+
+async def handle_message(update, ctx):
+    """Xử lý tin nhắn từ keyboard"""
+    text = update.message.text
+    
+    if text == "💰 Giá coin":
+        await update.message.reply_text(
+            "Chọn coin để xem giá:",
+            reply_markup=get_price_keyboard()
+        )
+    elif text == "📊 Top 10":
+        await show_top10(update)
+    elif text == "🔔 Theo dõi":
+        await update.message.reply_text("Dùng lệnh /su btc để theo dõi")
+    elif text == "📋 DS theo dõi":
+        await my(update, ctx)
+    elif text == "💼 Danh mục":
+        await portfolio(update, ctx)
+    elif text == "📈 Lợi nhuận":
+        await profit(update, ctx)
+    elif text == "➕ Mua coin":
+        await update.message.reply_text("Dùng lệnh /buy btc 0.5 40000")
+    elif text == "➖ Bán coin":
+        await update.message.reply_text("Dùng lệnh /sell btc 0.2")
+    elif text == "❓ Hướng dẫn":
+        await help(update, ctx)
+
+# ==================== HANDLE CALLBACK ====================
 
 async def handle_callback(update, ctx):
-    """Xử lý callback"""
+    """Xử lý callback từ inline keyboard"""
     query = update.callback_query
     await query.answer()
     
@@ -435,55 +591,63 @@ async def handle_callback(update, ctx):
     
     if data == "back_to_menu":
         await query.edit_message_text(
-            "🏠 *Menu chính*\nChọn chức năng bên dưới:",
+            "🏠 *Menu chính*",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=get_main_keyboard()
         )
     
-    elif data == "usdt_rate":
-        await query.edit_message_text("🔄 Đang tra cứu...")
+    elif data == "refresh_usdt":
         rate_data = get_usdt_vnd_rate()
         vnd = rate_data['vnd']
         
-        msg = (
+        text = (
             "💱 *TỶ GIÁ USDT/VND*\n"
             "━━━━━━━━━━━━━━━━\n\n"
-            f"📊 *Nguồn:* `{rate_data.get('source')}`\n"
-            f"📝 *Note:* {rate_data.get('note', '')}\n\n"
-            f"🇺🇸 *1 USDT* = `{fmt_vnd_price(vnd)}`\n"
-            f"🇻🇳 *1tr VND* = `{1000000/vnd:.4f} USDT`\n\n"
-            f"🕐 *Cập nhật:* {rate_data.get('update_time')}"
+            f"🇺🇸 *1 USDT* = `{fmt_vnd(vnd)}`\n"
+            f"🇻🇳 *1,000,000 VND* = `{1000000/vnd:.4f} USDT`\n\n"
+            f"⏱ *Thời gian:* `{rate_data['update_time']}`\n"
+            f"📊 *Nguồn:* `{rate_data['source']}`"
         )
         
-        keyboard = [[InlineKeyboardButton("🔄 Làm mới", callback_data="usdt_rate")],
-                    [InlineKeyboardButton("📊 Nguồn dữ liệu", callback_data="show_sources")],
-                    [InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]]
+        keyboard = [[InlineKeyboardButton("🔄 Làm mới", callback_data="refresh_usdt")]]
         
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    elif data.startswith("price_"):
+        symbol = data.replace("price_", "")
+        d = get_price(symbol)
+        if d:
+            msg = f"*{d['n']}* #{d['r']}\n💰 `{fmt_price(d['p'])}`\n📈 `{d['c']:.2f}%`\n📦 `{fmt_vol(d['v'])}`\n💎 `{fmt_vol(d['m'])}`"
+        else:
+            msg = f"❌ *{symbol}*: Ko có data"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]]
         await query.edit_message_text(
             msg,
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
-    
-    elif data == "show_sources":
-        await show_sources(update, ctx)
 
-async def handle_message(update, ctx):
-    """Xử lý tin nhắn từ keyboard"""
-    text = update.message.text
-    
-    if text == "🇻🇳 USDT/VND":
-        await usdt_rate_command(update, ctx)
-    elif text == "💰 Giá coin":
-        # Tạm thời
-        await update.message.reply_text("Tính năng đang phát triển...")
-    else:
-        await update.message.reply_text("Chọn chức năng từ keyboard!")
-
-def get_price(symbol):
-    """Hàm giả lập get_price cho các chức năng khác"""
-    # Tạm thời trả về None
-    return None
+def auto_update():
+    """Tự động cập nhật giá"""
+    while True:
+        time.sleep(60)
+        for uid, symbols in user_subs.items():
+            updates = []
+            for s in symbols:
+                d = get_price(s)
+                if d:
+                    price_cache[s] = d
+                    updates.append(f"• *{d['n']}*: `{fmt_price(d['p'])}` ({d['c']:.1f}%)")
+            if updates:
+                try:
+                    app.bot.send_message(uid, "🔄 *Cập nhật:*\n" + "\n".join(updates), parse_mode='Markdown')
+                except: 
+                    pass
 
 # ==================== MAIN ====================
 
@@ -492,27 +656,27 @@ if __name__ == '__main__':
         print("❌ Thiếu TELEGRAM_TOKEN")
         exit()
     
-    print("\n" + "="*50)
-    print("🚀 KHỞI ĐỘNG BOT SIÊU CẤP DỰ PHÒNG")
-    print("="*50)
-    print("\n🛡️ 8 LỚP DỰ PHÒNG CHO USDT/VND:")
-    print("1️⃣ CoinGecko")
-    print("2️⃣ Binance + ExchangeRate")
-    print("3️⃣ Coinbase")
-    print("4️⃣ CMC + ExchangeRate")
-    print("5️⃣ Bank API (mô phỏng)")
-    print("6️⃣ Last Known")
-    print("7️⃣ Dynamic Fallback")
-    print("8️⃣ Ultimate Fallback")
-    print("\n✅ ĐẢM BẢO 100% KHÔNG LỖI")
-    print("❌ Nếu lỗi, tui làm chó cho bạn đấm!")
-    print("="*50 + "\n")
+    if not CMC_API_KEY:
+        print("⚠️ Cảnh báo: Thiếu CMC_API_KEY")
+    
+    print("🚀 Khởi động bot...")
+    
+    threading.Thread(target=run_health_server, daemon=True).start()
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     # Command handlers
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("usdt", usdt_rate_command))
+    app.add_handler(CommandHandler("help", help))
+    app.add_handler(CommandHandler("usdt", usdt_command))
+    app.add_handler(CommandHandler("s", s))
+    app.add_handler(CommandHandler("su", su))
+    app.add_handler(CommandHandler("uns", uns))
+    app.add_handler(CommandHandler("my", my))
+    app.add_handler(CommandHandler("buy", buy))
+    app.add_handler(CommandHandler("sell", sell))
+    app.add_handler(CommandHandler("portfolio", portfolio))
+    app.add_handler(CommandHandler("profit", profit))
     
     # Message handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -520,8 +684,10 @@ if __name__ == '__main__':
     # Callback handler
     app.add_handler(CallbackQueryHandler(handle_callback))
     
-    print("🤖 Bot đang chạy...")
-    print("💡 Gõ /usdt hoặc bấm nút '🇻🇳 USDT/VND' để test")
-    print("="*50 + "\n")
+    # Auto update
+    threading.Thread(target=auto_update, daemon=True).start()
+    
+    print("✅ Bot đã sẵn sàng!")
+    print("📝 Gõ /usdt để xem tỷ giá USDT/VND")
     
     app.run_polling()
