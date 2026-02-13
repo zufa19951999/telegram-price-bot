@@ -76,9 +76,25 @@ class BybitWebSocket:
                     if last_price in [None, 'N/A', '']:
                         last_price = ticker_data.get('bid1Price', 'N/A')
                     
-                    volume = ticker_data.get('volume24h')
-                    if volume in [None, 'N/A', '']:
-                        volume = ticker_data.get('turnover24h', 'N/A')
+                    # Lấy volume - thử nhiều field khác nhau
+volume = ticker_data.get('volume24h')
+if volume in [None, 'N/A', '']:
+    volume = ticker_data.get('turnover24h')
+if volume in [None, 'N/A', '']:
+    volume = ticker_data.get('volume')
+if volume in [None, 'N/A', '']:
+    volume = ticker_data.get('turnover24hUsd')
+if volume in [None, 'N/A', '']:
+    volume = '0'
+    
+# Format volume nếu có số
+if volume not in [None, 'N/A', '']:
+    try:
+        vol_float = float(volume)
+        if vol_float > 0:
+            volume = str(vol_float)
+    except:
+        pass
                     
                     bid = ticker_data.get('bid1Price', 'N/A')
                     ask = ticker_data.get('ask1Price', 'N/A')
@@ -201,7 +217,12 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 price = data['last_price']
                 if price in [None, 'N/A', '']:
                     price = data['bid_price']
-                
+                # Xử lý bid/ask
+                bid = data['bid_price'] if data['bid_price'] not in [None, 'N/A', ''] else '?'
+                ask = data['ask_price'] if data['ask_price'] not in [None, 'N/A', ''] else '?'
+
+                # Xử lý volume
+                vol_display = format_volume(data['volume']) if data['volume'] not in [None, 'N/A', ''] else 'N/A'
                 msg = f"📊 *{formatted_symbol}*\n💰 *Giá:* `{format_price(price)}`\n💵 *Bid/Ask:* `{format_price(data['bid_price'])}` / `{format_price(data['ask_price'])}`\n📦 *Volume:* `{format_volume(data['volume'])}`\n🕐 `{data['timestamp']}`"
                 responses.append(msg)
                 break
