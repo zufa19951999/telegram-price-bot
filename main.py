@@ -17,6 +17,20 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CMC_API_KEY = os.getenv('CMC_API_KEY')
 CMC_API_URL = "https://pro-api.coinmarketcap.com/v1"
 
+# ==================== CẤU HÌNH DATABASE TRÊN RENDER DISK ====================
+
+# Đường dẫn lưu database - Render Disk được mount tại /data
+DATA_DIR = '/data' if os.path.exists('/data') else os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(DATA_DIR, 'crypto_bot.db')
+BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
+
+# Tạo thư mục nếu chưa có
+os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(BACKUP_DIR, exist_ok=True)
+
+print(f"📁 Dữ liệu sẽ được lưu tại: {DB_PATH}")
+print(f"💾 Backup sẽ được lưu tại: {BACKUP_DIR}")
+
 # Cache
 price_cache = {}
 usdt_cache = {'rate': None, 'time': None}
@@ -25,7 +39,7 @@ usdt_cache = {'rate': None, 'time': None}
 
 def init_database():
     """Khởi tạo database và các bảng"""
-    conn = sqlite3.connect('crypto_bot.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
     # Bảng theo dõi coin
@@ -45,13 +59,46 @@ def init_database():
     
     conn.commit()
     conn.close()
-    print("✅ Database initialized")
+    print(f"✅ Database initialized at {DB_PATH}")
+
+def backup_database():
+    """Tự động backup database"""
+    try:
+        if os.path.exists(DB_PATH):
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_path = os.path.join(BACKUP_DIR, f'backup_{timestamp}.db')
+            
+            # Copy file
+            import shutil
+            shutil.copy2(DB_PATH, backup_path)
+            print(f"✅ Đã backup: {backup_path}")
+            
+            # Xóa backup cũ hơn 7 ngày
+            clean_old_backups()
+    except Exception as e:
+        print(f"❌ Lỗi backup: {e}")
+
+def clean_old_backups(days=7):
+    """Xóa backup cũ"""
+    now = time.time()
+    for f in os.listdir(BACKUP_DIR):
+        if f.startswith('backup_') and f.endswith('.db'):
+            filepath = os.path.join(BACKUP_DIR, f)
+            if os.path.getmtime(filepath) < now - days * 86400:
+                os.remove(filepath)
+                print(f"🗑 Đã xóa backup cũ: {f}")
+
+def schedule_backup():
+    """Chạy backup mỗi ngày"""
+    while True:
+        backup_database()
+        time.sleep(86400)  # 24 giờ
 
 # ==================== DATABASE FUNCTIONS ====================
 
 def add_subscription(user_id, symbol):
     """Thêm theo dõi"""
-    conn = sqlite3.connect('crypto_bot.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
         c.execute("INSERT INTO subscriptions (user_id, symbol) VALUES (?, ?)",
@@ -65,7 +112,7 @@ def add_subscription(user_id, symbol):
 
 def remove_subscription(user_id, symbol):
     """Xóa theo dõi"""
-    conn = sqlite3.connect('crypto_bot.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("DELETE FROM subscriptions WHERE user_id = ? AND symbol = ?",
               (user_id, symbol))
@@ -74,7 +121,7 @@ def remove_subscription(user_id, symbol):
 
 def get_subscriptions(user_id):
     """Lấy danh sách theo dõi"""
-    conn = sqlite3.connect('crypto_bot.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT symbol FROM subscriptions WHERE user_id = ? ORDER BY symbol",
               (user_id,))
@@ -84,7 +131,7 @@ def get_subscriptions(user_id):
 
 def add_transaction(user_id, symbol, amount, buy_price):
     """Thêm giao dịch mua"""
-    conn = sqlite3.connect('crypto_bot.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     buy_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     total_cost = amount * buy_price
@@ -98,7 +145,7 @@ def add_transaction(user_id, symbol, amount, buy_price):
 
 def get_portfolio(user_id):
     """Lấy toàn bộ danh mục"""
-    conn = sqlite3.connect('crypto_bot.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''SELECT symbol, amount, buy_price, buy_date, total_cost 
                  FROM portfolio WHERE user_id = ? ORDER BY buy_date''',
@@ -109,14 +156,11 @@ def get_portfolio(user_id):
 
 def delete_sold_transactions(user_id, kept_transactions):
     """Xóa các giao dịch đã bán và cập nhật lại"""
-    # kept_transactions là list các transaction ID còn lại
-    conn = sqlite3.connect('crypto_bot.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Xóa tất cả transactions của user
     c.execute("DELETE FROM portfolio WHERE user_id = ?", (user_id,))
     
-    # Thêm lại các transaction còn lại
     for tx in kept_transactions:
         c.execute('''INSERT INTO portfolio 
                      (user_id, symbol, amount, buy_price, buy_date, total_cost)
@@ -297,7 +341,7 @@ async def start(update, ctx):
         "• Xem tỷ giá USDT/VND\n"
         "• Top 10 coin\n"
         "• Theo dõi biến động giá\n"
-        "• Quản lý danh mục đầu tư (lưu vĩnh viễn)\n"
+        "• Quản lý danh mục đầu tư (lưu vĩnh viễn trên Render Disk)\n"
         "• Tính lợi nhuận\n\n"
         "👇 *Bấm ĐẦU TƯ COIN để bắt đầu*"
     )
@@ -322,7 +366,7 @@ async def help(update, ctx):
         "• Lợi nhuận - Chi tiết lợi nhuận\n"
         "• Mua coin - Thêm giao dịch mua\n"
         "• Bán coin - Bán coin\n\n"
-        "*Lưu ý:* Dữ liệu được lưu vĩnh viễn"
+        "*Lưu ý:* Dữ liệu được lưu vĩnh viễn trên Render Disk"
     )
     await update.message.reply_text(help_msg, parse_mode=ParseMode.MARKDOWN)
 
@@ -470,12 +514,10 @@ async def sell(update, ctx):
     except:
         return await update.message.reply_text("❌ Số lượng không hợp lệ!")
     
-    # Lấy portfolio từ database
     portfolio_data = get_portfolio(uid)
     if not portfolio_data:
         return await update.message.reply_text("📭 Danh mục trống!")
     
-    # Chuyển về format cũ
     portfolio = []
     for row in portfolio_data:
         portfolio.append({
@@ -516,7 +558,6 @@ async def sell(update, ctx):
         else:
             new_portfolio.append(tx)
     
-    # Cập nhật database
     delete_sold_transactions(uid, new_portfolio)
     
     profit = sold_value - sold_cost
@@ -854,8 +895,7 @@ def auto_update():
     while True:
         time.sleep(60)
         
-        # Lấy tất cả user có theo dõi
-        conn = sqlite3.connect('crypto_bot.db')
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("SELECT DISTINCT user_id FROM subscriptions")
         users = c.fetchall()
@@ -888,9 +928,15 @@ if __name__ == '__main__':
     # Khởi tạo database
     init_database()
     
+    # Thông báo
     print("🚀 Khởi động bot ĐẦU TƯ COIN...")
-    print("✅ Database: SQLite (lưu vĩnh viễn)")
-    print("✅ Keyboard: [ĐẦU TƯ COIN] [HƯỚNG DẪN]")
+    print(f"💾 Database: {DB_PATH}")
+    print(f"📂 Backup: {BACKUP_DIR}")
+    
+    if os.path.exists('/data'):
+        print("✅ Đang sử dụng Render Disk")
+    else:
+        print("⚠️ Đang chạy local (không dùng Render Disk)")
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
@@ -914,8 +960,10 @@ if __name__ == '__main__':
     # Auto update
     threading.Thread(target=auto_update, daemon=True).start()
     
+    # Backup hàng ngày
+    threading.Thread(target=schedule_backup, daemon=True).start()
+    
     print("✅ Bot đã sẵn sàng!")
     print("💰 Bấm 'ĐẦU TƯ COIN' để xem menu đầy đủ")
-    print("💾 Dữ liệu được lưu trong file crypto_bot.db")
     
     app.run_polling()
