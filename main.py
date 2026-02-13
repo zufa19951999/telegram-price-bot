@@ -6,8 +6,9 @@ import json
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
-from telegram.ext import Application, CommandHandler, ContextTypes
-from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram.constants import ParseMode
 
 load_dotenv()
 
@@ -17,7 +18,7 @@ CMC_API_URL = "https://pro-api.coinmarketcap.com/v1"
 
 price_cache = {}
 user_subs = {}
-user_portfolios = {}  # Lưu danh mục đầu tư của user
+user_portfolios = {}
 
 # Health check server
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -61,31 +62,340 @@ def fmt_vol(v):
         return f"${v/1e9:.2f}B" if v > 1e9 else f"${v/1e6:.2f}M" if v > 1e6 else f"${v/1e3:.2f}K" if v > 1e3 else f"${v:,.2f}"
     except: return str(v)
 
-def fmt_percent(value):
-    try:
-        value = float(value)
-        emoji = "📈" if value > 0 else "📉" if value < 0 else "➡️"
-        return f"{emoji} {value:+.2f}%"
-    except:
-        return str(value)
+# ==================== KEYBOARD FUNCTIONS ====================
+
+def get_main_keyboard():
+    """Tạo main keyboard"""
+    keyboard = [
+        [KeyboardButton("💰 Giá coin"), KeyboardButton("📊 Top 10")],
+        [KeyboardButton("🔔 Theo dõi"), KeyboardButton("📋 DS theo dõi")],
+        [KeyboardButton("💼 Danh mục"), KeyboardButton("📈 Lợi nhuận")],
+        [KeyboardButton("➕ Mua coin"), KeyboardButton("➖ Bán coin")],
+        [KeyboardButton("❓ Hướng dẫn")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_price_keyboard():
+    """Keyboard cho xem giá"""
+    keyboard = [
+        [InlineKeyboardButton("₿ BTC", callback_data="price_BTC"),
+         InlineKeyboardButton("Ξ ETH", callback_data="price_ETH"),
+         InlineKeyboardButton("✴️ BNB", callback_data="price_BNB")],
+        [InlineKeyboardButton("◎ SOL", callback_data="price_SOL"),
+         InlineKeyboardButton("❌ XRP", callback_data="price_XRP"),
+         InlineKeyboardButton("💎 ADA", callback_data="price_ADA")],
+        [InlineKeyboardButton("🐕 DOGE", callback_data="price_DOGE"),
+         InlineKeyboardButton("⚡ DOT", callback_data="price_DOT"),
+         InlineKeyboardButton("🔷 MATIC", callback_data="price_MATIC")],
+        [InlineKeyboardButton("🏠 Về menu", callback_data="back_to_menu")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_subscribe_keyboard():
+    """Keyboard cho theo dõi"""
+    keyboard = [
+        [InlineKeyboardButton("➕ Theo BTC", callback_data="sub_BTC"),
+         InlineKeyboardButton("➕ Theo ETH", callback_data="sub_ETH")],
+        [InlineKeyboardButton("➕ Theo BNB", callback_data="sub_BNB"),
+         InlineKeyboardButton("➕ Theo SOL", callback_data="sub_SOL")],
+        [InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_portfolio_keyboard():
+    """Keyboard cho danh mục"""
+    keyboard = [
+        [InlineKeyboardButton("📊 Xem danh mục", callback_data="view_portfolio"),
+         InlineKeyboardButton("📈 Chi tiết LN", callback_data="view_profit")],
+        [InlineKeyboardButton("➕ Thêm coin", callback_data="add_coin"),
+         InlineKeyboardButton("➖ Bán coin", callback_data="sell_coin")],
+        [InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_coin_list_keyboard(action, coins):
+    """Tạo keyboard danh sách coin động"""
+    keyboard = []
+    row = []
+    for i, coin in enumerate(coins):
+        btn = InlineKeyboardButton(coin, callback_data=f"{action}_{coin}")
+        row.append(btn)
+        if (i + 1) % 3 == 0:  # 3 nút mỗi hàng
+            keyboard.append(row)
+            row = []
+    if row:  # Thêm hàng cuối nếu còn
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")])
+    return InlineKeyboardMarkup(keyboard)
+
+# ==================== COMMAND HANDLERS ====================
 
 async def start(update, ctx):
-    await update.message.reply_text(
-        "🚀 *Crypto Bot*\n\n"
-        "📊 *Giá cả:*\n"
-        "💰 /s btc - Giá BTC\n"
-        "🔔 /su btc - Theo dõi giá\n"
-        "❌ /uns btc - Hủy theo dõi\n"
-        "📋 /my - DS theo dõi\n\n"
-        "💼 *Đầu tư:*\n"
-        "➕ /buy btc 0.5 40000 - Mua 0.5 BTC giá $40,000\n"
-        "➖ /sell btc 0.2 - Bán 0.2 BTC\n"
-        "📊 /portfolio - Xem tổng danh mục\n"
-        "📝 /add btc 0.5 - Thêm coin vào danh mục (không cần giá)\n"
-        "📈 /profit - Xem lợi nhuận chi tiết\n\n"
-        "ℹ️ /help - HD chi tiết",
-        parse_mode='Markdown'
+    """Start command với keyboard"""
+    welcome_msg = (
+        "🚀 *Chào mừng bạn đến với Crypto Bot!*\n\n"
+        "🤖 Bot hỗ trợ:\n"
+        "• Xem giá coin real-time\n"
+        "• Theo dõi biến động giá\n"
+        "• Quản lý danh mục đầu tư\n"
+        "• Tính lợi nhuận đầu tư\n\n"
+        "👇 *Sử dụng keyboard bên dưới để thao tác*"
     )
+    await update.message.reply_text(
+        welcome_msg,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=get_main_keyboard()
+    )
+
+async def help(update, ctx):
+    """Help command"""
+    help_msg = (
+        "📘 *HƯỚNG DẪN SỬ DỤNG*\n\n"
+        "*🔹 Các nút chức năng:*\n"
+        "💰 *Giá coin* - Xem giá các coin phổ biến\n"
+        "📊 *Top 10* - Top 10 coin theo vốn hóa\n"
+        "🔔 *Theo dõi* - Theo dõi biến động giá\n"
+        "📋 *DS theo dõi* - Danh sách coin đang theo\n"
+        "💼 *Danh mục* - Quản lý danh mục đầu tư\n"
+        "📈 *Lợi nhuận* - Xem chi tiết lợi nhuận\n"
+        "➕ *Mua coin* - Thêm giao dịch mua\n"
+        "➖ *Bán coin* - Bán coin trong danh mục\n\n"
+        
+        "*🔸 Hoặc dùng lệnh:*\n"
+        "/s btc - Xem giá BTC\n"
+        "/su btc - Theo dõi BTC\n"
+        "/portfolio - Xem danh mục\n"
+        "/buy btc 0.5 40000 - Mua BTC"
+    )
+    await update.message.reply_text(help_msg, parse_mode=ParseMode.MARKDOWN)
+
+async def handle_message(update, ctx):
+    """Xử lý tin nhắn từ keyboard"""
+    text = update.message.text
+    user_id = update.effective_user.id
+    
+    if text == "💰 Giá coin":
+        await update.message.reply_text(
+            "Chọn coin để xem giá:",
+            reply_markup=get_price_keyboard()
+        )
+    
+    elif text == "📊 Top 10":
+        await show_top10(update)
+    
+    elif text == "🔔 Theo dõi":
+        await update.message.reply_text(
+            "Chọn coin để theo dõi:",
+            reply_markup=get_subscribe_keyboard()
+        )
+    
+    elif text == "📋 DS theo dõi":
+        await my(update, ctx)
+    
+    elif text == "💼 Danh mục":
+        await update.message.reply_text(
+            "Quản lý danh mục đầu tư:",
+            reply_markup=get_portfolio_keyboard()
+        )
+    
+    elif text == "📈 Lợi nhuận":
+        await profit_detail(update, ctx)
+    
+    elif text == "➕ Mua coin":
+        await update.message.reply_text(
+            "📝 *Hướng dẫn mua coin:*\n"
+            "Gõ lệnh: /buy <symbol> <số lượng> <giá>\n"
+            "VD: /buy btc 0.5 40000\n\n"
+            "Hoặc chọn coin nhanh bên dưới:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=get_coin_list_keyboard("quick_buy", ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA"])
+        )
+    
+    elif text == "➖ Bán coin":
+        if user_id in user_portfolios and user_portfolios[user_id]:
+            coins = list(set([tx['symbol'] for tx in user_portfolios[user_id]]))
+            await update.message.reply_text(
+                "Chọn coin muốn bán:",
+                reply_markup=get_coin_list_keyboard("quick_sell", coins[:9])  # Tối đa 9 coin
+            )
+        else:
+            await update.message.reply_text("📭 Bạn chưa có coin nào trong danh mục!")
+    
+    elif text == "❓ Hướng dẫn":
+        await help(update, ctx)
+
+async def handle_callback(update, ctx):
+    """Xử lý callback từ inline keyboard"""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    
+    if data == "back_to_menu":
+        await query.edit_message_text(
+            "🏠 *Menu chính*\nChọn chức năng bên dưới:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=get_main_keyboard()
+        )
+    
+    elif data.startswith("price_"):
+        symbol = data.replace("price_", "")
+        await show_price(query, symbol)
+    
+    elif data.startswith("sub_"):
+        symbol = data.replace("sub_", "")
+        await do_subscribe(query, symbol)
+    
+    elif data == "view_portfolio":
+        await show_portfolio(query)
+    
+    elif data == "view_profit":
+        await show_profit_detail(query)
+    
+    elif data.startswith("quick_buy_"):
+        symbol = data.replace("quick_buy_", "")
+        await query.edit_message_text(
+            f"📝 *Mua {symbol}*\n"
+            f"Gõ lệnh: /buy {symbol} <số lượng> <giá>\n"
+            f"VD: /buy {symbol} 0.5 40000",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    
+    elif data.startswith("quick_sell_"):
+        symbol = data.replace("quick_sell_", "")
+        await query.edit_message_text(
+            f"📝 *Bán {symbol}*\n"
+            f"Gõ lệnh: /sell {symbol} <số lượng>\n"
+            f"VD: /sell {symbol} 0.2",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+async def show_price(query, symbol):
+    """Hiển thị giá coin"""
+    data = get_price(symbol)
+    if data:
+        msg = (
+            f"*{data['n']}* #{data['r']}\n"
+            f"💰 Giá: `{fmt_price(data['p'])}`\n"
+            f"📈 24h: `{data['c']:.2f}%`\n"
+            f"📦 Volume: `{fmt_vol(data['v'])}`\n"
+            f"💎 Market Cap: `{fmt_vol(data['m'])}`"
+        )
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]]
+    else:
+        msg = f"❌ Không có dữ liệu cho {symbol}"
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]]
+    
+    await query.edit_message_text(
+        msg,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def do_subscribe(query, symbol):
+    """Theo dõi coin"""
+    user_id = query.from_user.id
+    
+    if user_id not in user_subs:
+        user_subs[user_id] = []
+    
+    if symbol not in user_subs[user_id]:
+        user_subs[user_id].append(symbol)
+        msg = f"✅ Đã theo dõi *{symbol}*"
+    else:
+        msg = f"ℹ️ Bạn đang theo dõi *{symbol}* rồi"
+    
+    keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]]
+    await query.edit_message_text(
+        msg,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def show_top10(update):
+    """Hiển thị top 10 coin"""
+    try:
+        res = requests.get(
+            f"{CMC_API_URL}/cryptocurrency/listings/latest",
+            headers={'X-CMC_PRO_API_KEY': CMC_API_KEY},
+            params={'limit': 10, 'convert': 'USD'}
+        )
+        
+        if res.status_code == 200:
+            data = res.json()['data']
+            msg = "📊 *TOP 10 COIN*\n━━━━━━━━━━━━\n\n"
+            
+            for i, coin in enumerate(data, 1):
+                quote = coin['quote']['USD']
+                msg += (
+                    f"{i}. *{coin['symbol']}* - {coin['name']}\n"
+                    f"   💰 {fmt_price(quote['price'])}\n"
+                    f"   📈 {quote['percent_change_24h']:+.2f}%\n"
+                )
+            
+            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await update.message.reply_text("❌ Không thể lấy dữ liệu top 10")
+    except:
+        await update.message.reply_text("❌ Lỗi khi lấy dữ liệu")
+
+async def show_portfolio(query):
+    """Hiển thị danh mục"""
+    user_id = query.from_user.id
+    
+    if user_id not in user_portfolios or not user_portfolios[user_id]:
+        await query.edit_message_text("📭 Danh mục trống!")
+        return
+    
+    # Tính toán danh mục
+    portfolio_summary = {}
+    total_investment = 0
+    total_current_value = 0
+    
+    for tx in user_portfolios[user_id]:
+        symbol = tx['symbol']
+        if symbol not in portfolio_summary:
+            portfolio_summary[symbol] = {
+                'amount': 0,
+                'cost': 0
+            }
+        portfolio_summary[symbol]['amount'] += tx['amount']
+        portfolio_summary[symbol]['cost'] += tx['total_cost']
+    
+    msg = "📊 *DANH MỤC*\n━━━━━━━━━━━━\n\n"
+    
+    for symbol, data in portfolio_summary.items():
+        price_data = get_price(symbol)
+        if price_data:
+            current_value = data['amount'] * price_data['p']
+            profit = current_value - data['cost']
+            profit_percent = (profit / data['cost']) * 100
+            
+            total_investment += data['cost']
+            total_current_value += current_value
+            
+            msg += f"*{symbol}*\n"
+            msg += f"📊 SL: `{data['amount']:.4f}`\n"
+            msg += f"💰 TB: `{fmt_price(data['cost']/data['amount'])}`\n"
+            msg += f"💎 TT: `{fmt_price(current_value)}`\n"
+            msg += f"{'✅' if profit>=0 else '❌'} LN: `{fmt_price(profit)}` ({profit_percent:+.2f}%)\n\n"
+    
+    total_profit = total_current_value - total_investment
+    total_profit_percent = (total_profit / total_investment) * 100
+    
+    msg += "━━━━━━━━━━━━\n"
+    msg += f"💵 Vốn: `{fmt_price(total_investment)}`\n"
+    msg += f"💰 GT: `{fmt_price(total_current_value)}`\n"
+    msg += f"{'✅' if total_profit>=0 else '❌'} Tổng LN: `{fmt_price(total_profit)}` ({total_profit_percent:+.2f}%)"
+    
+    keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]]
+    await query.edit_message_text(
+        msg,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+# ==================== EXISTING FUNCTIONS ====================
 
 async def s(update, ctx):
     if not ctx.args:
@@ -136,74 +446,25 @@ async def my(update, ctx):
     else:
         await update.message.reply_text("📭 Chưa theo dõi coin nào!")
 
-async def add_to_portfolio(update, ctx):
-    """Thêm coin vào danh mục mà không cần giá mua"""
-    uid = update.effective_user.id
-    if len(ctx.args) < 2:
-        return await update.message.reply_text(
-            "❌ Cú pháp: /add <symbol> <số lượng>\n"
-            "VD: /add btc 0.5"
-        )
-    
-    symbol = ctx.args[0].upper()
-    try:
-        amount = float(ctx.args[1])
-    except:
-        return await update.message.reply_text("❌ Số lượng không hợp lệ!")
-    
-    # Kiểm tra coin có tồn tại không
-    price_data = get_price(symbol)
-    if not price_data:
-        return await update.message.reply_text(f"❌ Coin *{symbol}* không tồn tại!", parse_mode='Markdown')
-    
-    # Khởi tạo portfolio cho user nếu chưa có
-    if uid not in user_portfolios:
-        user_portfolios[uid] = []
-    
-    # Thêm coin vào danh mục
-    current_price = price_data['p']
-    user_portfolios[uid].append({
-        'symbol': symbol,
-        'amount': amount,
-        'buy_price': current_price,  # Lưu giá hiện tại làm giá mua
-        'buy_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        'total_cost': amount * current_price
-    })
-    
-    msg = (
-        f"✅ Đã thêm *{symbol}* vào danh mục\n"
-        f"📊 Số lượng: `{amount}`\n"
-        f"💰 Giá hiện tại: `{fmt_price(current_price)}`\n"
-        f"💵 Tổng giá trị: `{fmt_price(amount * current_price)}`"
-    )
-    await update.message.reply_text(msg, parse_mode='Markdown')
-
 async def buy(update, ctx):
-    """Mua coin (thêm vào danh mục với giá mua cụ thể)"""
     uid = update.effective_user.id
     if len(ctx.args) < 3:
-        return await update.message.reply_text(
-            "❌ Cú pháp: /buy <symbol> <số lượng> <giá mua>\n"
-            "VD: /buy btc 0.5 40000"
-        )
+        return await update.message.reply_text("❌ /buy btc 0.5 40000")
     
     symbol = ctx.args[0].upper()
     try:
         amount = float(ctx.args[1])
         buy_price = float(ctx.args[2])
     except:
-        return await update.message.reply_text("❌ Số lượng hoặc giá không hợp lệ!")
+        return await update.message.reply_text("❌ Số lượng/giá không hợp lệ!")
     
-    # Kiểm tra coin có tồn tại không
     price_data = get_price(symbol)
     if not price_data:
         return await update.message.reply_text(f"❌ Coin *{symbol}* không tồn tại!", parse_mode='Markdown')
     
-    # Khởi tạo portfolio cho user nếu chưa có
     if uid not in user_portfolios:
         user_portfolios[uid] = []
     
-    # Thêm giao dịch mua vào danh mục
     user_portfolios[uid].append({
         'symbol': symbol,
         'amount': amount,
@@ -218,22 +479,18 @@ async def buy(update, ctx):
     
     msg = (
         f"✅ Đã mua *{symbol}*\n"
-        f"📊 Số lượng: `{amount}`\n"
+        f"📊 SL: `{amount}`\n"
         f"💰 Giá mua: `{fmt_price(buy_price)}`\n"
-        f"💵 Tổng vốn: `{fmt_price(amount * buy_price)}`\n"
-        f"📈 Giá hiện tại: `{fmt_price(current_price)}`\n"
-        f"📊 Lợi nhuận: `{fmt_price(profit_loss)}` ({profit_loss_percent:+.2f}%)"
+        f"💵 Vốn: `{fmt_price(amount * buy_price)}`\n"
+        f"📈 Giá hiện: `{fmt_price(current_price)}`\n"
+        f"📊 LN: `{fmt_price(profit_loss)}` ({profit_loss_percent:+.2f}%)"
     )
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def sell(update, ctx):
-    """Bán coin (xóa khỏi danh mục)"""
     uid = update.effective_user.id
     if len(ctx.args) < 2:
-        return await update.message.reply_text(
-            "❌ Cú pháp: /sell <symbol> <số lượng>\n"
-            "VD: /sell btc 0.2"
-        )
+        return await update.message.reply_text("❌ /sell btc 0.2")
     
     symbol = ctx.args[0].upper()
     try:
@@ -242,45 +499,35 @@ async def sell(update, ctx):
         return await update.message.reply_text("❌ Số lượng không hợp lệ!")
     
     if uid not in user_portfolios or not user_portfolios[uid]:
-        return await update.message.reply_text("📭 Danh mục của bạn đang trống!")
+        return await update.message.reply_text("📭 Danh mục trống!")
     
-    # Lọc các giao dịch của coin cần bán
+    # Xử lý bán (FIFO)
     symbol_txs = [tx for tx in user_portfolios[uid] if tx['symbol'] == symbol]
     if not symbol_txs:
-        return await update.message.reply_text(f"❌ Bạn không có *{symbol}* trong danh mục!", parse_mode='Markdown')
+        return await update.message.reply_text(f"❌ Không có *{symbol}*", parse_mode='Markdown')
     
-    # Tính tổng số lượng coin đang có
     total_amount = sum(tx['amount'] for tx in symbol_txs)
     if sell_amount > total_amount:
-        return await update.message.reply_text(
-            f"❌ Bạn chỉ có {total_amount} {symbol}, không thể bán {sell_amount}!",
-            parse_mode='Markdown'
-        )
+        return await update.message.reply_text(f"❌ Chỉ có {total_amount} {symbol}")
     
-    # Bán theo FIFO (First In First Out)
+    # Bán FIFO
     remaining_sell = sell_amount
-    sold_txs = []
     new_portfolio = []
+    sold_value = 0
+    sold_cost = 0
     
     for tx in user_portfolios[uid]:
         if tx['symbol'] == symbol and remaining_sell > 0:
             if tx['amount'] <= remaining_sell:
-                # Bán toàn bộ giao dịch này
-                sold_txs.append({
-                    'amount': tx['amount'],
-                    'buy_price': tx['buy_price'],
-                    'buy_date': tx['buy_date']
-                })
+                sold_cost += tx['total_cost']
+                sold_value += tx['amount'] * get_price(symbol)['p']
                 remaining_sell -= tx['amount']
             else:
-                # Bán một phần
-                sold_txs.append({
-                    'amount': remaining_sell,
-                    'buy_price': tx['buy_price'],
-                    'buy_date': tx['buy_date']
-                })
-                # Giữ lại phần còn lại
-                tx['amount'] -= remaining_sell
+                sell_part = remaining_sell
+                sold_cost += sell_part * tx['buy_price']
+                sold_value += sell_part * get_price(symbol)['p']
+                tx['amount'] -= sell_part
+                tx['total_cost'] = tx['amount'] * tx['buy_price']
                 new_portfolio.append(tx)
                 remaining_sell = 0
         else:
@@ -288,34 +535,23 @@ async def sell(update, ctx):
     
     user_portfolios[uid] = new_portfolio
     
-    # Tính toán kết quả bán
-    current_price = get_price(symbol)['p']
-    total_sold_amount = sum(tx['amount'] for tx in sold_txs)
-    total_cost = sum(tx['amount'] * tx['buy_price'] for tx in sold_txs)
-    total_revenue = total_sold_amount * current_price
-    profit_loss = total_revenue - total_cost
-    profit_loss_percent = (profit_loss / total_cost) * 100 if total_cost > 0 else 0
+    profit = sold_value - sold_cost
+    profit_percent = (profit / sold_cost) * 100
     
     msg = (
-        f"✅ Đã bán *{sell_amount} {symbol}*\n"
-        f"💰 Giá bán: `{fmt_price(current_price)}`\n"
-        f"💵 Giá trị bán: `{fmt_price(total_revenue)}`\n"
-        f"📊 Vốn gốc: `{fmt_price(total_cost)}`\n"
-        f"📈 Lợi nhuận: `{fmt_price(profit_loss)}` ({profit_loss_percent:+.2f}%)"
+        f"✅ Đã bán {sell_amount} {symbol}\n"
+        f"💰 Giá trị: `{fmt_price(sold_value)}`\n"
+        f"📊 Vốn: `{fmt_price(sold_cost)}`\n"
+        f"{'✅' if profit>=0 else '❌'} LN: `{fmt_price(profit)}` ({profit_percent:+.2f}%)"
     )
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def portfolio(update, ctx):
-    """Xem tổng danh mục đầu tư"""
     uid = update.effective_user.id
-    
     if uid not in user_portfolios or not user_portfolios[uid]:
-        return await update.message.reply_text(
-            "📭 Danh mục của bạn đang trống!\n"
-            "Thêm coin: /add btc 0.5 hoặc /buy btc 0.5 40000"
-        )
+        return await update.message.reply_text("📭 Danh mục trống!")
     
-    # Nhóm các giao dịch theo coin
+    # Tính toán danh mục
     portfolio_summary = {}
     total_investment = 0
     total_current_value = 0
@@ -324,62 +560,46 @@ async def portfolio(update, ctx):
         symbol = tx['symbol']
         if symbol not in portfolio_summary:
             portfolio_summary[symbol] = {
-                'total_amount': 0,
-                'total_cost': 0,
-                'tx_count': 0
+                'amount': 0,
+                'cost': 0
             }
-        
-        portfolio_summary[symbol]['total_amount'] += tx['amount']
-        portfolio_summary[symbol]['total_cost'] += tx['total_cost']
-        portfolio_summary[symbol]['tx_count'] += 1
+        portfolio_summary[symbol]['amount'] += tx['amount']
+        portfolio_summary[symbol]['cost'] += tx['total_cost']
     
-    # Tính giá trị hiện tại và lợi nhuận
-    msg = "📊 *DANH MỤC ĐẦU TƯ*\n"
-    msg += "━━━━━━━━━━━━━━━━\n\n"
+    msg = "📊 *DANH MỤC*\n━━━━━━━━━━━━\n\n"
     
     for symbol, data in portfolio_summary.items():
         price_data = get_price(symbol)
         if price_data:
-            current_price = price_data['p']
-            current_value = data['total_amount'] * current_price
-            profit_loss = current_value - data['total_cost']
-            profit_loss_percent = (profit_loss / data['total_cost']) * 100 if data['total_cost'] > 0 else 0
+            current_value = data['amount'] * price_data['p']
+            profit = current_value - data['cost']
+            profit_percent = (profit / data['cost']) * 100
             
-            total_investment += data['total_cost']
+            total_investment += data['cost']
             total_current_value += current_value
             
-            # Emoji cho lợi nhuận
-            profit_emoji = "✅" if profit_loss >= 0 else "❌"
-            
-            msg += f"*{symbol}* {price_data['n']}\n"
-            msg += f"📊 SL: `{data['total_amount']:.4f}`\n"
-            msg += f"💰 TB giá: `{fmt_price(data['total_cost'] / data['total_amount'])}`\n"
-            msg += f"💵 Hiện tại: `{fmt_price(current_price)}`\n"
-            msg += f"💎 Giá trị: `{fmt_price(current_value)}`\n"
-            msg += f"{profit_emoji} LN: `{fmt_price(profit_loss)}` ({profit_loss_percent:+.2f}%)\n"
-            msg += f"📝 {data['tx_count']} GD\n\n"
+            msg += f"*{symbol}*\n"
+            msg += f"📊 SL: `{data['amount']:.4f}`\n"
+            msg += f"💰 TB: `{fmt_price(data['cost']/data['amount'])}`\n"
+            msg += f"💎 TT: `{fmt_price(current_value)}`\n"
+            msg += f"{'✅' if profit>=0 else '❌'} LN: `{fmt_price(profit)}` ({profit_percent:+.2f}%)\n\n"
     
-    # Tổng kết
-    total_profit_loss = total_current_value - total_investment
-    total_profit_loss_percent = (total_profit_loss / total_investment) * 100 if total_investment > 0 else 0
-    total_emoji = "✅" if total_profit_loss >= 0 else "❌"
+    total_profit = total_current_value - total_investment
+    total_profit_percent = (total_profit / total_investment) * 100
     
-    msg += "━━━━━━━━━━━━━━━━\n"
-    msg += f"💵 *Tổng vốn:* `{fmt_price(total_investment)}`\n"
-    msg += f"💰 *Tổng giá trị:* `{fmt_price(total_current_value)}`\n"
-    msg += f"{total_emoji} *Tổng LN:* `{fmt_price(total_profit_loss)}` ({total_profit_loss_percent:+.2f}%)\n"
+    msg += "━━━━━━━━━━━━\n"
+    msg += f"💵 Vốn: `{fmt_price(total_investment)}`\n"
+    msg += f"💰 GT: `{fmt_price(total_current_value)}`\n"
+    msg += f"{'✅' if total_profit>=0 else '❌'} Tổng LN: `{fmt_price(total_profit)}` ({total_profit_percent:+.2f}%)"
     
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def profit_detail(update, ctx):
-    """Xem chi tiết lợi nhuận từng giao dịch"""
     uid = update.effective_user.id
-    
     if uid not in user_portfolios or not user_portfolios[uid]:
-        return await update.message.reply_text("📭 Danh mục của bạn đang trống!")
+        return await update.message.reply_text("📭 Danh mục trống!")
     
-    msg = "📈 *CHI TIẾT LỢI NHUẬN*\n"
-    msg += "━━━━━━━━━━━━━━━━\n\n"
+    msg = "📈 *CHI TIẾT LỢI NHUẬN*\n━━━━━━━━━━━━\n\n"
     
     total_investment = 0
     total_current_value = 0
@@ -389,62 +609,29 @@ async def profit_detail(update, ctx):
         price_data = get_price(symbol)
         
         if price_data:
-            current_price = price_data['p']
-            current_value = tx['amount'] * current_price
-            profit_loss = current_value - tx['total_cost']
-            profit_loss_percent = (profit_loss / tx['total_cost']) * 100
+            current_value = tx['amount'] * price_data['p']
+            profit = current_value - tx['total_cost']
+            profit_percent = (profit / tx['total_cost']) * 100
             
             total_investment += tx['total_cost']
             total_current_value += current_value
             
-            profit_emoji = "✅" if profit_loss >= 0 else "❌"
-            
             msg += f"*GD #{i}: {symbol}*\n"
-            msg += f"📅 Ngày: `{tx['buy_date']}`\n"
+            msg += f"📅 {tx['buy_date']}\n"
             msg += f"📊 SL: `{tx['amount']:.4f}`\n"
             msg += f"💰 Giá mua: `{fmt_price(tx['buy_price'])}`\n"
-            msg += f"💵 Giá hiện tại: `{fmt_price(current_price)}`\n"
             msg += f"💎 Giá trị: `{fmt_price(current_value)}`\n"
-            msg += f"{profit_emoji} LN: `{fmt_price(profit_loss)}` ({profit_loss_percent:+.2f}%)\n\n"
+            msg += f"{'✅' if profit>=0 else '❌'} LN: `{fmt_price(profit)}` ({profit_percent:+.2f}%)\n\n"
     
-    # Tổng kết
-    total_profit_loss = total_current_value - total_investment
-    total_profit_loss_percent = (total_profit_loss / total_investment) * 100
-    total_emoji = "✅" if total_profit_loss >= 0 else "❌"
+    total_profit = total_current_value - total_investment
+    total_profit_percent = (total_profit / total_investment) * 100
     
-    msg += "━━━━━━━━━━━━━━━━\n"
-    msg += f"💵 *Tổng vốn:* `{fmt_price(total_investment)}`\n"
-    msg += f"💰 *Tổng giá trị:* `{fmt_price(total_current_value)}`\n"
-    msg += f"{total_emoji} *Tổng LN:* `{fmt_price(total_profit_loss)}` ({total_profit_loss_percent:+.2f}%)\n"
+    msg += "━━━━━━━━━━━━\n"
+    msg += f"💵 Vốn: `{fmt_price(total_investment)}`\n"
+    msg += f"💰 GT: `{fmt_price(total_current_value)}`\n"
+    msg += f"{'✅' if total_profit>=0 else '❌'} Tổng LN: `{fmt_price(total_profit)}` ({total_profit_percent:+.2f}%)"
     
     await update.message.reply_text(msg, parse_mode='Markdown')
-
-async def help(update, ctx):
-    await update.message.reply_text(
-        "📘 *HƯỚNG DẪN CHI TIẾT*\n\n"
-        "🔍 *LỆNH GIÁ:*\n"
-        "/s btc eth - Xem giá nhiều coin\n"
-        "/su btc - Theo dõi giá coin\n"
-        "/uns btc - Hủy theo dõi\n"
-        "/my - Xem danh sách theo dõi\n\n"
-        
-        "💼 *QUẢN LÝ DANH MỤC:*\n"
-        "/add btc 0.5 - Thêm 0.5 BTC (giá hiện tại)\n"
-        "/buy btc 0.5 40000 - Mua 0.5 BTC giá $40k\n"
-        "/sell btc 0.2 - Bán 0.2 BTC\n"
-        "/portfolio - Xem tổng danh mục\n"
-        "/profit - Xem chi tiết lợi nhuận\n\n"
-        
-        "📊 *CÁC CHỈ SỐ:*\n"
-        "• Giá hiện tại\n"
-        "• Giá mua trung bình\n"
-        "• Tổng vốn đầu tư\n"
-        "• Lợi nhuận (tuyệt đối và %)\n"
-        "• Số lượng giao dịch\n\n"
-        
-        "Nguồn dữ liệu: CoinMarketCap",
-        parse_mode='Markdown'
-    )
 
 def auto_update():
     while True:
@@ -462,9 +649,12 @@ def auto_update():
                 except: pass
 
 if __name__ == '__main__':
-    if not TELEGRAM_TOKEN or not CMC_API_KEY:
-        print("❌ Thiếu token/api key")
+    if not TELEGRAM_TOKEN:
+        print("❌ Thiếu TELEGRAM_TOKEN")
         exit()
+    
+    if not CMC_API_KEY:
+        print("⚠️ Cảnh báo: Thiếu CMC_API_KEY, một số chức năng có thể không hoạt động")
     
     threading.Thread(target=run_health_server, daemon=True).start()
     
@@ -477,14 +667,18 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("su", su))
     app.add_handler(CommandHandler("uns", uns))
     app.add_handler(CommandHandler("my", my))
-    
-    # Portfolio commands
-    app.add_handler(CommandHandler("add", add_to_portfolio))
     app.add_handler(CommandHandler("buy", buy))
     app.add_handler(CommandHandler("sell", sell))
     app.add_handler(CommandHandler("portfolio", portfolio))
     app.add_handler(CommandHandler("profit", profit_detail))
     
+    # Message handler cho keyboard
+    from telegram.ext import MessageHandler, filters
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # Callback handler cho inline keyboard
+    app.add_handler(CallbackQueryHandler(handle_callback))
+    
     threading.Thread(target=auto_update, daemon=True).start()
-    print("🚀 Bot đang chạy với tính năng quản lý danh mục đầu tư...")
+    print("🚀 Bot đang chạy với Keyboard...")
     app.run_polling()
