@@ -49,27 +49,16 @@ app = None
 
 # ==================== HEALTH CHECK SERVER CHO RENDER ====================
 
-# ==================== HEALTH CHECK SERVER CHO RENDER ====================
-
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
-        self.send_header('Content-type', 'text/html')
+        self.send_header('Content-type', 'text/plain')
         self.end_headers()
         
-        # Tạo response đơn giản, không có Unicode
-        html = f"""
-        <html>
-            <head><title>Crypto Bot</title></head>
-            <body>
-                <h1>Crypto Investment Bot is Running!</h1>
-                <p>Database: /data/crypto_bot.db</p>
-                <p>Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-                <p>Status: Active</p>
-            </body>
-        </html>
-        """
-        self.wfile.write(html.encode('utf-8'))
+        # Response text đơn giản, không có Unicode
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        response = f"Crypto Bot Running - {current_time}"
+        self.wfile.write(response.encode('utf-8'))
     
     def log_message(self, format, *args):
         return  # Tắt log để tránh spam
