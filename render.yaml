@@ -1,9 +1,7 @@
 services:
-  - type: web
-    name: telegram-price-bot
+  - type: worker
+    name: telegram-bot
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
-    envVars:
-      - key: TELEGRAM_TOKEN
-        sync: false
+    startCommand: python bot.py
+    autoDeploy: false  # Tắt auto-deploy để tránh multiple instances
