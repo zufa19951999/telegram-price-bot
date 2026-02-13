@@ -4,12 +4,21 @@ import time
 import requests
 import json
 import sqlite3
+import logging
+import shutil
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.constants import ParseMode
+
+# Cấu hình logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -28,12 +37,43 @@ BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(BACKUP_DIR, exist_ok=True)
 
-print(f"📁 Dữ liệu sẽ được lưu tại: {DB_PATH}")
-print(f"💾 Backup sẽ được lưu tại: {BACKUP_DIR}")
+logger.info(f"📁 Dữ liệu sẽ được lưu tại: {DB_PATH}")
+logger.info(f"💾 Backup sẽ được lưu tại: {BACKUP_DIR}")
 
 # Cache
 price_cache = {}
 usdt_cache = {'rate': None, 'time': None}
+
+# Biến toàn cục cho bot
+app = None
+
+# ==================== HEALTH CHECK SERVER CHO RENDER ====================
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html')
+        self.end_headers()
+        self.wfile.write(b"""
+        <html>
+            <head><title>Crypto Bot</title></head>
+            <body>
+                <h1>🚀 Crypto Investment Bot is Running!</h1>
+                <p>Database: /data/crypto_bot.db</p>
+                <p>Time: {}</p>
+            </body>
+        </html>
+        """.format(datetime.now().strftime('%Y-%m-%d %H:%M:%S')).encode())
+    
+    def log_message(self, format, *args):
+        return  # Tắt log để tránh spam
+
+def run_health_server():
+    """Chạy HTTP server cho Render health check"""
+    port = int(os.environ.get('PORT', 10000))
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    logger.info(f"✅ Health server running on port {port}")
+    server.serve_forever()
 
 # ==================== DATABASE SETUP ====================
 
@@ -59,7 +99,7 @@ def init_database():
     
     conn.commit()
     conn.close()
-    print(f"✅ Database initialized at {DB_PATH}")
+    logger.info(f"✅ Database initialized at {DB_PATH}")
 
 def backup_database():
     """Tự động backup database"""
@@ -69,14 +109,13 @@ def backup_database():
             backup_path = os.path.join(BACKUP_DIR, f'backup_{timestamp}.db')
             
             # Copy file
-            import shutil
             shutil.copy2(DB_PATH, backup_path)
-            print(f"✅ Đã backup: {backup_path}")
+            logger.info(f"✅ Đã backup: {backup_path}")
             
             # Xóa backup cũ hơn 7 ngày
             clean_old_backups()
     except Exception as e:
-        print(f"❌ Lỗi backup: {e}")
+        logger.error(f"❌ Lỗi backup: {e}")
 
 def clean_old_backups(days=7):
     """Xóa backup cũ"""
@@ -86,13 +125,17 @@ def clean_old_backups(days=7):
             filepath = os.path.join(BACKUP_DIR, f)
             if os.path.getmtime(filepath) < now - days * 86400:
                 os.remove(filepath)
-                print(f"🗑 Đã xóa backup cũ: {f}")
+                logger.info(f"🗑 Đã xóa backup cũ: {f}")
 
 def schedule_backup():
     """Chạy backup mỗi ngày"""
     while True:
-        backup_database()
-        time.sleep(86400)  # 24 giờ
+        try:
+            backup_database()
+            time.sleep(86400)  # 24 giờ
+        except Exception as e:
+            logger.error(f"Lỗi trong schedule_backup: {e}")
+            time.sleep(3600)  # Thử lại sau 1 giờ nếu lỗi
 
 # ==================== DATABASE FUNCTIONS ====================
 
@@ -181,32 +224,53 @@ def get_price(symbol):
         else:
             clean = symbol.upper().replace('USDT', '').replace('USD', '')
         
-        res = requests.get(f"{CMC_API_URL}/cryptocurrency/quotes/latest", 
-                          headers={'X-CMC_PRO_API_KEY': CMC_API_KEY},
-                          params={'symbol': clean, 'convert': 'USD'}, timeout=10)
+        headers = {
+            'X-CMC_PRO_API_KEY': CMC_API_KEY,
+            'Accept': 'application/json'
+        }
+        
+        params = {
+            'symbol': clean,
+            'convert': 'USD'
+        }
+        
+        res = requests.get(
+            f"{CMC_API_URL}/cryptocurrency/quotes/latest", 
+            headers=headers,
+            params=params, 
+            timeout=10
+        )
         
         if res.status_code == 200:
-            data = res.json()['data'][clean]['quote']['USD']
+            data = res.json()
+            coin_data = data['data'][clean]
+            quote_data = coin_data['quote']['USD']
+            
             return {
-                'p': data['price'], 
-                'v': data['volume_24h'], 
-                'c': data['percent_change_24h'], 
-                'm': data['market_cap'],
-                'n': res.json()['data'][clean]['name'],
-                'r': res.json()['data'][clean].get('cmc_rank', 'N/A')
+                'p': quote_data['price'], 
+                'v': quote_data['volume_24h'], 
+                'c': quote_data['percent_change_24h'], 
+                'm': quote_data['market_cap'],
+                'n': coin_data['name'],
+                'r': coin_data.get('cmc_rank', 'N/A')
             }
+        else:
+            logger.error(f"CMC API error: {res.status_code} - {res.text}")
+            return None
+            
     except Exception as e:
-        print(f"Lỗi get_price {symbol}: {e}")
+        logger.error(f"Lỗi get_price {symbol}: {e}")
         return None
 
 # ==================== HÀM LẤY TỶ GIÁ USDT/VND ====================
 
 def get_usdt_vnd_rate():
     """Lấy tỷ giá USDT/VND từ nhiều nguồn"""
+    global usdt_cache
     
     if usdt_cache['rate'] and usdt_cache['time']:
         time_diff = (datetime.now() - usdt_cache['time']).total_seconds()
-        if time_diff < 180:
+        if time_diff < 180:  # Cache 3 phút
             return usdt_cache['rate']
     
     # Nguồn 1: CoinGecko
@@ -232,8 +296,8 @@ def get_usdt_vnd_rate():
                 usdt_cache['rate'] = result
                 usdt_cache['time'] = datetime.now()
                 return result
-    except:
-        pass
+    except Exception as e:
+        logger.warning(f"CoinGecko error: {e}")
     
     # Nguồn 2: Coinbase
     try:
@@ -251,13 +315,13 @@ def get_usdt_vnd_rate():
             usdt_cache['rate'] = result
             usdt_cache['time'] = datetime.now()
             return result
-    except:
-        pass
+    except Exception as e:
+        logger.warning(f"Coinbase error: {e}")
     
     # Fallback
     result = {
-        'source': 'Fallback',
-        'vnd': 25500,
+        'source': 'Fallback (25000)',
+        'vnd': 25000,
         'update_time': datetime.now().strftime('%H:%M:%S %d/%m/%Y')
     }
     usdt_cache['rate'] = result
@@ -299,14 +363,6 @@ def fmt_vol(v):
     except: 
         return str(v)
 
-def fmt_percent(value):
-    try:
-        value = float(value)
-        emoji = "📈" if value > 0 else "📉" if value < 0 else "➡️"
-        return f"{emoji} {value:+.2f}%"
-    except:
-        return str(value)
-
 # ==================== KEYBOARD ====================
 
 def get_main_keyboard():
@@ -333,7 +389,7 @@ def get_invest_menu_keyboard():
 
 # ==================== COMMAND HANDLERS ====================
 
-async def start(update, ctx):
+async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     welcome_msg = (
         "🚀 *ĐẦU TƯ COIN BOT*\n\n"
         "🤖 Bot hỗ trợ:\n"
@@ -351,7 +407,7 @@ async def start(update, ctx):
         reply_markup=get_main_keyboard()
     )
 
-async def help(update, ctx):
+async def help_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     help_msg = (
         "📘 *HƯỚNG DẪN*\n\n"
         "*Cách dùng:*\n"
@@ -366,11 +422,19 @@ async def help(update, ctx):
         "• Lợi nhuận - Chi tiết lợi nhuận\n"
         "• Mua coin - Thêm giao dịch mua\n"
         "• Bán coin - Bán coin\n\n"
+        "*Lệnh nhanh:*\n"
+        "/usdt - Xem tỷ giá USDT/VND\n"
+        "/s btc - Xem giá BTC\n"
+        "/su btc - Theo dõi BTC\n"
+        "/uns btc - Hủy theo dõi\n"
+        "/my - Xem danh sách theo dõi\n"
+        "/buy btc 0.5 40000 - Mua BTC\n"
+        "/sell btc 0.2 - Bán BTC\n\n"
         "*Lưu ý:* Dữ liệu được lưu vĩnh viễn trên Render Disk"
     )
     await update.message.reply_text(help_msg, parse_mode=ParseMode.MARKDOWN)
 
-async def usdt_command(update, ctx):
+async def usdt_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔄 Đang tra cứu...")
     
     rate_data = get_usdt_vnd_rate()
@@ -381,7 +445,7 @@ async def usdt_command(update, ctx):
         "━━━━━━━━━━━━━━━━\n\n"
         f"🇺🇸 *1 USDT* = `{fmt_vnd(vnd)}`\n"
         f"🇻🇳 *1,000,000 VND* = `{1000000/vnd:.4f} USDT`\n\n"
-        f"⏱ *Thời gian:* `{rate_data['update_time']}`\n"
+        f"⏱ *Cập nhật:* `{rate_data['update_time']}`\n"
         f"📊 *Nguồn:* `{rate_data['source']}`"
     )
     
@@ -395,7 +459,7 @@ async def usdt_command(update, ctx):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-async def s(update, ctx):
+async def s_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
         return await update.message.reply_text("❌ /s btc eth usdt")
     
@@ -423,10 +487,10 @@ async def s(update, ctx):
                 )
             price_cache[arg.upper()] = d
         else:
-            msg = f"❌ *{arg.upper()}*: Ko có data"
+            msg = f"❌ *{arg.upper()}*: Không có dữ liệu"
         await update.message.reply_text(msg, parse_mode='Markdown')
 
-async def su(update, ctx):
+async def su_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not ctx.args: 
         return await update.message.reply_text("❌ /su btc")
@@ -436,39 +500,50 @@ async def su(update, ctx):
         return await update.message.reply_text("❌ Chỉ hỗ trợ BTC, ETH, USDT")
     
     if not get_price(s): 
-        return await update.message.reply_text(f"❌ *{s}* ko tồn tại", parse_mode='Markdown')
+        return await update.message.reply_text(f"❌ *{s}* không tồn tại", parse_mode='Markdown')
     
     if add_subscription(uid, s):
         await update.message.reply_text(f"✅ Đã theo dõi *{s}*", parse_mode='Markdown')
     else:
-        await update.message.reply_text(f"ℹ️ Đang theo *{s}* rồi", parse_mode='Markdown')
+        await update.message.reply_text(f"ℹ️ Đang theo dõi *{s}* rồi", parse_mode='Markdown')
 
-async def uns(update, ctx):
+async def uns_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not ctx.args: 
         return await update.message.reply_text("❌ /uns btc")
     
     s = ctx.args[0].upper()
     remove_subscription(uid, s)
-    await update.message.reply_text(f"✅ Đã hủy *{s}*", parse_mode='Markdown')
+    await update.message.reply_text(f"✅ Đã hủy theo dõi *{s}*", parse_mode='Markdown')
 
-async def my(update, ctx):
+async def my_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     subs = get_subscriptions(uid)
     
     if subs:
-        msg = "📋 *DS theo dõi:*\n"
+        msg = "📋 *DANH SÁCH THEO DÕI:*\n"
         for s in sorted(subs):
             c = price_cache.get(s, {})
-            msg += f"• *{s}*: `{fmt_price(c.get('p', '?'))}`\n"
+            current_price = fmt_price(c.get('p', '?'))
+            msg += f"• *{s}*: `{current_price}`\n"
+        
+        # Thêm hướng dẫn hủy
+        msg += "\n*Để hủy theo dõi:*\n/uns [coin]"
+        
         await update.message.reply_text(msg, parse_mode='Markdown')
     else:
-        await update.message.reply_text("📭 Chưa theo dõi coin nào!")
+        await update.message.reply_text(
+            "📭 Chưa theo dõi coin nào!\nDùng /su btc để bắt đầu theo dõi",
+            parse_mode='Markdown'
+        )
 
-async def buy(update, ctx):
+async def buy_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if len(ctx.args) < 3:
-        return await update.message.reply_text("❌ /buy btc 0.5 40000")
+        return await update.message.reply_text(
+            "❌ /buy btc 0.5 40000\n"
+            "Ý nghĩa: /buy [coin] [số lượng] [giá mua]"
+        )
     
     symbol = ctx.args[0].upper()
     if symbol not in ['BTC', 'ETH', 'USDT']:
@@ -477,12 +552,15 @@ async def buy(update, ctx):
     try:
         amount = float(ctx.args[1])
         buy_price = float(ctx.args[2])
-    except:
-        return await update.message.reply_text("❌ Số lượng/giá không hợp lệ!")
+    except ValueError:
+        return await update.message.reply_text("❌ Số lượng hoặc giá không hợp lệ!")
+    
+    if amount <= 0 or buy_price <= 0:
+        return await update.message.reply_text("❌ Số lượng và giá phải lớn hơn 0")
     
     price_data = get_price(symbol)
     if not price_data:
-        return await update.message.reply_text(f"❌ Coin *{symbol}* không tồn tại!", parse_mode='Markdown')
+        return await update.message.reply_text(f"❌ Không thể lấy giá *{symbol}*", parse_mode='Markdown')
     
     add_transaction(uid, symbol, amount, buy_price)
     
@@ -491,16 +569,17 @@ async def buy(update, ctx):
     profit_loss_percent = ((current_price - buy_price) / buy_price) * 100
     
     msg = (
-        f"✅ Đã mua *{symbol}*\n"
-        f"📊 SL: `{amount}`\n"
+        f"✅ *ĐÃ MUA {symbol}*\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+        f"📊 Số lượng: `{amount:.4f}`\n"
         f"💰 Giá mua: `{fmt_price(buy_price)}`\n"
-        f"💵 Vốn: `{fmt_price(amount * buy_price)}`\n"
-        f"📈 Giá hiện: `{fmt_price(current_price)}`\n"
-        f"📊 LN: `{fmt_price(profit_loss)}` ({profit_loss_percent:+.2f}%)"
+        f"💵 Tổng vốn: `{fmt_price(amount * buy_price)}`\n"
+        f"📈 Giá hiện tại: `{fmt_price(current_price)}`\n"
+        f"{'✅' if profit_loss>=0 else '❌'} Lợi nhuận: `{fmt_price(profit_loss)}` ({profit_loss_percent:+.2f}%)"
     )
     await update.message.reply_text(msg, parse_mode='Markdown')
 
-async def sell(update, ctx):
+async def sell_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if len(ctx.args) < 2:
         return await update.message.reply_text("❌ /sell btc 0.2")
@@ -511,12 +590,15 @@ async def sell(update, ctx):
     
     try:
         sell_amount = float(ctx.args[1])
-    except:
+    except ValueError:
         return await update.message.reply_text("❌ Số lượng không hợp lệ!")
+    
+    if sell_amount <= 0:
+        return await update.message.reply_text("❌ Số lượng phải lớn hơn 0")
     
     portfolio_data = get_portfolio(uid)
     if not portfolio_data:
-        return await update.message.reply_text("📭 Danh mục trống!")
+        return await update.message.reply_text("📭 Danh mục đầu tư trống!")
     
     portfolio = []
     for row in portfolio_data:
@@ -530,11 +612,18 @@ async def sell(update, ctx):
     
     symbol_txs = [tx for tx in portfolio if tx['symbol'] == symbol]
     if not symbol_txs:
-        return await update.message.reply_text(f"❌ Không có *{symbol}*", parse_mode='Markdown')
+        return await update.message.reply_text(f"❌ Không có *{symbol}* trong danh mục", parse_mode='Markdown')
     
     total_amount = sum(tx['amount'] for tx in symbol_txs)
     if sell_amount > total_amount:
-        return await update.message.reply_text(f"❌ Chỉ có {total_amount} {symbol}")
+        return await update.message.reply_text(f"❌ Chỉ có {total_amount:.4f} {symbol} trong danh mục")
+    
+    # Lấy giá hiện tại
+    price_data = get_price(symbol)
+    if not price_data:
+        return await update.message.reply_text(f"❌ Không thể lấy giá *{symbol}*", parse_mode='Markdown')
+    
+    current_price = price_data['p']
     
     remaining_sell = sell_amount
     new_portfolio = []
@@ -545,12 +634,12 @@ async def sell(update, ctx):
         if tx['symbol'] == symbol and remaining_sell > 0:
             if tx['amount'] <= remaining_sell:
                 sold_cost += tx['total_cost']
-                sold_value += tx['amount'] * get_price(symbol)['p']
+                sold_value += tx['amount'] * current_price
                 remaining_sell -= tx['amount']
             else:
                 sell_part = remaining_sell
                 sold_cost += sell_part * tx['buy_price']
-                sold_value += sell_part * get_price(symbol)['p']
+                sold_value += sell_part * current_price
                 tx['amount'] -= sell_part
                 tx['total_cost'] = tx['amount'] * tx['buy_price']
                 new_portfolio.append(tx)
@@ -564,16 +653,18 @@ async def sell(update, ctx):
     profit_percent = (profit / sold_cost) * 100 if sold_cost > 0 else 0
     
     msg = (
-        f"✅ Đã bán {sell_amount} {symbol}\n"
-        f"💰 Giá trị: `{fmt_price(sold_value)}`\n"
-        f"📊 Vốn: `{fmt_price(sold_cost)}`\n"
-        f"{'✅' if profit>=0 else '❌'} LN: `{fmt_price(profit)}` ({profit_percent:+.2f}%)"
+        f"✅ *ĐÃ BÁN {sell_amount:.4f} {symbol}*\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+        f"💰 Giá bán: `{fmt_price(current_price)}`\n"
+        f"💵 Giá trị bán: `{fmt_price(sold_value)}`\n"
+        f"📊 Vốn gốc: `{fmt_price(sold_cost)}`\n"
+        f"{'✅' if profit>=0 else '❌'} Lợi nhuận: `{fmt_price(profit)}` ({profit_percent:+.2f}%)"
     )
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 # ==================== HANDLE MESSAGE ====================
 
-async def handle_message(update, ctx):
+async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     
     if text == "💰 ĐẦU TƯ COIN":
@@ -583,11 +674,11 @@ async def handle_message(update, ctx):
             reply_markup=get_invest_menu_keyboard()
         )
     elif text == "❓ HƯỚNG DẪN":
-        await help(update, ctx)
+        await help_command(update, ctx)
 
 # ==================== HANDLE CALLBACK ====================
 
-async def handle_callback(update, ctx):
+async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
@@ -609,7 +700,7 @@ async def handle_callback(update, ctx):
             "━━━━━━━━━━━━━━━━\n\n"
             f"🇺🇸 *1 USDT* = `{fmt_vnd(vnd)}`\n"
             f"🇻🇳 *1,000,000 VND* = `{1000000/vnd:.4f} USDT`\n\n"
-            f"⏱ *Thời gian:* `{rate_data['update_time']}`\n"
+            f"⏱ *Cập nhật:* `{rate_data['update_time']}`\n"
             f"📊 *Nguồn:* `{rate_data['source']}`"
         )
         
@@ -647,6 +738,7 @@ async def handle_callback(update, ctx):
                     f"📦 Volume: `{fmt_vol(d['v'])}`\n"
                     f"💎 Market Cap: `{fmt_vol(d['m'])}`"
                 )
+            price_cache[symbol] = d
         else:
             msg = f"❌ *{symbol}*: Không có dữ liệu"
         
@@ -681,7 +773,7 @@ async def handle_callback(update, ctx):
         if add_subscription(uid, symbol):
             msg = f"✅ Đã theo dõi *{symbol}*"
         else:
-            msg = f"ℹ️ Đang theo *{symbol}* rồi"
+            msg = f"ℹ️ Đang theo dõi *{symbol}* rồi"
         
         keyboard = [[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]]
         await query.edit_message_text(
@@ -695,10 +787,13 @@ async def handle_callback(update, ctx):
         subs = get_subscriptions(uid)
         
         if subs:
-            msg = "📋 *DS THEO DÕI*\n━━━━━━━━━━━━\n\n"
+            msg = "📋 *DANH SÁCH THEO DÕI*\n━━━━━━━━━━━━\n\n"
             for s in sorted(subs):
                 c = price_cache.get(s, {})
-                msg += f"• *{s}*: `{fmt_price(c.get('p', '?'))}`\n"
+                current_price = fmt_price(c.get('p', '?'))
+                msg += f"• *{s}*: `{current_price}`\n"
+            
+            msg += "\n*Để hủy:* dùng lệnh /uns [coin]"
             
             keyboard = [[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]]
             await query.edit_message_text(
@@ -718,7 +813,7 @@ async def handle_callback(update, ctx):
         
         if not portfolio_data:
             await query.edit_message_text(
-                "📭 Danh mục trống!",
+                "📭 Danh mục đầu tư trống!\nDùng /buy để thêm giao dịch",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]])
             )
             return
@@ -737,7 +832,7 @@ async def handle_callback(update, ctx):
             portfolio_summary[symbol]['amount'] += amount
             portfolio_summary[symbol]['cost'] += cost
         
-        msg = "📊 *DANH MỤC*\n━━━━━━━━━━━━\n\n"
+        msg = "📊 *DANH MỤC ĐẦU TƯ*\n━━━━━━━━━━━━\n\n"
         
         for symbol, data in portfolio_summary.items():
             price_data = get_price(symbol)
@@ -749,9 +844,11 @@ async def handle_callback(update, ctx):
                 total_investment += data['cost']
                 total_current_value += current_value
                 
+                avg_price = data['cost'] / data['amount']
+                
                 msg += f"*{symbol}*\n"
                 msg += f"📊 SL: `{data['amount']:.4f}`\n"
-                msg += f"💰 TB: `{fmt_price(data['cost']/data['amount'])}`\n"
+                msg += f"💰 TB: `{fmt_price(avg_price)}`\n"
                 msg += f"💎 TT: `{fmt_price(current_value)}`\n"
                 msg += f"{'✅' if profit>=0 else '❌'} LN: `{fmt_price(profit)}` ({profit_percent:+.2f}%)\n\n"
         
@@ -759,8 +856,8 @@ async def handle_callback(update, ctx):
         total_profit_percent = (total_profit / total_investment) * 100 if total_investment > 0 else 0
         
         msg += "━━━━━━━━━━━━\n"
-        msg += f"💵 Vốn: `{fmt_price(total_investment)}`\n"
-        msg += f"💰 GT: `{fmt_price(total_current_value)}`\n"
+        msg += f"💵 Tổng vốn: `{fmt_price(total_investment)}`\n"
+        msg += f"💰 Giá trị: `{fmt_price(total_current_value)}`\n"
         msg += f"{'✅' if total_profit>=0 else '❌'} Tổng LN: `{fmt_price(total_profit)}` ({total_profit_percent:+.2f}%)"
         
         keyboard = [[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]]
@@ -776,7 +873,7 @@ async def handle_callback(update, ctx):
         
         if not portfolio_data:
             await query.edit_message_text(
-                "📭 Danh mục trống!",
+                "📭 Danh mục đầu tư trống!",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]])
             )
             return
@@ -811,11 +908,11 @@ async def handle_callback(update, ctx):
                 msg += f"{'✅' if profit>=0 else '❌'} LN: `{fmt_price(profit)}` ({profit_percent:+.2f}%)\n\n"
         
         total_profit = total_current_value - total_investment
-        total_profit_percent = (total_profit / total_investment) * 100
+        total_profit_percent = (total_profit / total_investment) * 100 if total_investment > 0 else 0
         
         msg += "━━━━━━━━━━━━\n"
-        msg += f"💵 Vốn: `{fmt_price(total_investment)}`\n"
-        msg += f"💰 GT: `{fmt_price(total_current_value)}`\n"
+        msg += f"💵 Tổng vốn: `{fmt_price(total_investment)}`\n"
+        msg += f"💰 Tổng giá trị: `{fmt_price(total_current_value)}`\n"
         msg += f"{'✅' if total_profit>=0 else '❌'} Tổng LN: `{fmt_price(total_profit)}` ({total_profit_percent:+.2f}%)"
         
         keyboard = [[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]]
@@ -828,12 +925,12 @@ async def handle_callback(update, ctx):
     elif data == "show_buy":
         await query.edit_message_text(
             "➕ *MUA COIN*\n\n"
-            "Dùng lệnh: /buy <symbol> <số lượng> <giá>\n\n"
-            "Ví dụ:\n"
-            "/buy btc 0.5 40000\n"
-            "/buy eth 5 2500\n"
-            "/buy usdt 1000 1.00\n\n"
-            "Chỉ hỗ trợ BTC, ETH, USDT",
+            "Dùng lệnh: `/buy [coin] [số lượng] [giá]`\n\n"
+            "*Ví dụ:*\n"
+            "• `/buy btc 0.5 40000` - Mua 0.5 BTC giá $40,000\n"
+            "• `/buy eth 5 2500` - Mua 5 ETH giá $2,500\n"
+            "• `/buy usdt 1000 1.00` - Mua 1000 USDT giá $1.00\n\n"
+            "*Lưu ý:* Chỉ hỗ trợ BTC, ETH, USDT",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]])
         )
@@ -841,22 +938,30 @@ async def handle_callback(update, ctx):
     elif data == "show_sell":
         await query.edit_message_text(
             "➖ *BÁN COIN*\n\n"
-            "Dùng lệnh: /sell <symbol> <số lượng>\n\n"
-            "Ví dụ:\n"
-            "/sell btc 0.2\n"
-            "/sell eth 2\n"
-            "/sell usdt 500\n\n"
-            "Chỉ hỗ trợ BTC, ETH, USDT",
+            "Dùng lệnh: `/sell [coin] [số lượng]`\n\n"
+            "*Ví dụ:*\n"
+            "• `/sell btc 0.2` - Bán 0.2 BTC\n"
+            "• `/sell eth 2` - Bán 2 ETH\n"
+            "• `/sell usdt 500` - Bán 500 USDT\n\n"
+            "*Lưu ý:*\n"
+            "• Chỉ hỗ trợ BTC, ETH, USDT\n"
+            "• Hệ thống tự động bán theo FIFO (vào trước bán trước)",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]])
         )
     
     elif data == "show_top10":
+        await query.edit_message_text("🔄 Đang tải dữ liệu...")
+        
         try:
+            headers = {'X-CMC_PRO_API_KEY': CMC_API_KEY}
+            params = {'limit': 10, 'convert': 'USD'}
+            
             res = requests.get(
                 f"{CMC_API_URL}/cryptocurrency/listings/latest",
-                headers={'X-CMC_PRO_API_KEY': CMC_API_KEY},
-                params={'limit': 10, 'convert': 'USD'}
+                headers=headers,
+                params=params,
+                timeout=10
             )
             
             if res.status_code == 200:
@@ -865,91 +970,135 @@ async def handle_callback(update, ctx):
                 
                 for i, coin in enumerate(data, 1):
                     quote = coin['quote']['USD']
+                    change = quote['percent_change_24h']
+                    emoji = "📈" if change > 0 else "📉" if change < 0 else "➡️"
+                    
                     msg += (
                         f"{i}. *{coin['symbol']}* - {coin['name']}\n"
-                        f"   💰 {fmt_price(quote['price'])}\n"
-                        f"   📈 {quote['percent_change_24h']:+.2f}%\n"
+                        f"   💰 `{fmt_price(quote['price'])}`\n"
+                        f"   {emoji} `{change:+.2f}%`\n"
                     )
-                
-                keyboard = [[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]]
-                await query.edit_message_text(
-                    msg,
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
             else:
-                await query.edit_message_text(
-                    "❌ Không thể lấy dữ liệu",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]])
-                )
-        except:
-            await query.edit_message_text(
-                "❌ Lỗi kết nối",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]])
-            )
+                msg = "❌ Không thể lấy dữ liệu từ CoinMarketCap"
+        except Exception as e:
+            logger.error(f"Lỗi top10: {e}")
+            msg = "❌ Lỗi kết nối đến CoinMarketCap"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]]
+        await query.edit_message_text(
+            msg,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
 # ==================== AUTO UPDATE ====================
 
 def auto_update():
     """Tự động cập nhật giá cho người theo dõi"""
+    global app
+    
     while True:
-        time.sleep(60)
-        
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT DISTINCT user_id FROM subscriptions")
-        users = c.fetchall()
-        conn.close()
-        
-        for (uid,) in users:
-            subs = get_subscriptions(uid)
-            updates = []
-            for s in subs:
-                d = get_price(s)
-                if d:
-                    price_cache[s] = d
-                    updates.append(f"• *{d['n']}*: `{fmt_price(d['p'])}` ({d['c']:.1f}%)")
-            if updates:
+        try:
+            time.sleep(60)  # Cập nhật mỗi phút
+            
+            # Lấy danh sách user theo dõi
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT DISTINCT user_id FROM subscriptions")
+            users = c.fetchall()
+            conn.close()
+            
+            for (uid,) in users:
                 try:
-                    app.bot.send_message(uid, "🔄 *Cập nhật:*\n" + "\n".join(updates), parse_mode='Markdown')
-                except: 
-                    pass
+                    subs = get_subscriptions(uid)
+                    if not subs:
+                        continue
+                    
+                    updates = []
+                    for s in subs:
+                        d = get_price(s)
+                        if d:
+                            price_cache[s] = d
+                            change = d['c']
+                            emoji = "📈" if change > 0 else "📉" if change < 0 else "➡️"
+                            updates.append(f"• *{d['n']}*: `{fmt_price(d['p'])}` {emoji} `{change:+.1f}%`")
+                    
+                    if updates and app:
+                        try:
+                            msg = "🔄 *CẬP NHẬT GIÁ*\n" + "\n".join(updates)
+                            app.bot.send_message(
+                                uid, 
+                                msg, 
+                                parse_mode='Markdown'
+                            )
+                        except Exception as e:
+                            logger.error(f"Không thể gửi tin nhắn cho user {uid}: {e}")
+                            
+                except Exception as e:
+                    logger.error(f"Lỗi xử lý user {uid}: {e}")
+                    
+        except Exception as e:
+            logger.error(f"Lỗi auto_update: {e}")
+            time.sleep(10)  # Đợi 10 giây nếu lỗi
 
 # ==================== MAIN ====================
 
 if __name__ == '__main__':
+    global app
+    
+    # Kiểm tra token
     if not TELEGRAM_TOKEN:
-        print("❌ Thiếu TELEGRAM_TOKEN")
-        exit()
+        logger.error("❌ Thiếu TELEGRAM_TOKEN trong file .env")
+        exit(1)
     
     if not CMC_API_KEY:
-        print("⚠️ Cảnh báo: Thiếu CMC_API_KEY")
+        logger.warning("⚠️ Cảnh báo: Thiếu CMC_API_KEY - Chức năng lấy giá coin sẽ không hoạt động")
     
     # Khởi tạo database
-    init_database()
+    try:
+        init_database()
+        
+        # Kiểm tra quyền ghi trên disk
+        test_file = os.path.join(DATA_DIR, 'test_write.txt')
+        with open(test_file, 'w') as f:
+            f.write('test')
+        os.remove(test_file)
+        logger.info("✅ Disk có quyền ghi")
+        
+    except Exception as e:
+        logger.error(f"❌ Lỗi khởi tạo database: {e}")
+        exit(1)
     
     # Thông báo
-    print("🚀 Khởi động bot ĐẦU TƯ COIN...")
-    print(f"💾 Database: {DB_PATH}")
-    print(f"📂 Backup: {BACKUP_DIR}")
+    logger.info("🚀 Khởi động bot ĐẦU TƯ COIN...")
+    logger.info(f"💾 Database: {DB_PATH}")
+    logger.info(f"📂 Backup: {BACKUP_DIR}")
     
     if os.path.exists('/data'):
-        print("✅ Đang sử dụng Render Disk")
+        logger.info("✅ Đang sử dụng Render Disk")
+        # Kiểm tra dung lượng
+        try:
+            stat = os.statvfs('/data')
+            free_gb = (stat.f_frsize * stat.f_bavail) / (1024**3)
+            logger.info(f"💿 Dung lượng trống: {free_gb:.2f} GB")
+        except:
+            pass
     else:
-        print("⚠️ Đang chạy local (không dùng Render Disk)")
+        logger.warning("⚠️ Đang chạy local (không dùng Render Disk)")
     
+    # Khởi tạo bot
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     # Command handlers
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("usdt", usdt_command))
-    app.add_handler(CommandHandler("s", s))
-    app.add_handler(CommandHandler("su", su))
-    app.add_handler(CommandHandler("uns", uns))
-    app.add_handler(CommandHandler("my", my))
-    app.add_handler(CommandHandler("buy", buy))
-    app.add_handler(CommandHandler("sell", sell))
+    app.add_handler(CommandHandler("s", s_command))
+    app.add_handler(CommandHandler("su", su_command))
+    app.add_handler(CommandHandler("uns", uns_command))
+    app.add_handler(CommandHandler("my", my_command))
+    app.add_handler(CommandHandler("buy", buy_command))
+    app.add_handler(CommandHandler("sell", sell_command))
     
     # Message handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -957,13 +1106,17 @@ if __name__ == '__main__':
     # Callback handler
     app.add_handler(CallbackQueryHandler(handle_callback))
     
-    # Auto update
+    # Khởi chạy các thread
     threading.Thread(target=auto_update, daemon=True).start()
-    
-    # Backup hàng ngày
     threading.Thread(target=schedule_backup, daemon=True).start()
+    threading.Thread(target=run_health_server, daemon=True).start()
     
-    print("✅ Bot đã sẵn sàng!")
-    print("💰 Bấm 'ĐẦU TƯ COIN' để xem menu đầy đủ")
+    logger.info("✅ Bot đã sẵn sàng!")
+    logger.info("💰 Bấm 'ĐẦU TƯ COIN' để xem menu đầy đủ")
     
-    app.run_polling()
+    # Chạy bot
+    try:
+        app.run_polling()
+    except Exception as e:
+        logger.error(f"❌ Lỗi khi chạy bot: {e}")
+        exit(1)
