@@ -12,11 +12,11 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-COINGECKO_API = "https://api.coingecko.com/api/v3"
+CMC_API_KEY = os.getenv('CMC_API_KEY')  # Thêm API key vào .env
+CMC_API_URL = "https://pro-api.coinmarketcap.com/v1"
 
 price_data = {}
 price_cache = {}
-last_update = {}
 user_subscriptions = {}
 
 # Health check server cho Render
@@ -38,75 +38,67 @@ def run_health_server():
     except Exception as e:
         print(f"⚠️ Health server error: {e}")
 
-# Hàm lấy giá từ CoinGecko
-def get_price_from_coingecko(symbol):
-    """Lấy giá coin từ CoinGecko API"""
+# Hàm lấy giá từ CoinMarketCap
+def get_price_from_cmc(symbol):
+    """Lấy giá coin từ CoinMarketCap API"""
     try:
-        # Map symbol sang ID của CoinGecko
-        symbol_map = {
-            'BTC': 'bitcoin',
-            'ETH': 'ethereum',
-            'SOL': 'solana',
-            'BNB': 'binancecoin',
-            'XRP': 'ripple',
-            'ADA': 'cardano',
-            'DOGE': 'dogecoin',
-            'DOT': 'polkadot',
-            'AVAX': 'avalanche-2',
-            'MATIC': 'matic-network',
-            'LINK': 'chainlink',
-            'UNI': 'uniswap',
-            'ATOM': 'cosmos',
-            'LTC': 'litecoin',
-            'BCH': 'bitcoin-cash',
-            'TRX': 'tron',
-            'ETC': 'ethereum-classic',
-            'VET': 'vechain',
-            'FIL': 'filecoin',
-            'ALGO': 'algorand',
-            'OP': 'optimism',
-            'ARB': 'arbitrum'
-        }
+        if not CMC_API_KEY:
+            print("❌ Thiếu CMC_API_KEY")
+            return None
         
         clean_symbol = symbol.upper().replace('USDT', '').replace('USD', '')
         
-        if clean_symbol not in symbol_map:
-            return None
-        
-        coin_id = symbol_map[clean_symbol]
-        
-        # Gọi API CoinGecko
-        url = f"{COINGECKO_API}/simple/price"
+        # Gọi API CoinMarketCap
+        url = f"{CMC_API_URL}/cryptocurrency/quotes/latest"
+        headers = {
+            'X-CMC_PRO_API_KEY': CMC_API_KEY,
+            'Accept': 'application/json'
+        }
         params = {
-            'ids': coin_id,
-            'vs_currencies': 'usd',
-            'include_24hr_vol': 'true',
-            'include_24hr_change': 'true',
-            'include_last_updated_at': 'true'
+            'symbol': clean_symbol,
+            'convert': 'USD'
         }
         
-        response = requests.get(url, params=params, timeout=10)
+        response = requests.get(url, headers=headers, params=params, timeout=10)
         
         if response.status_code == 200:
             data = response.json()
-            if coin_id in data:
-                coin_data = data[coin_id]
+            if 'data' in data and clean_symbol in data['data']:
+                coin_data = data['data'][clean_symbol]
+                quote = coin_data['quote']['USD']
+                
                 return {
-                    'price': coin_data.get('usd', 'N/A'),
-                    'volume': coin_data.get('usd_24h_vol', 'N/A'),
-                    'change_24h': coin_data.get('usd_24h_change', 'N/A'),
+                    'price': quote.get('price', 'N/A'),
+                    'volume': quote.get('volume_24h', 'N/A'),
+                    'change_24h': quote.get('percent_change_24h', 'N/A'),
+                    'market_cap': quote.get('market_cap', 'N/A'),
+                    'rank': coin_data.get('cmc_rank', 'N/A'),
+                    'name': coin_data.get('name', clean_symbol),
                     'last_update': datetime.now().strftime('%H:%M:%S')
                 }
-        return None
+            else:
+                print(f"❌ Không tìm thấy {clean_symbol} trong response")
+                return None
+                
+        elif response.status_code == 400:
+            print(f"❌ Lỗi 400: Symbol không hợp lệ - {clean_symbol}")
+            return None
+        elif response.status_code == 401:
+            print("❌ Lỗi 401: API Key không hợp lệ")
+            return None
+        else:
+            print(f"❌ Lỗi {response.status_code}: {response.text}")
+            return None
         
     except Exception as e:
-        print(f"CoinGecko error: {e}")
+        print(f"CMC API error: {e}")
         return None
 
 def format_price(price):
     if price in [None, 'N/A']:
         return 'N/A'
     try:
+        price = float(price)
         if price < 0.01:
             return f"${price:.6f}"
         elif price < 1:
@@ -134,7 +126,7 @@ def format_volume(volume):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🚀 *CoinGecko Price Bot*\n\n"
+        "🚀 *CoinMarketCap Price Bot*\n\n"
         "💰 /price btc - Giá Bitcoin\n"
         "💰 /price eth - Giá Ethereum\n"
         "💰 /price sol - Giá Solana\n"
@@ -143,7 +135,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📋 /mylist - Danh sách\n"
         "📊 /status - Trạng thái\n"
         "🆘 /help - Hướng dẫn\n\n"
-        "⚡ Dữ liệu từ CoinGecko",
+        "⚡ Dữ liệu từ CoinMarketCap",
         parse_mode='Markdown'
     )
 
@@ -160,17 +152,19 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Gửi typing indicator
         await update.message.chat.send_action(action='typing')
         
-        # Lấy giá
-        data = get_price_from_coingecko(clean_symbol)
+        # Lấy giá từ CMC
+        data = get_price_from_cmc(clean_symbol)
         
         if data:
             msg = (
-                f"📊 *{clean_symbol}/USD*\n"
+                f"📊 *{data['name']} ({clean_symbol})*\n"
+                f"🏆 *Rank:* #{data['rank']}\n"
                 f"💰 *Giá:* `{format_price(data['price'])}`\n"
                 f"📈 *24h Change:* `{data['change_24h']:.2f}%`\n"
                 f"📦 *Volume:* `{format_volume(data['volume'])}`\n"
+                f"💎 *Market Cap:* `{format_volume(data['market_cap'])}`\n"
                 f"🕐 `{data['last_update']}`\n"
-                f"⚡ CoinGecko"
+                f"⚡ CoinMarketCap"
             )
             responses.append(msg)
             
@@ -179,10 +173,13 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'price': data['price'],
                 'volume': data['volume'],
                 'change': data['change_24h'],
+                'market_cap': data['market_cap'],
+                'rank': data['rank'],
+                'name': data['name'],
                 'time': datetime.now()
             }
         else:
-            responses.append(f"❌ *{clean_symbol}*: Không tìm thấy dữ liệu")
+            responses.append(f"❌ *{clean_symbol}*: Không tìm thấy dữ liệu\n🔍 Kiểm tra lại symbol hoặc API key")
     
     for response in responses:
         await update.message.reply_text(response, parse_mode='Markdown')
@@ -195,12 +192,18 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     symbol = context.args[0].upper().replace('USDT', '').replace('USD', '')
     
+    # Kiểm tra xem có tồn tại không
+    data = get_price_from_cmc(symbol)
+    if not data:
+        await update.message.reply_text(f"❌ *{symbol}* không tồn tại hoặc không có dữ liệu", parse_mode='Markdown')
+        return
+    
     if user_id not in user_subscriptions:
         user_subscriptions[user_id] = []
     
     if symbol not in user_subscriptions[user_id]:
         user_subscriptions[user_id].append(symbol)
-        await update.message.reply_text(f"✅ Đã theo dõi *{symbol}/USD*", parse_mode='Markdown')
+        await update.message.reply_text(f"✅ Đã theo dõi *{data['name']} ({symbol})*", parse_mode='Markdown')
     else:
         await update.message.reply_text(f"ℹ️ Đang theo dõi *{symbol}* rồi!", parse_mode='Markdown')
 
@@ -224,8 +227,8 @@ async def mylist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = "📋 *Danh sách theo dõi:*\n\n"
         for symbol in sorted(user_subscriptions[user_id]):
             if symbol in price_cache:
-                price = price_cache[symbol]['price']
-                msg += f"• *{symbol}*: `{format_price(price)}`\n"
+                cache = price_cache[symbol]
+                msg += f"• *{cache['name']}* ({symbol}): `{format_price(cache['price'])}`\n"
             else:
                 msg += f"• *{symbol}*: `Đang cập nhật...`\n"
         await update.message.reply_text(msg, parse_mode='Markdown')
@@ -233,12 +236,15 @@ async def mylist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 Chưa theo dõi coin nào!")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Kiểm tra API key
+    api_status = "🟢 OK" if CMC_API_KEY else "🔴 Missing"
+    
     await update.message.reply_text(
         f"📡 *Trạng thái*\n\n"
-        f"• API: CoinGecko 🟢\n"
+        f"• API: CoinMarketCap {api_status}\n"
         f"• Users: `{len(user_subscriptions)}`\n"
         f"• Cache: `{len(price_cache)} coins`\n"
-        f"• Requests/min: Không giới hạn (free tier)",
+        f"• Giới hạn: 10,000 calls/tháng (Free)",
         parse_mode='Markdown'
     )
 
@@ -247,19 +253,22 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📘 *Hướng dẫn chi tiết*
 
 *Lệnh cơ bản:*
-• /price btc - Giá Bitcoin
-• /price eth - Giá Ethereum
-• /price sol - Giá Solana
-• /price bnb - Giá BNB
+• /price btc - Bitcoin
+• /price eth - Ethereum
+• /price sol - Solana
+• /price bnb - BNB
 
 *Theo dõi:*
-• /subscribe btc - Theo dõi
-• /unsubscribe btc - Hủy
+• /subscribe btc - Thêm vào danh sách
+• /unsubscribe btc - Xóa khỏi danh sách
 • /mylist - Xem danh sách
 
-*Hỗ trợ:* BTC, ETH, SOL, BNB, XRP, ADA, DOGE, DOT, AVAX, MATIC, LINK, UNI, ATOM, LTC, BCH, TRX, OP, ARB và 10,000+ coin khác
+*Hỗ trợ:* 
+Hầu hết các coin có trên CoinMarketCap
+Dùng symbol chuẩn (BTC, ETH, SOL, BNB, XRP, ADA, v.v.)
 
-*Nguồn:* CoinGecko (cập nhật mỗi 60s)
+*Nguồn:* CoinMarketCap (cập nhật mỗi 60s)
+*API Key:* Cần thiết để hoạt động
     """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
@@ -271,15 +280,18 @@ def auto_update_worker(app):
             updates = []
             for symbol in symbols:
                 # Lấy giá mới
-                data = get_price_from_coingecko(symbol)
+                data = get_price_from_cmc(symbol)
                 if data:
                     price_cache[symbol] = {
                         'price': data['price'],
                         'volume': data['volume'],
                         'change': data['change_24h'],
+                        'market_cap': data['market_cap'],
+                        'rank': data['rank'],
+                        'name': data['name'],
                         'time': datetime.now()
                     }
-                    updates.append(f"• *{symbol}*: `{format_price(data['price'])}` ({data['change_24h']:.1f}%)")
+                    updates.append(f"• *{data['name']}*: `{format_price(data['price'])}` ({data['change_24h']:.1f}%)")
             
             if updates:
                 try:
@@ -296,8 +308,13 @@ def main():
         print("❌ Lỗi: Chưa có TELEGRAM_TOKEN")
         return
     
+    if not CMC_API_KEY:
+        print("❌ Lỗi: Chưa có CMC_API_KEY trong file .env")
+        print("📝 Thêm dòng: CMC_API_KEY=your_key_here")
+        return
+    
     print("=" * 50)
-    print("🤖 COINGECKO PRICE BOT")
+    print("🤖 COINMARKETCAP PRICE BOT")
     print("=" * 50)
     
     # Start health check server
