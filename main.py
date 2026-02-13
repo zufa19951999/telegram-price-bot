@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
-from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.constants import ParseMode
 
@@ -15,6 +15,7 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CMC_API_KEY = os.getenv('CMC_API_KEY')
 CMC_API_URL = "https://pro-api.coinmarketcap.com/v1"
+COINGECKO_API_URL = "https://api.coingecko.com/api/v3"
 
 price_cache = {}
 user_subs = {}
@@ -33,7 +34,10 @@ def run_health_server():
     port = int(os.environ.get('PORT', 10000))
     HTTPServer(('0.0.0.0', port), HealthCheckHandler).serve_forever()
 
+# ==================== HÀM LẤY GIÁ COIN ====================
+
 def get_price(symbol):
+    """Lấy giá coin từ CoinMarketCap"""
     try:
         clean = symbol.upper().replace('USDT', '').replace('USD', '')
         res = requests.get(f"{CMC_API_URL}/cryptocurrency/quotes/latest", 
@@ -48,30 +52,106 @@ def get_price(symbol):
                 'n': res.json()['data'][clean]['name'],
                 'r': res.json()['data'][clean].get('cmc_rank', 'N/A')
             }
-    except: return None
+    except: 
+        return None
+
+def get_usdt_vnd_rate():
+    """Lấy tỷ giá USDT/VND từ CoinGecko API (miễn phí)"""
+    try:
+        # CoinGecko dùng "tether" làm id cho USDT
+        url = f"{COINGECKO_API_URL}/simple/price"
+        params = {
+            'ids': 'tether',
+            'vs_currencies': 'vnd,usd',
+            'include_24hr_change': 'true',
+            'include_last_updated_at': 'true'
+        }
+        
+        response = requests.get(url, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if 'tether' in data:
+                vnd_price = data['tether']['vnd']
+                usd_price = data['tether']['usd']
+                change_24h = data['tether'].get('vnd_24h_change', 0)
+                last_update = data['tether'].get('last_updated_at', int(time.time()))
+                
+                # Chuyển timestamp sang datetime
+                update_time = datetime.fromtimestamp(last_update).strftime('%H:%M:%S %d/%m/%Y')
+                
+                return {
+                    'vnd': vnd_price,
+                    'usd': usd_price,
+                    'change_24h': change_24h,
+                    'update_time': update_time
+                }
+        return None
+    except Exception as e:
+        print(f"Lỗi lấy tỷ giá USDT/VND: {e}")
+        return None
+
+# ==================== HÀM ĐỊNH DẠNG ====================
 
 def fmt_price(p):
     try:
         p = float(p)
-        return f"${p:.6f}" if p < 0.01 else f"${p:.4f}" if p < 1 else f"${p:,.2f}"
-    except: return f"${p}"
+        if p < 0.01:
+            return f"${p:.6f}"
+        elif p < 1:
+            return f"${p:.4f}"
+        else:
+            return f"${p:,.2f}"
+    except: 
+        return f"${p}"
+
+def fmt_vnd_price(p):
+    """Định dạng giá VND"""
+    try:
+        p = float(p)
+        if p >= 1_000_000_000:  # Tỷ
+            return f"₫{p/1_000_000_000:.2f} tỷ"
+        elif p >= 1_000_000:  # Triệu
+            return f"₫{p/1_000_000:.2f} triệu"
+        elif p >= 1_000:  # Nghìn
+            return f"₫{p/1_000:.2f}K"
+        else:
+            return f"₫{p:,.0f}"
+    except:
+        return f"₫{p}"
 
 def fmt_vol(v):
     try:
         v = float(v)
-        return f"${v/1e9:.2f}B" if v > 1e9 else f"${v/1e6:.2f}M" if v > 1e6 else f"${v/1e3:.2f}K" if v > 1e3 else f"${v:,.2f}"
-    except: return str(v)
+        if v > 1e9:
+            return f"${v/1e9:.2f}B"
+        elif v > 1e6:
+            return f"${v/1e6:.2f}M"
+        elif v > 1e3:
+            return f"${v/1e3:.2f}K"
+        else:
+            return f"${v:,.2f}"
+    except: 
+        return str(v)
+
+def fmt_percent(value):
+    try:
+        value = float(value)
+        emoji = "📈" if value > 0 else "📉" if value < 0 else "➡️"
+        return f"{emoji} {value:+.2f}%"
+    except:
+        return str(value)
 
 # ==================== KEYBOARD FUNCTIONS ====================
 
 def get_main_keyboard():
     """Tạo main keyboard"""
     keyboard = [
-        [KeyboardButton("💰 Giá coin"), KeyboardButton("📊 Top 10")],
-        [KeyboardButton("🔔 Theo dõi"), KeyboardButton("📋 DS theo dõi")],
-        [KeyboardButton("💼 Danh mục"), KeyboardButton("📈 Lợi nhuận")],
-        [KeyboardButton("➕ Mua coin"), KeyboardButton("➖ Bán coin")],
-        [KeyboardButton("❓ Hướng dẫn")]
+        [KeyboardButton("💰 Giá coin"), KeyboardButton("🇻🇳 USDT/VND")],
+        [KeyboardButton("📊 Top 10"), KeyboardButton("🔔 Theo dõi")],
+        [KeyboardButton("📋 DS theo dõi"), KeyboardButton("💼 Danh mục")],
+        [KeyboardButton("📈 Lợi nhuận"), KeyboardButton("➕ Mua coin")],
+        [KeyboardButton("➖ Bán coin"), KeyboardButton("❓ Hướng dẫn")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -87,7 +167,8 @@ def get_price_keyboard():
         [InlineKeyboardButton("🐕 DOGE", callback_data="price_DOGE"),
          InlineKeyboardButton("⚡ DOT", callback_data="price_DOT"),
          InlineKeyboardButton("🔷 MATIC", callback_data="price_MATIC")],
-        [InlineKeyboardButton("🏠 Về menu", callback_data="back_to_menu")]
+        [InlineKeyboardButton("🇻🇳 USDT/VND", callback_data="usdt_rate"),
+         InlineKeyboardButton("🏠 Về menu", callback_data="back_to_menu")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -98,7 +179,8 @@ def get_subscribe_keyboard():
          InlineKeyboardButton("➕ Theo ETH", callback_data="sub_ETH")],
         [InlineKeyboardButton("➕ Theo BNB", callback_data="sub_BNB"),
          InlineKeyboardButton("➕ Theo SOL", callback_data="sub_SOL")],
-        [InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]
+        [InlineKeyboardButton("🇻🇳 USDT/VND", callback_data="usdt_rate"),
+         InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -109,7 +191,8 @@ def get_portfolio_keyboard():
          InlineKeyboardButton("📈 Chi tiết LN", callback_data="view_profit")],
         [InlineKeyboardButton("➕ Thêm coin", callback_data="add_coin"),
          InlineKeyboardButton("➖ Bán coin", callback_data="sell_coin")],
-        [InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]
+        [InlineKeyboardButton("🇻🇳 USDT/VND", callback_data="usdt_rate"),
+         InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -120,11 +203,12 @@ def get_coin_list_keyboard(action, coins):
     for i, coin in enumerate(coins):
         btn = InlineKeyboardButton(coin, callback_data=f"{action}_{coin}")
         row.append(btn)
-        if (i + 1) % 3 == 0:  # 3 nút mỗi hàng
+        if (i + 1) % 3 == 0:
             keyboard.append(row)
             row = []
-    if row:  # Thêm hàng cuối nếu còn
+    if row:
         keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("🇻🇳 USDT/VND", callback_data="usdt_rate")])
     keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")])
     return InlineKeyboardMarkup(keyboard)
 
@@ -136,6 +220,7 @@ async def start(update, ctx):
         "🚀 *Chào mừng bạn đến với Crypto Bot!*\n\n"
         "🤖 Bot hỗ trợ:\n"
         "• Xem giá coin real-time\n"
+        "• 🇻🇳 *Tỷ giá USDT/VND* - Cập nhật real-time\n"
         "• Theo dõi biến động giá\n"
         "• Quản lý danh mục đầu tư\n"
         "• Tính lợi nhuận đầu tư\n\n"
@@ -153,6 +238,7 @@ async def help(update, ctx):
         "📘 *HƯỚNG DẪN SỬ DỤNG*\n\n"
         "*🔹 Các nút chức năng:*\n"
         "💰 *Giá coin* - Xem giá các coin phổ biến\n"
+        "🇻🇳 *USDT/VND* - Xem tỷ giá USDT sang VND\n"
         "📊 *Top 10* - Top 10 coin theo vốn hóa\n"
         "🔔 *Theo dõi* - Theo dõi biến động giá\n"
         "📋 *DS theo dõi* - Danh sách coin đang theo\n"
@@ -163,11 +249,64 @@ async def help(update, ctx):
         
         "*🔸 Hoặc dùng lệnh:*\n"
         "/s btc - Xem giá BTC\n"
+        "/usdt - Xem tỷ giá USDT/VND\n"
         "/su btc - Theo dõi BTC\n"
         "/portfolio - Xem danh mục\n"
         "/buy btc 0.5 40000 - Mua BTC"
     )
     await update.message.reply_text(help_msg, parse_mode=ParseMode.MARKDOWN)
+
+async def usdt_rate_command(update, ctx):
+    """Lệnh /usdt - Xem tỷ giá USDT/VND"""
+    await update.message.reply_text("🔄 Đang tra cứu tỷ giá USDT/VND...")
+    
+    rate_data = get_usdt_vnd_rate()
+    
+    if rate_data:
+        # Tính giá trị quy đổi mẫu
+        usd_amounts = [1, 10, 100, 1000]
+        vnd_amounts = [100000, 500000, 1000000]
+        
+        msg = (
+            "💱 *TỶ GIÁ USDT/VND HÔM NAY*\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            f"🇺🇸 *1 USDT* = `{fmt_vnd_price(rate_data['vnd'])}`\n"
+            f"🇻🇳 *1,000,000 VND* = `{1000000/rate_data['vnd']:.4f} USDT`\n\n"
+            
+            "📊 *Bảng quy đổi nhanh:*\n"
+        )
+        
+        # USDT -> VND
+        msg += "• USDT → VND:\n"
+        for usd in usd_amounts:
+            vnd = usd * rate_data['vnd']
+            msg += f"  `{usd} USDT` = `{fmt_vnd_price(vnd)}`\n"
+        
+        msg += "\n• VND → USDT:\n"
+        for vnd in vnd_amounts:
+            usd = vnd / rate_data['vnd']
+            msg += f"  `{fmt_vnd_price(vnd)}` = `{usd:.4f} USDT`\n"
+        
+        msg += (
+            f"\n📈 *Biến động 24h:* {fmt_percent(rate_data['change_24h'])}\n"
+            f"🕐 *Cập nhật:* {rate_data['update_time']}\n\n"
+            f"_Dữ liệu từ CoinGecko_ 🔗"
+        )
+        
+        # Thêm nút refresh
+        keyboard = [[InlineKeyboardButton("🔄 Làm mới", callback_data="usdt_rate")],
+                   [InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]]
+        
+        await update.message.reply_text(
+            msg, 
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        await update.message.reply_text(
+            "❌ Không thể lấy tỷ giá USDT/VND. Vui lòng thử lại sau!",
+            reply_markup=get_main_keyboard()
+        )
 
 async def handle_message(update, ctx):
     """Xử lý tin nhắn từ keyboard"""
@@ -179,6 +318,9 @@ async def handle_message(update, ctx):
             "Chọn coin để xem giá:",
             reply_markup=get_price_keyboard()
         )
+    
+    elif text == "🇻🇳 USDT/VND":
+        await usdt_rate_command(update, ctx)
     
     elif text == "📊 Top 10":
         await show_top10(update)
@@ -216,7 +358,7 @@ async def handle_message(update, ctx):
             coins = list(set([tx['symbol'] for tx in user_portfolios[user_id]]))
             await update.message.reply_text(
                 "Chọn coin muốn bán:",
-                reply_markup=get_coin_list_keyboard("quick_sell", coins[:9])  # Tối đa 9 coin
+                reply_markup=get_coin_list_keyboard("quick_sell", coins[:9])
             )
         else:
             await update.message.reply_text("📭 Bạn chưa có coin nào trong danh mục!")
@@ -237,6 +379,43 @@ async def handle_callback(update, ctx):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=get_main_keyboard()
         )
+    
+    elif data == "usdt_rate":
+        await query.edit_message_text("🔄 Đang tra cứu tỷ giá USDT/VND...")
+        
+        rate_data = get_usdt_vnd_rate()
+        
+        if rate_data:
+            msg = (
+                "💱 *TỶ GIÁ USDT/VND HÔM NAY*\n"
+                "━━━━━━━━━━━━━━━━\n\n"
+                f"🇺🇸 *1 USDT* = `{fmt_vnd_price(rate_data['vnd'])}`\n"
+                f"🇻🇳 *1,000,000 VND* = `{1000000/rate_data['vnd']:.4f} USDT`\n\n"
+                
+                "📊 *Bảng quy đổi nhanh:*\n"
+                "• USDT 1 = " + fmt_vnd_price(rate_data['vnd']) + "\n"
+                "• USDT 10 = " + fmt_vnd_price(rate_data['vnd'] * 10) + "\n"
+                "• USDT 100 = " + fmt_vnd_price(rate_data['vnd'] * 100) + "\n"
+                "• USDT 1000 = " + fmt_vnd_price(rate_data['vnd'] * 1000) + "\n\n"
+                
+                f"📈 *Biến động 24h:* {fmt_percent(rate_data['change_24h'])}\n"
+                f"🕐 *Cập nhật:* {rate_data['update_time']}\n\n"
+                f"_Dữ liệu từ CoinGecko_ 🔗"
+            )
+            
+            keyboard = [[InlineKeyboardButton("🔄 Làm mới", callback_data="usdt_rate")],
+                       [InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]]
+            
+            await query.edit_message_text(
+                msg,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        else:
+            await query.edit_message_text(
+                "❌ Không thể lấy tỷ giá USDT/VND. Vui lòng thử lại sau!",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]])
+            )
     
     elif data.startswith("price_"):
         symbol = data.replace("price_", "")
@@ -281,10 +460,12 @@ async def show_price(query, symbol):
             f"📦 Volume: `{fmt_vol(data['v'])}`\n"
             f"💎 Market Cap: `{fmt_vol(data['m'])}`"
         )
-        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]]
+        keyboard = [[InlineKeyboardButton("🇻🇳 USDT/VND", callback_data="usdt_rate")],
+                   [InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]]
     else:
         msg = f"❌ Không có dữ liệu cho {symbol}"
-        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]]
+        keyboard = [[InlineKeyboardButton("🇻🇳 USDT/VND", callback_data="usdt_rate")],
+                   [InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]]
     
     await query.edit_message_text(
         msg,
@@ -305,7 +486,8 @@ async def do_subscribe(query, symbol):
     else:
         msg = f"ℹ️ Bạn đang theo dõi *{symbol}* rồi"
     
-    keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]]
+    keyboard = [[InlineKeyboardButton("🇻🇳 USDT/VND", callback_data="usdt_rate")],
+               [InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]]
     await query.edit_message_text(
         msg,
         parse_mode=ParseMode.MARKDOWN,
@@ -333,7 +515,12 @@ async def show_top10(update):
                     f"   📈 {quote['percent_change_24h']:+.2f}%\n"
                 )
             
-            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+            keyboard = [[InlineKeyboardButton("🇻🇳 USDT/VND", callback_data="usdt_rate")]]
+            await update.message.reply_text(
+                msg, 
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
         else:
             await update.message.reply_text("❌ Không thể lấy dữ liệu top 10")
     except:
@@ -369,7 +556,7 @@ async def show_portfolio(query):
         if price_data:
             current_value = data['amount'] * price_data['p']
             profit = current_value - data['cost']
-            profit_percent = (profit / data['cost']) * 100
+            profit_percent = (profit / data['cost']) * 100 if data['cost'] > 0 else 0
             
             total_investment += data['cost']
             total_current_value += current_value
@@ -381,6 +568,54 @@ async def show_portfolio(query):
             msg += f"{'✅' if profit>=0 else '❌'} LN: `{fmt_price(profit)}` ({profit_percent:+.2f}%)\n\n"
     
     total_profit = total_current_value - total_investment
+    total_profit_percent = (total_profit / total_investment) * 100 if total_investment > 0 else 0
+    
+    msg += "━━━━━━━━━━━━\n"
+    msg += f"💵 Vốn: `{fmt_price(total_investment)}`\n"
+    msg += f"💰 GT: `{fmt_price(total_current_value)}`\n"
+    msg += f"{'✅' if total_profit>=0 else '❌'} Tổng LN: `{fmt_price(total_profit)}` ({total_profit_percent:+.2f}%)"
+    
+    keyboard = [[InlineKeyboardButton("🇻🇳 USDT/VND", callback_data="usdt_rate")],
+               [InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]]
+    await query.edit_message_text(
+        msg,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def show_profit_detail(query):
+    """Hiển thị chi tiết lợi nhuận"""
+    user_id = query.from_user.id
+    
+    if user_id not in user_portfolios or not user_portfolios[user_id]:
+        await query.edit_message_text("📭 Danh mục trống!")
+        return
+    
+    msg = "📈 *CHI TIẾT LỢI NHUẬN*\n━━━━━━━━━━━━\n\n"
+    
+    total_investment = 0
+    total_current_value = 0
+    
+    for i, tx in enumerate(user_portfolios[user_id], 1):
+        symbol = tx['symbol']
+        price_data = get_price(symbol)
+        
+        if price_data:
+            current_value = tx['amount'] * price_data['p']
+            profit = current_value - tx['total_cost']
+            profit_percent = (profit / tx['total_cost']) * 100
+            
+            total_investment += tx['total_cost']
+            total_current_value += current_value
+            
+            msg += f"*GD #{i}: {symbol}*\n"
+            msg += f"📅 {tx['buy_date']}\n"
+            msg += f"📊 SL: `{tx['amount']:.4f}`\n"
+            msg += f"💰 Giá mua: `{fmt_price(tx['buy_price'])}`\n"
+            msg += f"💎 Giá trị: `{fmt_price(current_value)}`\n"
+            msg += f"{'✅' if profit>=0 else '❌'} LN: `{fmt_price(profit)}` ({profit_percent:+.2f}%)\n\n"
+    
+    total_profit = total_current_value - total_investment
     total_profit_percent = (total_profit / total_investment) * 100
     
     msg += "━━━━━━━━━━━━\n"
@@ -388,14 +623,15 @@ async def show_portfolio(query):
     msg += f"💰 GT: `{fmt_price(total_current_value)}`\n"
     msg += f"{'✅' if total_profit>=0 else '❌'} Tổng LN: `{fmt_price(total_profit)}` ({total_profit_percent:+.2f}%)"
     
-    keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]]
+    keyboard = [[InlineKeyboardButton("🇻🇳 USDT/VND", callback_data="usdt_rate")],
+               [InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]]
     await query.edit_message_text(
         msg,
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# ==================== EXISTING FUNCTIONS ====================
+# ==================== CÁC LỆNH CŨ GIỮ NGUYÊN ====================
 
 async def s(update, ctx):
     if not ctx.args:
@@ -536,7 +772,7 @@ async def sell(update, ctx):
     user_portfolios[uid] = new_portfolio
     
     profit = sold_value - sold_cost
-    profit_percent = (profit / sold_cost) * 100
+    profit_percent = (profit / sold_cost) * 100 if sold_cost > 0 else 0
     
     msg = (
         f"✅ Đã bán {sell_amount} {symbol}\n"
@@ -573,7 +809,7 @@ async def portfolio(update, ctx):
         if price_data:
             current_value = data['amount'] * price_data['p']
             profit = current_value - data['cost']
-            profit_percent = (profit / data['cost']) * 100
+            profit_percent = (profit / data['cost']) * 100 if data['cost'] > 0 else 0
             
             total_investment += data['cost']
             total_current_value += current_value
@@ -585,7 +821,7 @@ async def portfolio(update, ctx):
             msg += f"{'✅' if profit>=0 else '❌'} LN: `{fmt_price(profit)}` ({profit_percent:+.2f}%)\n\n"
     
     total_profit = total_current_value - total_investment
-    total_profit_percent = (total_profit / total_investment) * 100
+    total_profit_percent = (total_profit / total_investment) * 100 if total_investment > 0 else 0
     
     msg += "━━━━━━━━━━━━\n"
     msg += f"💵 Vốn: `{fmt_price(total_investment)}`\n"
@@ -663,6 +899,7 @@ if __name__ == '__main__':
     # Command handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help))
+    app.add_handler(CommandHandler("usdt", usdt_rate_command))
     app.add_handler(CommandHandler("s", s))
     app.add_handler(CommandHandler("su", su))
     app.add_handler(CommandHandler("uns", uns))
@@ -673,12 +910,11 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("profit", profit_detail))
     
     # Message handler cho keyboard
-    from telegram.ext import MessageHandler, filters
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     # Callback handler cho inline keyboard
     app.add_handler(CallbackQueryHandler(handle_callback))
     
     threading.Thread(target=auto_update, daemon=True).start()
-    print("🚀 Bot đang chạy với Keyboard...")
+    print("🚀 Bot đang chạy với tính năng USDT/VND...")
     app.run_polling()
