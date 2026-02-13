@@ -44,7 +44,7 @@ logger.info(f"💾 Backup sẽ được lưu tại: {BACKUP_DIR}")
 price_cache = {}
 usdt_cache = {'rate': None, 'time': None}
 
-# Biến toàn cục cho bot
+# Biến toàn cục cho bot - Khai báo ở đầu file
 app = None
 
 # ==================== HEALTH CHECK SERVER CHO RENDER ====================
@@ -55,7 +55,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
         
-        # Response text đơn giản, không có Unicode
+        # Response text đơn giản
         current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         response = f"Crypto Bot Running - {current_time}"
         self.wfile.write(response.encode('utf-8'))
@@ -1039,7 +1039,7 @@ def auto_update():
 # ==================== MAIN ====================
 
 if __name__ == '__main__':
-    global app
+    # Không cần global app ở đây vì đã khai báo ở đầu file
     
     # Kiểm tra token
     if not TELEGRAM_TOKEN:
@@ -1081,7 +1081,7 @@ if __name__ == '__main__':
     else:
         logger.warning("⚠️ Đang chạy local (không dùng Render Disk)")
     
-    # Khởi tạo bot
+    # Khởi tạo bot - gán vào biến global app
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     # Command handlers
