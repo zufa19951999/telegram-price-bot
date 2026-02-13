@@ -197,31 +197,22 @@ def fmt_percent(value):
 # ==================== KEYBOARD ====================
 
 def get_main_keyboard():
-    """Tạo main keyboard"""
+    """Tạo main keyboard - ĐẦU TƯ COIN"""
     keyboard = [
-        [KeyboardButton("💰 Giá coin"), KeyboardButton("📊 Top 10")],
-        [KeyboardButton("🔔 Theo dõi"), KeyboardButton("📋 DS theo dõi")],
-        [KeyboardButton("💼 Danh mục"), KeyboardButton("📈 Lợi nhuận")],
-        [KeyboardButton("➕ Mua coin"), KeyboardButton("➖ Bán coin")],
-        [KeyboardButton("❓ Hướng dẫn")]
+        [KeyboardButton("💰 ĐẦU TƯ COIN")],
+        [KeyboardButton("📊 Top 10"), KeyboardButton("🔔 Theo dõi")],
+        [KeyboardButton("📋 DS theo dõi"), KeyboardButton("💼 Danh mục")],
+        [KeyboardButton("📈 Lợi nhuận"), KeyboardButton("➕ Mua coin")],
+        [KeyboardButton("➖ Bán coin"), KeyboardButton("❓ Hướng dẫn")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-def get_price_keyboard():
-    """Keyboard cho xem giá coin"""
+def get_invest_keyboard():
+    """Keyboard cho đầu tư coin - chỉ BTC ETH USDT"""
     keyboard = [
-        [InlineKeyboardButton("₿ BTC", callback_data="price_BTC"),
-         InlineKeyboardButton("Ξ ETH", callback_data="price_ETH"),
-         InlineKeyboardButton("💵 USDT", callback_data="price_USDT")],
-        [InlineKeyboardButton("✴️ BNB", callback_data="price_BNB"),
-         InlineKeyboardButton("◎ SOL", callback_data="price_SOL"),
-         InlineKeyboardButton("❌ XRP", callback_data="price_XRP")],
-        [InlineKeyboardButton("💎 ADA", callback_data="price_ADA"),
-         InlineKeyboardButton("🐕 DOGE", callback_data="price_DOGE"),
-         InlineKeyboardButton("⚡ DOT", callback_data="price_DOT")],
-        [InlineKeyboardButton("🔷 MATIC", callback_data="price_MATIC"),
-         InlineKeyboardButton("🔶 LINK", callback_data="price_LINK"),
-         InlineKeyboardButton("⚪️ LTC", callback_data="price_LTC")],
+        [InlineKeyboardButton("₿ BITCOIN (BTC)", callback_data="price_BTC"),
+         InlineKeyboardButton("Ξ ETHEREUM (ETH)", callback_data="price_ETH")],
+        [InlineKeyboardButton("💵 TETHER (USDT)", callback_data="price_USDT")],
         [InlineKeyboardButton("🏠 Về menu", callback_data="back_to_menu")]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -231,9 +222,9 @@ def get_price_keyboard():
 async def start(update, ctx):
     """Start command"""
     welcome_msg = (
-        "🚀 *Crypto Bot*\n\n"
+        "🚀 *ĐẦU TƯ COIN BOT*\n\n"
         "🤖 Bot hỗ trợ:\n"
-        "• Xem giá coin real-time (có USDT/VND)\n"
+        "• Xem giá BTC/ETH/USDT (có USDT/VND)\n"
         "• Xem tỷ giá USDT/VND (/usdt)\n"
         "• Theo dõi biến động giá\n"
         "• Quản lý danh mục đầu tư\n"
@@ -293,7 +284,7 @@ async def usdt_command(update, ctx):
 async def s(update, ctx):
     """Xem giá coin bằng lệnh"""
     if not ctx.args:
-        return await update.message.reply_text("❌ /s btc eth")
+        return await update.message.reply_text("❌ /s btc eth usdt")
     
     for arg in ctx.args:
         d = get_price(arg)
@@ -329,6 +320,9 @@ async def su(update, ctx):
         return await update.message.reply_text("❌ /su btc")
     
     s = ctx.args[0].upper()
+    if s not in ['BTC', 'ETH', 'USDT']:
+        return await update.message.reply_text("❌ Chỉ hỗ trợ BTC, ETH, USDT")
+    
     if not get_price(s): 
         return await update.message.reply_text(f"❌ *{s}* ko tồn tại", parse_mode='Markdown')
     
@@ -373,6 +367,9 @@ async def buy(update, ctx):
         return await update.message.reply_text("❌ /buy btc 0.5 40000")
     
     symbol = ctx.args[0].upper()
+    if symbol not in ['BTC', 'ETH', 'USDT']:
+        return await update.message.reply_text("❌ Chỉ hỗ trợ BTC, ETH, USDT")
+    
     try:
         amount = float(ctx.args[1])
         buy_price = float(ctx.args[2])
@@ -415,6 +412,9 @@ async def sell(update, ctx):
         return await update.message.reply_text("❌ /sell btc 0.2")
     
     symbol = ctx.args[0].upper()
+    if symbol not in ['BTC', 'ETH', 'USDT']:
+        return await update.message.reply_text("❌ Chỉ hỗ trợ BTC, ETH, USDT")
+    
     try:
         sell_amount = float(ctx.args[1])
     except:
@@ -483,7 +483,7 @@ async def portfolio(update, ctx):
         portfolio_summary[symbol]['amount'] += tx['amount']
         portfolio_summary[symbol]['cost'] += tx['total_cost']
     
-    msg = "📊 *DANH MỤC*\n━━━━━━━━━━━━\n\n"
+    msg = "📊 *DANH MỤC ĐẦU TƯ*\n━━━━━━━━━━━━\n\n"
     
     for symbol, data in portfolio_summary.items():
         price_data = get_price(symbol)
@@ -584,15 +584,16 @@ async def handle_message(update, ctx):
     """Xử lý tin nhắn từ keyboard"""
     text = update.message.text
     
-    if text == "💰 Giá coin":
+    if text == "💰 ĐẦU TƯ COIN":
         await update.message.reply_text(
-            "Chọn coin để xem giá:",
-            reply_markup=get_price_keyboard()
+            "💰 *ĐẦU TƯ COIN*\nChọn coin để xem giá:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=get_invest_keyboard()
         )
     elif text == "📊 Top 10":
         await show_top10(update)
     elif text == "🔔 Theo dõi":
-        await update.message.reply_text("Dùng lệnh /su btc để theo dõi")
+        await update.message.reply_text("Dùng lệnh /su btc để theo dõi (BTC/ETH/USDT)")
     elif text == "📋 DS theo dõi":
         await my(update, ctx)
     elif text == "💼 Danh mục":
@@ -600,9 +601,9 @@ async def handle_message(update, ctx):
     elif text == "📈 Lợi nhuận":
         await profit(update, ctx)
     elif text == "➕ Mua coin":
-        await update.message.reply_text("Dùng lệnh /buy btc 0.5 40000")
+        await update.message.reply_text("Dùng lệnh /buy btc 0.5 40000 (BTC/ETH/USDT)")
     elif text == "➖ Bán coin":
-        await update.message.reply_text("Dùng lệnh /sell btc 0.2")
+        await update.message.reply_text("Dùng lệnh /sell btc 0.2 (BTC/ETH/USDT)")
     elif text == "❓ Hướng dẫn":
         await help(update, ctx)
 
@@ -617,7 +618,7 @@ async def handle_callback(update, ctx):
     
     if data == "back_to_menu":
         await query.edit_message_text(
-            "🏠 *Menu chính*",
+            "🏠 *Menu chính*\nChọn chức năng bên dưới:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=get_main_keyboard()
         )
@@ -708,8 +709,8 @@ if __name__ == '__main__':
     if not CMC_API_KEY:
         print("⚠️ Cảnh báo: Thiếu CMC_API_KEY")
     
-    print("🚀 Khởi động bot...")
-    print("✅ Tính năng: USDT/VND trong phần giá coin")
+    print("🚀 Khởi động bot ĐẦU TƯ COIN...")
+    print("✅ Hỗ trợ: BTC, ETH, USDT")
     
     threading.Thread(target=run_health_server, daemon=True).start()
     
@@ -738,7 +739,7 @@ if __name__ == '__main__':
     threading.Thread(target=auto_update, daemon=True).start()
     
     print("✅ Bot đã sẵn sàng!")
+    print("💰 Bấm 'ĐẦU TƯ COIN' để xem BTC/ETH/USDT")
     print("📝 Gõ /usdt để xem tỷ giá")
-    print("💰 Bấm 'Giá coin' để xem USDT/VND")
     
     app.run_polling()
