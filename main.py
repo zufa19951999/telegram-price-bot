@@ -71,7 +71,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
         
-        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        current_time = get_vn_time().strftime('%Y-%m-%d %H:%M:%S')
         response = f"Crypto Bot Running - {current_time}"
         self.wfile.write(response.encode('utf-8'))
     
@@ -121,7 +121,7 @@ def backup_database():
     """Tự động backup database"""
     try:
         if os.path.exists(DB_PATH):
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            timestamp = get_vn_time().strftime('%Y%m%d_%H%M%S')
             backup_path = os.path.join(BACKUP_DIR, f'backup_{timestamp}.db')
             
             # Copy file
@@ -181,7 +181,7 @@ def add_transaction(user_id, symbol, amount, buy_price):
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        buy_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        buy_date = get_vn_time().strftime("%Y-%m-%d %H:%M:%S")
         total_cost = amount * buy_price
         symbol_upper = symbol.upper()
         
@@ -321,7 +321,7 @@ def add_alert(user_id, symbol, target_price, condition):
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        created_at = get_vn_time().strftime("%Y-%m-%d %H:%M:%S")
         symbol_upper = symbol.upper()
         
         c.execute('''INSERT INTO alerts 
@@ -410,7 +410,7 @@ def check_alerts():
                         f"• Giá hiện tại: `{fmt_price(current_price)}`\n"
                         f"• Mốc cảnh báo: `{fmt_price(target_price)}`\n"
                         f"• Điều kiện: {'📈 Lên trên' if condition == 'above' else '📉 Xuống dưới'}\n\n"
-                        f"🕐 {datetime.now().strftime('%H:%M:%S %d/%m/%Y')}"
+                        f"🕐 {get_vn_time().strftime('%H:%M:%S %d/%m/%Y')}"
                     )
                     
                     try:
@@ -711,7 +711,7 @@ def export_portfolio_to_csv(user_id):
             return None, "📭 Không có dữ liệu để xuất!"
         
         # Tạo file CSV
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        timestamp = get_vn_time().strftime('%Y%m%d_%H%M%S')
         filename = f"portfolio_{user_id}_{timestamp}.csv"
         filepath = os.path.join(EXPORT_DIR, filename)
         
@@ -1285,7 +1285,7 @@ async def stats_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         percent = (data['cost'] / total_invest * 100) if total_invest > 0 else 0
         stats_msg += f"• {symbol}: `{percent:.1f}%`\n"
     
-    stats_msg += f"\n📅 Cập nhật: {datetime.now().strftime('%H:%M %d/%m/%Y')}"
+    stats_msg += f"\n📅 Cập nhật: {get_vn_time().strftime('%H:%M %d/%m/%Y')}"
     
     keyboard = [[
         InlineKeyboardButton("🔄 Làm mới", callback_data="show_stats"),
@@ -1633,7 +1633,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 percent = (data['cost'] / total_invest * 100) if total_invest > 0 else 0
                 stats_msg += f"• {symbol}: `{percent:.1f}%`\n"
             
-            stats_msg += f"\n📅 Cập nhật: {datetime.now().strftime('%H:%M %d/%m/%Y')}"
+            stats_msg += f"\n📅 Cập nhật: {get_vn_time().strftime('%H:%M %d/%m/%Y')}"
             
             keyboard = [[
                 InlineKeyboardButton("🔄 Làm mới", callback_data="show_stats"),
