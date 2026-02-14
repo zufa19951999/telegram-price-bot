@@ -7,8 +7,7 @@ import sqlite3
 import logging
 import shutil
 import re
-import pandas as pd
-import io
+import csv
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
@@ -126,7 +125,7 @@ def clean_old_exports(hours=24):
     """Xóa file export cũ hơn 24 giờ"""
     now = time.time()
     for f in os.listdir(EXPORT_DIR):
-        if f.startswith('portfolio_') and f.endswith('.xlsx'):
+        if f.startswith('portfolio_') and (f.endswith('.csv') or f.endswith('.txt')):
             filepath = os.path.join(EXPORT_DIR, f)
             if os.path.getmtime(filepath) < now - hours * 3600:
                 os.remove(filepath)
@@ -292,10 +291,10 @@ def delete_sold_transactions(user_id, kept_transactions):
         if conn:
             conn.close()
 
-# ==================== HÀM XUẤT EXCEL ====================
+# ==================== HÀM XUẤT CSV ====================
 
-def export_portfolio_to_excel(user_id):
-    """Xuất danh mục đầu tư ra file Excel"""
+def export_portfolio_to_csv(user_id):
+    """Xuất danh mục đầu tư ra file CSV (không cần pandas)"""
     try:
         # Lấy dữ liệu
         transactions = get_transaction_detail(user_id)
@@ -303,116 +302,62 @@ def export_portfolio_to_excel(user_id):
         if not transactions:
             return None, "📭 Không có dữ liệu để xuất!"
         
-        # Lấy giá hiện tại
-        portfolio_data = []
-        summary = {}
-        
-        for tx in transactions:
-            tx_id, symbol, amount, price, date, cost = tx
-            
-            # Lấy giá hiện tại
-            price_data = get_price(symbol)
-            current_price = price_data['p'] if price_data else 0
-            current_value = amount * current_price
-            profit = current_value - cost
-            profit_percent = (profit / cost) * 100 if cost > 0 else 0
-            
-            portfolio_data.append({
-                'ID': tx_id,
-                'Mã coin': symbol,
-                'Số lượng': amount,
-                'Giá mua (USD)': price,
-                'Ngày mua': date,
-                'Tổng vốn (USD)': cost,
-                'Giá hiện tại (USD)': current_price,
-                'Giá trị hiện tại (USD)': current_value,
-                'Lợi nhuận (USD)': profit,
-                'Lợi nhuận %': profit_percent
-            })
-            
-            # Tính tổng hợp theo coin
-            if symbol not in summary:
-                summary[symbol] = {
-                    'total_amount': 0,
-                    'total_cost': 0,
-                    'total_value': 0
-                }
-            summary[symbol]['total_amount'] += amount
-            summary[symbol]['total_cost'] += cost
-            summary[symbol]['total_value'] += current_value
-        
-        # Tạo DataFrame cho chi tiết giao dịch
-        df_details = pd.DataFrame(portfolio_data)
-        
-        # Định dạng số
-        pd.options.display.float_format = '{:,.2f}'.format
-        
-        # Tạo DataFrame cho tổng hợp theo coin
-        summary_data = []
-        total_invest = 0
-        total_value = 0
-        
-        for symbol, data in summary.items():
-            profit = data['total_value'] - data['total_cost']
-            profit_percent = (profit / data['total_cost']) * 100 if data['total_cost'] > 0 else 0
-            avg_price = data['total_cost'] / data['total_amount'] if data['total_amount'] > 0 else 0
-            
-            summary_data.append({
-                'Mã coin': symbol,
-                'Tổng số lượng': data['total_amount'],
-                'Giá vốn TB (USD)': avg_price,
-                'Tổng vốn (USD)': data['total_cost'],
-                'Giá trị hiện tại (USD)': data['total_value'],
-                'Lợi nhuận (USD)': profit,
-                'Lợi nhuận %': profit_percent
-            })
-            
-            total_invest += data['total_cost']
-            total_value += data['total_value']
-        
-        df_summary = pd.DataFrame(summary_data)
-        
-        # Tính tổng kết
-        total_profit = total_value - total_invest
-        total_profit_percent = (total_profit / total_invest) * 100 if total_invest > 0 else 0
-        
-        summary_total = pd.DataFrame([{
-            'Tổng vốn (USD)': total_invest,
-            'Tổng giá trị (USD)': total_value,
-            'Tổng lợi nhuận (USD)': total_profit,
-            'Tỷ suất lợi nhuận %': total_profit_percent
-        }])
-        
-        # Tạo file Excel
+        # Tạo file CSV
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f"portfolio_{user_id}_{timestamp}.xlsx"
+        filename = f"portfolio_{user_id}_{timestamp}.csv"
         filepath = os.path.join(EXPORT_DIR, filename)
         
-        with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
-            df_details.to_excel(writer, sheet_name='Chi tiết giao dịch', index=False)
-            df_summary.to_excel(writer, sheet_name='Tổng hợp theo coin', index=False)
-            summary_total.to_excel(writer, sheet_name='Tổng kết', index=False)
+        with open(filepath, 'w', newline='', encoding='utf-8-sig') as csvfile:
+            writer = csv.writer(csvfile)
             
-            # Định dạng các sheet
-            for sheet_name in writer.sheets:
-                worksheet = writer.sheets[sheet_name]
-                for column in worksheet.columns:
-                    max_length = 0
-                    column_letter = column[0].column_letter
-                    for cell in column:
-                        try:
-                            if len(str(cell.value)) > max_length:
-                                max_length = len(str(cell.value))
-                        except:
-                            pass
-                    adjusted_width = min(max_length + 2, 50)
-                    worksheet.column_dimensions[column_letter].width = adjusted_width
+            # Ghi header
+            writer.writerow(['ID', 'Mã coin', 'Số lượng', 'Giá mua (USD)', 'Ngày mua', 
+                           'Tổng vốn (USD)', 'Giá hiện tại (USD)', 'Giá trị hiện tại (USD)', 
+                           'Lợi nhuận (USD)', 'Lợi nhuận %'])
+            
+            total_invest = 0
+            total_value = 0
+            
+            # Ghi từng giao dịch
+            for tx in transactions:
+                tx_id, symbol, amount, price, date, cost = tx
+                
+                # Lấy giá hiện tại
+                price_data = get_price(symbol)
+                current_price = price_data['p'] if price_data else 0
+                current_value = amount * current_price
+                profit = current_value - cost
+                profit_percent = (profit / cost) * 100 if cost > 0 else 0
+                
+                writer.writerow([
+                    tx_id, 
+                    symbol, 
+                    f"{amount:.8f}", 
+                    f"{price:.2f}", 
+                    date,
+                    f"{cost:.2f}", 
+                    f"{current_price:.2f}", 
+                    f"{current_value:.2f}",
+                    f"{profit:.2f}", 
+                    f"{profit_percent:.2f}"
+                ])
+                
+                total_invest += cost
+                total_value += current_value
+            
+            # Ghi tổng kết
+            writer.writerow([])
+            writer.writerow(['TỔNG KẾT'])
+            writer.writerow(['Tổng vốn (USD)', f"{total_invest:.2f}"])
+            writer.writerow(['Tổng giá trị (USD)', f"{total_value:.2f}"])
+            writer.writerow(['Tổng lợi nhuận (USD)', f"{total_value - total_invest:.2f}"])
+            writer.writerow(['Tỷ suất lợi nhuận %', f"{((total_value - total_invest)/total_invest*100):.2f}" if total_invest > 0 else "0"])
         
-        logger.info(f"✅ Đã tạo file Excel cho user {user_id}: {filename}")
+        logger.info(f"✅ Đã tạo file CSV cho user {user_id}: {filename}")
         return filepath, None
         
     except Exception as e:
-        logger.error(f"❌ Lỗi khi xuất Excel: {e}")
+        logger.error(f"❌ Lỗi khi xuất CSV: {e}")
         return None, f"❌ Lỗi khi xuất file: {str(e)}"
 
 # ==================== HÀM LẤY GIÁ COIN ====================
@@ -636,7 +581,7 @@ def get_invest_menu_keyboard():
          InlineKeyboardButton("✏️ Sửa/Xóa", callback_data="edit_transactions")],
         [InlineKeyboardButton("➖ Bán coin", callback_data="show_sell"),
          InlineKeyboardButton("➕ Mua coin", callback_data="show_buy")],
-        [InlineKeyboardButton("📥 Xuất Excel", callback_data="export_excel")]
+        [InlineKeyboardButton("📥 Xuất CSV", callback_data="export_csv")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -652,7 +597,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• Quản lý danh mục đầu tư\n"
         "• ✏️ Sửa/Xóa giao dịch\n"
         "• Tính lợi nhuận chi tiết\n"
-        "• 📥 Xuất báo cáo Excel\n\n"
+        "• 📥 Xuất báo cáo CSV\n\n"
         "👇 *Bấm ĐẦU TƯ COIN để bắt đầu*"
     )
     await update.message.reply_text(
@@ -674,7 +619,7 @@ async def help_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• `/edit 5` - Xem chi tiết giao dịch #5\n"
         "• `/edit 5 0.8 42000` - Sửa giao dịch #5\n"
         "• `/del 5` - Xóa giao dịch #5\n"
-        "• `/export` - Xuất báo cáo Excel\n\n"
+        "• `/export` - Xuất báo cáo CSV\n\n"
         "*Lưu ý:* Dữ liệu được lưu vĩnh viễn"
     )
     await update.message.reply_text(help_msg, parse_mode=ParseMode.MARKDOWN)
@@ -974,11 +919,11 @@ async def delete_tx_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ ID không hợp lệ")
 
 async def export_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Command xuất Excel"""
+    """Command xuất CSV"""
     uid = update.effective_user.id
-    msg = await update.message.reply_text("🔄 Đang tạo file Excel...")
+    msg = await update.message.reply_text("🔄 Đang tạo file CSV...")
     
-    filepath, error = export_portfolio_to_excel(uid)
+    filepath, error = export_portfolio_to_csv(uid)
     
     if error:
         await msg.edit_text(error)
@@ -990,7 +935,7 @@ async def export_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_document(
                 document=f,
                 filename=os.path.basename(filepath),
-                caption="📊 *BÁO CÁO DANH MỤC ĐẦU TƯ*\n━━━━━━━━━━━━━━━━\n\n✅ Xuất thành công!",
+                caption="📊 *BÁO CÁO DANH MỤC ĐẦU TƯ*\n━━━━━━━━━━━━━━━━\n\n✅ Xuất thành công! (Định dạng CSV)",
                 parse_mode=ParseMode.MARKDOWN
             )
         
@@ -1154,7 +1099,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("✏️ Sửa/Xóa", callback_data="edit_transactions")],
                 [InlineKeyboardButton("➕ Mua", callback_data="show_buy"),
                  InlineKeyboardButton("➖ Bán", callback_data="show_sell")],
-                [InlineKeyboardButton("📥 Xuất Excel", callback_data="export_excel")],
+                [InlineKeyboardButton("📥 Xuất CSV", callback_data="export_csv")],
                 [InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]
             ]
             
@@ -1163,11 +1108,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
         
-        elif data == "export_excel":
+        elif data == "export_csv":
             uid = query.from_user.id
-            await query.edit_message_text("🔄 Đang tạo file Excel...")
+            await query.edit_message_text("🔄 Đang tạo file CSV...")
             
-            filepath, error = export_portfolio_to_excel(uid)
+            filepath, error = export_portfolio_to_csv(uid)
             
             if error:
                 await query.edit_message_text(error)
@@ -1179,7 +1124,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     await query.message.reply_document(
                         document=f,
                         filename=os.path.basename(filepath),
-                        caption="📊 *BÁO CÁO DANH MỤC ĐẦU TƯ*\n━━━━━━━━━━━━━━━━\n\n✅ Xuất thành công!",
+                        caption="📊 *BÁO CÁO DANH MỤC ĐẦU TƯ*\n━━━━━━━━━━━━━━━━\n\n✅ Xuất thành công! (Định dạng CSV)",
                         parse_mode=ParseMode.MARKDOWN
                     )
                 
