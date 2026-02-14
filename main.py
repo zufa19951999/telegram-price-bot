@@ -2041,7 +2041,7 @@ async def expense_manage_categories_handler(update: Update, ctx: ContextTypes.DE
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# ==================== HANDLE MESSAGE (ĐÃ SỬA LỖI) ====================
+# ==================== HANDLE MESSAGE ====================
 
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -2072,26 +2072,30 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif text == "🔙 Về menu chính":
         await start(update, ctx)
     
-    # Xử lý các lệnh nhập liệu (ĐÃ SỬA LỖI)
-
-        elif text.startswith("thu nhập"):
+    # Xử lý các lệnh nhập liệu
+    elif text.startswith("thu nhập"):
         parts = text.split()
         if len(parts) >= 2:
             try:
-                # Mặc định là VND
-                currency = 'VND'
                 amount_str = parts[1]
                 
-                # Kiểm tra nếu có chữ ở cuối (USD, VND, KHR...)
-                import re
-                # Tách số và chữ: ví dụ "100USD" -> số="100", chữ="USD"
-                # Pattern này nhận cả số nguyên và số thập phân
-                match = re.match(r'^([0-9.]+)([A-Za-z]+)$', amount_str)
-                if match:
-                    amount = float(match.group(1))
-                    currency = match.group(2).upper()
-                else:
-                    # Không có chữ, chỉ có số
+                # Tìm vị trí bắt đầu của chữ cái trong chuỗi
+                currency = 'VND'  # Mặc định
+                amount = 0
+                
+                # Duyệt từng ký tự để tách số và chữ
+                num_part = ''
+                char_part = ''
+                for c in amount_str:
+                    if c.isdigit() or c == '.':
+                        num_part += c
+                    else:
+                        char_part += c
+                
+                if char_part:  # Nếu có chữ ở cuối
+                    amount = float(num_part)
+                    currency = char_part.upper()
+                else:  # Không có chữ
                     amount = float(amount_str)
                 
                 # Kiểm tra currency có hợp lệ không
@@ -2137,14 +2141,19 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 currency = 'VND'
                 amount_str = parts[2]
                 
-                # Kiểm tra nếu có chữ ở cuối
-                import re
-                match = re.match(r'^(\d+)([A-Za-z]+)$', amount_str.upper())
-                if match:
-                    amount = float(match.group(1))
-                    currency = match.group(2)
-                else:
-                    # Không có chữ, chỉ có số
+                # Duyệt từng ký tự để tách số và chữ
+                num_part = ''
+                char_part = ''
+                for c in amount_str:
+                    if c.isdigit() or c == '.':
+                        num_part += c
+                    else:
+                        char_part += c
+                
+                if char_part:  # Nếu có chữ ở cuối
+                    amount = float(num_part)
+                    currency = char_part.upper()
+                else:  # Không có chữ
                     amount = float(amount_str)
                 
                 # Kiểm tra currency có hợp lệ không
