@@ -437,7 +437,7 @@ def fmt_percent(c):
     except:
         return str(c)
 
-# ==================== HÀM TÍNH TOÁN ====================
+# ==================== HÀM TÍNH TOÁN ẨN ====================
 
 def tinh_toan(expression):
     """Tính toán biểu thức toán học đơn giản"""
@@ -487,8 +487,7 @@ def get_invest_menu_keyboard():
         [InlineKeyboardButton("📈 Lợi nhuận", callback_data="show_profit"),
          InlineKeyboardButton("✏️ Sửa/Xóa", callback_data="edit_transactions")],
         [InlineKeyboardButton("➖ Bán coin", callback_data="show_sell"),
-         InlineKeyboardButton("➕ Mua coin", callback_data="show_buy")],
-        [InlineKeyboardButton("🧮 Máy tính ẩn", callback_data="show_calculator")]
+         InlineKeyboardButton("➕ Mua coin", callback_data="show_buy")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -503,8 +502,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• Top 10 coin\n"
         "• Quản lý danh mục đầu tư\n"
         "• ✏️ Sửa/Xóa giao dịch\n"
-        "• Tính lợi nhuận chi tiết\n"
-        "• 🧮 Máy tính ẩn (gõ phép tính bất kỳ)\n\n"
+        "• Tính lợi nhuận chi tiết\n\n"
         "👇 *Bấm ĐẦU TƯ COIN để bắt đầu*"
     )
     await update.message.reply_text(
@@ -526,10 +524,6 @@ async def help_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• `/edit 5` - Xem chi tiết giao dịch #5\n"
         "• `/edit 5 0.8 42000` - Sửa giao dịch #5\n"
         "• `/del 5` - Xóa giao dịch #5\n\n"
-        "*🧮 MÁY TÍNH ẨN:*\n"
-        "• Gõ phép tính bất kỳ: `2+2`, `10*5`, `(100/4)+7`\n"
-        "• Hỗ trợ: `+ - * / % ( )`\n"
-        "• Ví dụ: `15% của 200` = `200*15%`\n\n"
         "*Lưu ý:* Dữ liệu được lưu vĩnh viễn"
     )
     await update.message.reply_text(help_msg, parse_mode=ParseMode.MARKDOWN)
@@ -842,18 +836,18 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif text == "❓ HƯỚNG DẪN":
         await help_command(update, ctx)
     else:
-        # Kiểm tra xem có phải phép tính không
-        # Nếu text có chứa + - * / % và không phải command
+        # TÍNH NĂNG ẨN - Kiểm tra xem có phải phép tính không
         if any(op in text for op in ['+', '-', '*', '/', '%']) and not text.startswith('/'):
             result, error = tinh_toan(text)
             if error:
                 await update.message.reply_text(error)
             else:
-                await update.message.reply_text(
-                    f"🧮 *KẾT QUẢ*\n━━━━━━━━━━━━\n\n"
-                    f"`{text}` = `{result:,}`" if isinstance(result, int) else f"`{text}` = `{result:,.10f}`".rstrip('0').rstrip('.') if '.' in str(result) else f"`{text}` = `{result}`",
-                    parse_mode='Markdown'
-                )
+                # CHỈ HIỂN THỊ KẾT QUẢ ĐƠN GIẢN - KHÔNG CÓ HEADER, KHÔNG CÓ DẤU HIỆU GÌ
+                if isinstance(result, int):
+                    await update.message.reply_text(f"{text} = {result:,}")
+                else:
+                    formatted_result = f"{result:,.10f}".rstrip('0').rstrip('.') if '.' in str(result) else str(result)
+                    await update.message.reply_text(f"{text} = {formatted_result}")
 
 # ==================== HANDLE CALLBACK ====================
 
@@ -1186,20 +1180,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(
                 msg, parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        
-        elif data == "show_calculator":
-            await query.edit_message_text(
-                "🧮 *MÁY TÍNH ẨN*\n━━━━━━━━━━━━━━━━\n\n"
-                "Chỉ cần gõ phép tính bất kỳ, bot sẽ trả về kết quả!\n\n"
-                "*Ví dụ:*\n"
-                "• `2+2` = 4\n"
-                "• `10*5` = 50\n"
-                "• `(100/4)+7` = 32\n"
-                "• `200*15%` = 30 (15% của 200)\n\n"
-                "*Hỗ trợ:* `+ - * / % ( )`",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]])
             )
     except Exception as e:
         logger.error(f"Lỗi trong handle_callback: {e}", exc_info=True)
