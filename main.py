@@ -135,83 +135,114 @@ def schedule_backup():
 # ==================== DATABASE FUNCTIONS ====================
 
 def add_subscription(user_id, symbol):
-    """Thêm theo dõi"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    """Thêm theo dõi - ĐÃ SỬA LỖI"""
+    conn = None
     try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
         added_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         symbol_upper = symbol.upper()
+        
+        # Kiểm tra xem đã tồn tại chưa
+        c.execute("SELECT * FROM subscriptions WHERE user_id = ? AND symbol = ?",
+                  (user_id, symbol_upper))
+        if c.fetchone():
+            logger.warning(f"⚠️ User {user_id} đã có {symbol_upper}")
+            return False
+        
+        # Thêm mới
         c.execute("INSERT INTO subscriptions (user_id, symbol, added_date) VALUES (?, ?, ?)",
                   (user_id, symbol_upper, added_date))
         conn.commit()
         logger.info(f"✅ User {user_id} đã thêm {symbol_upper}")
         return True
-    except sqlite3.IntegrityError:
-        logger.warning(f"⚠️ User {user_id} đã có {symbol.upper()}")
+        
+    except sqlite3.Error as e:
+        logger.error(f"❌ Lỗi SQLite khi thêm subscription: {e}")
         return False
     except Exception as e:
         logger.error(f"❌ Lỗi khi thêm subscription: {e}")
         return False
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 def remove_subscription(user_id, symbol):
     """Xóa theo dõi"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    conn = None
     try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        symbol_upper = symbol.upper()
+        
         c.execute("DELETE FROM subscriptions WHERE user_id = ? AND symbol = ?",
-                  (user_id, symbol.upper()))
+                  (user_id, symbol_upper))
         conn.commit()
         affected = c.rowcount
-        logger.info(f"🗑 User {user_id} đã xóa {symbol.upper()}, affected: {affected}")
-        return affected > 0
+        
+        if affected > 0:
+            logger.info(f"🗑 User {user_id} đã xóa {symbol_upper}")
+            return True
+        else:
+            logger.warning(f"⚠️ User {user_id} không có {symbol_upper} để xóa")
+            return False
+            
     except Exception as e:
         logger.error(f"❌ Lỗi khi xóa subscription: {e}")
         return False
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 def get_subscriptions(user_id):
-    """Lấy danh sách theo dõi"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    """Lấy danh sách theo dõi - ĐÃ SỬA LỖI"""
+    conn = None
     try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
         c.execute("SELECT symbol FROM subscriptions WHERE user_id = ? ORDER BY symbol",
                   (user_id,))
-        result = [row[0].upper() for row in c.fetchall()]
+        rows = c.fetchall()
+        result = [row[0].upper() for row in rows]
+        logger.info(f"📋 User {user_id} có {len(result)} coins: {result}")
         return result
     except Exception as e:
         logger.error(f"❌ Lỗi khi lấy subscriptions: {e}")
         return []
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 def add_transaction(user_id, symbol, amount, buy_price):
     """Thêm giao dịch mua"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    conn = None
     try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
         buy_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         total_cost = amount * buy_price
+        symbol_upper = symbol.upper()
         
         c.execute('''INSERT INTO portfolio 
                      (user_id, symbol, amount, buy_price, buy_date, total_cost)
                      VALUES (?, ?, ?, ?, ?, ?)''',
-                  (user_id, symbol.upper(), amount, buy_price, buy_date, total_cost))
+                  (user_id, symbol_upper, amount, buy_price, buy_date, total_cost))
         conn.commit()
+        logger.info(f"✅ User {user_id} đã mua {amount} {symbol_upper} giá {buy_price}")
         return True
     except Exception as e:
         logger.error(f"❌ Lỗi khi thêm transaction: {e}")
         return False
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 def get_portfolio(user_id):
     """Lấy toàn bộ danh mục"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    conn = None
     try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
         c.execute('''SELECT symbol, amount, buy_price, buy_date, total_cost 
                      FROM portfolio WHERE user_id = ? ORDER BY buy_date''',
                   (user_id,))
@@ -221,13 +252,15 @@ def get_portfolio(user_id):
         logger.error(f"❌ Lỗi khi lấy portfolio: {e}")
         return []
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 def get_transaction_detail(user_id):
     """Lấy chi tiết từng giao dịch kèm ID"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    conn = None
     try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
         c.execute('''SELECT id, symbol, amount, buy_price, buy_date, total_cost 
                      FROM portfolio WHERE user_id = ? ORDER BY buy_date''',
                   (user_id,))
@@ -237,13 +270,16 @@ def get_transaction_detail(user_id):
         logger.error(f"❌ Lỗi khi lấy transaction detail: {e}")
         return []
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 def update_transaction(transaction_id, user_id, new_amount, new_price):
     """Cập nhật thông tin giao dịch"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    conn = None
     try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
         c.execute('''SELECT symbol, amount, buy_price, total_cost 
                      FROM portfolio WHERE id = ? AND user_id = ?''',
                   (transaction_id, user_id))
@@ -260,35 +296,44 @@ def update_transaction(transaction_id, user_id, new_amount, new_price):
                   (new_amount, new_price, new_total, transaction_id, user_id))
         
         conn.commit()
+        logger.info(f"✅ Đã cập nhật giao dịch #{transaction_id}")
         return True
     except Exception as e:
         logger.error(f"❌ Lỗi khi update transaction: {e}")
         return False
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 def delete_transaction(transaction_id, user_id):
     """Xóa một giao dịch"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    conn = None
     try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
         c.execute('''DELETE FROM portfolio 
                      WHERE id = ? AND user_id = ?''',
                   (transaction_id, user_id))
         conn.commit()
         affected = c.rowcount
-        return affected > 0
+        if affected > 0:
+            logger.info(f"✅ Đã xóa giao dịch #{transaction_id}")
+            return True
+        return False
     except Exception as e:
         logger.error(f"❌ Lỗi khi xóa transaction: {e}")
         return False
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 def delete_sold_transactions(user_id, kept_transactions):
     """Xóa các giao dịch đã bán và cập nhật lại"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    conn = None
     try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
         c.execute("DELETE FROM portfolio WHERE user_id = ?", (user_id,))
         
         for tx in kept_transactions:
@@ -299,10 +344,12 @@ def delete_sold_transactions(user_id, kept_transactions):
                        tx['buy_date'], tx['total_cost']))
         
         conn.commit()
+        logger.info(f"✅ Đã cập nhật portfolio cho user {user_id}")
     except Exception as e:
         logger.error(f"❌ Lỗi khi xóa sold transactions: {e}")
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 # ==================== HÀM LẤY GIÁ COIN ====================
 
@@ -603,6 +650,7 @@ async def s_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 async def su_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Command thêm coin theo dõi - ĐÃ SỬA LỖI"""
     uid = update.effective_user.id
     if not ctx.args: 
         return await update.message.reply_text("❌ /su btc eth doge")
@@ -610,40 +658,42 @@ async def su_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔄 Đang xử lý...")
     coins = [arg.upper() for arg in ctx.args]
     
-    logger.info(f"User {uid} đang thêm coins: {coins}")
+    logger.info(f"🔍 User {uid} đang thêm coins: {coins}")
+    
+    # Lấy danh sách hiện tại
+    current_subs = get_subscriptions(uid)
+    logger.info(f"📋 Danh sách hiện tại: {current_subs}")
     
     results = []
     added = []
-    failed = []
     existed = []
     
     for coin in coins:
-        price_data = get_price(coin)
-        if not price_data:
-            failed.append(coin)
-            continue
-        
-        if add_subscription(uid, coin):
-            added.append(coin)
-            price_cache[coin] = price_data
-            logger.info(f"✅ Đã thêm {coin} cho user {uid}")
-        else:
+        # Kiểm tra xem đã có chưa
+        if coin in current_subs:
             existed.append(coin)
             logger.info(f"ℹ️ {coin} đã tồn tại cho user {uid}")
+        else:
+            # Thêm mới - KHÔNG cần kiểm tra giá
+            if add_subscription(uid, coin):
+                added.append(coin)
+                logger.info(f"✅ Đã thêm {coin} cho user {uid}")
+            else:
+                results.append(f"❌ *{coin}*: Lỗi khi thêm vào database")
     
-    # Kiểm tra lại database
-    current_subs = get_subscriptions(uid)
-    logger.info(f"User {uid} hiện đang theo dõi: {current_subs}")
+    # Lấy danh sách mới nhất
+    new_subs = get_subscriptions(uid)
     
     if added:
         results.append(f"✅ Đã thêm: {', '.join(added)}")
     if existed:
         results.append(f"ℹ️ Đã có: {', '.join(existed)}")
-    if failed:
-        results.append(f"❌ Không tìm thấy: {', '.join(failed)}")
     
-    total = len(current_subs)
+    total = len(new_subs)
     results.append(f"\n📊 Tổng số đang theo dõi: {total}")
+    
+    if new_subs:
+        results.append(f"\n📋 Danh sách: {', '.join(sorted(new_subs))}")
     
     await msg.delete()
     await update.message.reply_text("\n".join(results), parse_mode='Markdown')
@@ -696,8 +746,10 @@ async def uns_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     results = []
     for coin in coins:
         if coin in get_subscriptions(uid):
-            remove_subscription(uid, coin)
-            results.append(f"✅ Đã xóa *{coin}*")
+            if remove_subscription(uid, coin):
+                results.append(f"✅ Đã xóa *{coin}*")
+            else:
+                results.append(f"❌ Lỗi khi xóa *{coin}*")
         else:
             results.append(f"❌ *{coin}*: Không có trong danh sách")
     
@@ -744,21 +796,22 @@ async def buy_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not price_data:
         return await update.message.reply_text(f"❌ Không thể lấy giá *{symbol}*", parse_mode='Markdown')
     
-    add_transaction(uid, symbol, amount, buy_price)
-    
-    current_price = price_data['p']
-    profit = (current_price - buy_price) * amount
-    profit_percent = ((current_price - buy_price) / buy_price) * 100
-    
-    msg = (
-        f"✅ *ĐÃ MUA {symbol}*\n━━━━━━━━━━━━━━━━\n\n"
-        f"📊 SL: `{amount:.4f}`\n"
-        f"💰 Giá mua: `{fmt_price(buy_price)}`\n"
-        f"💵 Vốn: `{fmt_price(amount * buy_price)}`\n"
-        f"📈 Giá hiện: `{fmt_price(current_price)}`\n"
-        f"{'✅' if profit>=0 else '❌'} LN: `{fmt_price(profit)}` ({profit_percent:+.2f}%)"
-    )
-    await update.message.reply_text(msg, parse_mode='Markdown')
+    if add_transaction(uid, symbol, amount, buy_price):
+        current_price = price_data['p']
+        profit = (current_price - buy_price) * amount
+        profit_percent = ((current_price - buy_price) / buy_price) * 100
+        
+        msg = (
+            f"✅ *ĐÃ MUA {symbol}*\n━━━━━━━━━━━━━━━━\n\n"
+            f"📊 SL: `{amount:.4f}`\n"
+            f"💰 Giá mua: `{fmt_price(buy_price)}`\n"
+            f"💵 Vốn: `{fmt_price(amount * buy_price)}`\n"
+            f"📈 Giá hiện: `{fmt_price(current_price)}`\n"
+            f"{'✅' if profit>=0 else '❌'} LN: `{fmt_price(profit)}` ({profit_percent:+.2f}%)"
+        )
+        await update.message.reply_text(msg, parse_mode='Markdown')
+    else:
+        await update.message.reply_text(f"❌ Lỗi khi thêm giao dịch *{symbol}*", parse_mode='Markdown')
 
 async def sell_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -1045,22 +1098,17 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
             logger.info(f"User {uid} đang thêm {symbol} từ callback")
             
-            # Kiểm tra xem đã theo dõi chưa
-            subs = get_subscriptions(uid)
+            # Lấy danh sách hiện tại
+            current_subs = get_subscriptions(uid)
             
-            if symbol in subs:
+            if symbol in current_subs:
                 msg = f"ℹ️ *{symbol}* đã có trong danh sách theo dõi!"
             else:
-                price_data = get_price(symbol)
-                if not price_data:
-                    msg = f"❌ Không thể thêm *{symbol}* vì không lấy được giá"
+                if add_subscription(uid, symbol):
+                    msg = f"✅ Đã thêm *{symbol}* vào danh sách theo dõi!"
+                    logger.info(f"✅ Đã thêm {symbol} cho user {uid}")
                 else:
-                    if add_subscription(uid, symbol):
-                        msg = f"✅ Đã thêm *{symbol}* vào danh sách theo dõi!"
-                        price_cache[symbol] = price_data
-                        logger.info(f"✅ Đã thêm {symbol} cho user {uid}")
-                    else:
-                        msg = f"❌ Không thể thêm *{symbol}*"
+                    msg = f"❌ Không thể thêm *{symbol}* vào database"
             
             # Lấy danh sách mới
             new_subs = get_subscriptions(uid)
