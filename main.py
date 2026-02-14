@@ -2073,7 +2073,8 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await start(update, ctx)
     
     # Xử lý các lệnh nhập liệu (ĐÃ SỬA LỖI)
-    elif text.startswith("thu nhập"):
+
+        elif text.startswith("thu nhập"):
         parts = text.split()
         if len(parts) >= 2:
             try:
@@ -2084,10 +2085,11 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 # Kiểm tra nếu có chữ ở cuối (USD, VND, KHR...)
                 import re
                 # Tách số và chữ: ví dụ "100USD" -> số="100", chữ="USD"
-                match = re.match(r'^(\d+)([A-Za-z]+)$', amount_str.upper())
+                # Pattern này nhận cả số nguyên và số thập phân
+                match = re.match(r'^([0-9.]+)([A-Za-z]+)$', amount_str)
                 if match:
                     amount = float(match.group(1))
-                    currency = match.group(2)
+                    currency = match.group(2).upper()
                 else:
                     # Không có chữ, chỉ có số
                     amount = float(amount_str)
