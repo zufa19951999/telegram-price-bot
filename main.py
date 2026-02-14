@@ -826,7 +826,7 @@ def export_portfolio_to_csv(user_id):
         logger.error(f"❌ Lỗi khi xuất CSV: {e}")
         return None, f"❌ Lỗi khi xuất file: {str(e)}"
 
-# ==================== EXPENSE DATABASE FUNCTIONS (ĐÃ SỬA) ====================
+# ==================== EXPENSE DATABASE FUNCTIONS ====================
 
 def add_expense_category(user_id, name, budget=0):
     """Thêm danh mục chi tiêu"""
@@ -1745,7 +1745,7 @@ async def export_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     await msg.delete()
 
-# ==================== EXPENSE COMMAND HANDLERS (ĐÃ SỬA) ====================
+# ==================== EXPENSE COMMAND HANDLERS ====================
 
 async def expense_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Menu quản lý chi tiêu"""
@@ -2077,36 +2077,29 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parts = text.split()
         if len(parts) >= 2:
             try:
-                # Kiểm tra xem có chỉ định loại tiền không
-                currency = 'VND'  # Mặc định
+                # Mặc định là VND
+                currency = 'VND'
                 amount_str = parts[1]
                 
-                # Kiểm tra nếu amount có kèm currency code (ví dụ: 100USD, 5000KHR)
+                # Kiểm tra nếu có chữ ở cuối (USD, VND, KHR...)
                 import re
-                # Pattern đơn giản: bắt đầu bằng số, theo sau bởi chữ cái
-                match = re.match(r'^(\d+)([A-Za-z]+)$', amount_str)
+                # Tách số và chữ: ví dụ "100USD" -> số="100", chữ="USD"
+                match = re.match(r'^(\d+)([A-Za-z]+)$', amount_str.upper())
                 if match:
                     amount = float(match.group(1))
-                    currency = match.group(2).upper()
-                    # Kiểm tra currency có hỗ trợ không
-                    if currency not in SUPPORTED_CURRENCIES:
-                        currency_list = ', '.join(SUPPORTED_CURRENCIES.keys())
-                        await update.message.reply_text(
-                            f"❌ Loại tiền '{currency}' không hỗ trợ!\n"
-                            f"Các loại tiền hỗ trợ: {currency_list}"
-                        )
-                        return
+                    currency = match.group(2)
                 else:
-                    # Nếu không có currency code, thử parse như số bình thường
-                    try:
-                        amount = float(amount_str)
-                    except ValueError:
-                        await update.message.reply_text(
-                            "❌ Số tiền không hợp lệ!\n"
-                            "Ví dụ: `thu nhập 100USD Lương` hoặc `thu nhập 5000000VND` hoặc `thu nhập 50000`",
-                            parse_mode=ParseMode.MARKDOWN
-                        )
-                        return
+                    # Không có chữ, chỉ có số
+                    amount = float(amount_str)
+                
+                # Kiểm tra currency có hợp lệ không
+                if currency not in SUPPORTED_CURRENCIES:
+                    currency_list = ', '.join(SUPPORTED_CURRENCIES.keys())
+                    await update.message.reply_text(
+                        f"❌ Loại tiền '{currency}' không hỗ trợ!\n"
+                        f"Các loại tiền hỗ trợ: {currency_list}"
+                    )
+                    return
                 
                 source = parts[2] if len(parts) > 2 else "Khác"
                 note = " ".join(parts[3:]) if len(parts) > 3 else ""
@@ -2122,12 +2115,15 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     )
                 else:
                     await update.message.reply_text("❌ Lỗi khi ghi nhận thu nhập!")
-            except Exception as e:
-                logger.error(f"Lỗi xử lý thu nhập: {e}")
+            except ValueError:
                 await update.message.reply_text(
-                    "❌ Có lỗi xảy ra. Vui lòng thử lại!",
+                    "❌ Số tiền không hợp lệ!\n"
+                    "Ví dụ: `thu nhập 100USD Lương` hoặc `thu nhập 5000000VND` hoặc `thu nhập 50000`",
                     parse_mode=ParseMode.MARKDOWN
                 )
+            except Exception as e:
+                logger.error(f"Lỗi thu nhập: {e}")
+                await update.message.reply_text("❌ Có lỗi xảy ra, vui lòng thử lại!")
     
     elif text.startswith("chi tiêu"):
         parts = text.split()
@@ -2135,35 +2131,28 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             try:
                 category_id = int(parts[1])
                 
-                # Kiểm tra xem có chỉ định loại tiền không
-                currency = 'VND'  # Mặc định
+                # Mặc định là VND
+                currency = 'VND'
                 amount_str = parts[2]
                 
-                # Kiểm tra nếu amount có kèm currency code
+                # Kiểm tra nếu có chữ ở cuối
                 import re
-                match = re.match(r'^(\d+)([A-Za-z]+)$', amount_str)
+                match = re.match(r'^(\d+)([A-Za-z]+)$', amount_str.upper())
                 if match:
                     amount = float(match.group(1))
-                    currency = match.group(2).upper()
-                    # Kiểm tra currency có hỗ trợ không
-                    if currency not in SUPPORTED_CURRENCIES:
-                        currency_list = ', '.join(SUPPORTED_CURRENCIES.keys())
-                        await update.message.reply_text(
-                            f"❌ Loại tiền '{currency}' không hỗ trợ!\n"
-                            f"Các loại tiền hỗ trợ: {currency_list}"
-                        )
-                        return
+                    currency = match.group(2)
                 else:
-                    # Nếu không có currency code, thử parse như số bình thường
-                    try:
-                        amount = float(amount_str)
-                    except ValueError:
-                        await update.message.reply_text(
-                            "❌ Số tiền không hợp lệ!\n"
-                            "Ví dụ: `chi tiêu 1 50000VND Cà phê` hoặc `chi tiêu 2 100USD`",
-                            parse_mode=ParseMode.MARKDOWN
-                        )
-                        return
+                    # Không có chữ, chỉ có số
+                    amount = float(amount_str)
+                
+                # Kiểm tra currency có hợp lệ không
+                if currency not in SUPPORTED_CURRENCIES:
+                    currency_list = ', '.join(SUPPORTED_CURRENCIES.keys())
+                    await update.message.reply_text(
+                        f"❌ Loại tiền '{currency}' không hỗ trợ!\n"
+                        f"Các loại tiền hỗ trợ: {currency_list}"
+                    )
+                    return
                 
                 note = " ".join(parts[3:]) if len(parts) > 3 else ""
                 
@@ -2181,7 +2170,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     cat_name = category[1]
                     budget = category[2]
                     
-                    # Kiểm tra vượt budget (chỉ tính cùng loại tiền VND)
                     msg = (
                         f"✅ *ĐÃ THÊM CHI TIÊU*\n━━━━━━━━━━━━━━━━\n\n"
                         f"💸 Số tiền: {format_currency_amount(amount, currency)}\n"
@@ -2210,12 +2198,15 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
                 else:
                     await update.message.reply_text("❌ Lỗi khi ghi nhận chi tiêu!")
-            except Exception as e:
-                logger.error(f"Lỗi xử lý chi tiêu: {e}")
+            except ValueError:
                 await update.message.reply_text(
-                    "❌ Có lỗi xảy ra. Vui lòng thử lại!",
+                    "❌ Mã danh mục hoặc số tiền không hợp lệ!\n"
+                    "Ví dụ: `chi tiêu 1 50000VND Cà phê` hoặc `chi tiêu 2 100USD`",
                     parse_mode=ParseMode.MARKDOWN
                 )
+            except Exception as e:
+                logger.error(f"Lỗi chi tiêu: {e}")
+                await update.message.reply_text("❌ Có lỗi xảy ra, vui lòng thử lại!")
     
     elif text.startswith("danh mục"):
         parts = text.split()
