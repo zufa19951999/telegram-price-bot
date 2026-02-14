@@ -7,6 +7,8 @@ import sqlite3
 import logging
 import shutil
 import re
+import pandas as pd
+import io
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
@@ -33,13 +35,16 @@ CMC_API_URL = "https://pro-api.coinmarketcap.com/v1"
 DATA_DIR = '/data' if os.path.exists('/data') else os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(DATA_DIR, 'crypto_bot.db')
 BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
+EXPORT_DIR = os.path.join(DATA_DIR, 'exports')
 
 # Tạo thư mục nếu chưa có
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(BACKUP_DIR, exist_ok=True)
+os.makedirs(EXPORT_DIR, exist_ok=True)
 
 logger.info(f"📁 Dữ liệu sẽ được lưu tại: {DB_PATH}")
 logger.info(f"💾 Backup sẽ được lưu tại: {BACKUP_DIR}")
+logger.info(f"📊 File export sẽ được lưu tại: {EXPORT_DIR}")
 
 # Cache
 price_cache = {}
@@ -73,11 +78,11 @@ def run_health_server():
 # ==================== DATABASE SETUP ====================
 
 def init_database():
-    """Khởi tạo database và các bảng - CHỈ GIỮ PORTFOLIO"""
+    """Khởi tạo database và các bảng"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Chỉ tạo bảng portfolio, KHÔNG tạo bảng subscriptions
+    # Bảng portfolio
     c.execute('''CREATE TABLE IF NOT EXISTS portfolio
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   user_id INTEGER,
@@ -117,6 +122,26 @@ def clean_old_backups(days=7):
                 os.remove(filepath)
                 logger.info(f"🗑 Đã xóa backup cũ: {f}")
 
+def clean_old_exports(hours=24):
+    """Xóa file export cũ hơn 24 giờ"""
+    now = time.time()
+    for f in os.listdir(EXPORT_DIR):
+        if f.startswith('portfolio_') and f.endswith('.xlsx'):
+            filepath = os.path.join(EXPORT_DIR, f)
+            if os.path.getmtime(filepath) < now - hours * 3600:
+                os.remove(filepath)
+                logger.info(f"🗑 Đã xóa file export cũ: {f}")
+
+def schedule_cleanup():
+    """Chạy dọn dẹp mỗi 6 giờ"""
+    while True:
+        try:
+            clean_old_exports()
+            time.sleep(21600)  # 6 giờ
+        except Exception as e:
+            logger.error(f"Lỗi trong schedule_cleanup: {e}")
+            time.sleep(3600)
+
 def schedule_backup():
     """Chạy backup mỗi ngày"""
     while True:
@@ -125,9 +150,9 @@ def schedule_backup():
             time.sleep(86400)  # 24 giờ
         except Exception as e:
             logger.error(f"Lỗi trong schedule_backup: {e}")
-            time.sleep(3600)  # Thử lại sau 1 giờ nếu lỗi
+            time.sleep(3600)
 
-# ==================== DATABASE FUNCTIONS - CHỈ PORTFOLIO ====================
+# ==================== DATABASE FUNCTIONS ====================
 
 def add_transaction(user_id, symbol, amount, buy_price):
     """Thêm giao dịch mua"""
@@ -266,6 +291,129 @@ def delete_sold_transactions(user_id, kept_transactions):
     finally:
         if conn:
             conn.close()
+
+# ==================== HÀM XUẤT EXCEL ====================
+
+def export_portfolio_to_excel(user_id):
+    """Xuất danh mục đầu tư ra file Excel"""
+    try:
+        # Lấy dữ liệu
+        transactions = get_transaction_detail(user_id)
+        
+        if not transactions:
+            return None, "📭 Không có dữ liệu để xuất!"
+        
+        # Lấy giá hiện tại
+        portfolio_data = []
+        summary = {}
+        
+        for tx in transactions:
+            tx_id, symbol, amount, price, date, cost = tx
+            
+            # Lấy giá hiện tại
+            price_data = get_price(symbol)
+            current_price = price_data['p'] if price_data else 0
+            current_value = amount * current_price
+            profit = current_value - cost
+            profit_percent = (profit / cost) * 100 if cost > 0 else 0
+            
+            portfolio_data.append({
+                'ID': tx_id,
+                'Mã coin': symbol,
+                'Số lượng': amount,
+                'Giá mua (USD)': price,
+                'Ngày mua': date,
+                'Tổng vốn (USD)': cost,
+                'Giá hiện tại (USD)': current_price,
+                'Giá trị hiện tại (USD)': current_value,
+                'Lợi nhuận (USD)': profit,
+                'Lợi nhuận %': profit_percent
+            })
+            
+            # Tính tổng hợp theo coin
+            if symbol not in summary:
+                summary[symbol] = {
+                    'total_amount': 0,
+                    'total_cost': 0,
+                    'total_value': 0
+                }
+            summary[symbol]['total_amount'] += amount
+            summary[symbol]['total_cost'] += cost
+            summary[symbol]['total_value'] += current_value
+        
+        # Tạo DataFrame cho chi tiết giao dịch
+        df_details = pd.DataFrame(portfolio_data)
+        
+        # Định dạng số
+        pd.options.display.float_format = '{:,.2f}'.format
+        
+        # Tạo DataFrame cho tổng hợp theo coin
+        summary_data = []
+        total_invest = 0
+        total_value = 0
+        
+        for symbol, data in summary.items():
+            profit = data['total_value'] - data['total_cost']
+            profit_percent = (profit / data['total_cost']) * 100 if data['total_cost'] > 0 else 0
+            avg_price = data['total_cost'] / data['total_amount'] if data['total_amount'] > 0 else 0
+            
+            summary_data.append({
+                'Mã coin': symbol,
+                'Tổng số lượng': data['total_amount'],
+                'Giá vốn TB (USD)': avg_price,
+                'Tổng vốn (USD)': data['total_cost'],
+                'Giá trị hiện tại (USD)': data['total_value'],
+                'Lợi nhuận (USD)': profit,
+                'Lợi nhuận %': profit_percent
+            })
+            
+            total_invest += data['total_cost']
+            total_value += data['total_value']
+        
+        df_summary = pd.DataFrame(summary_data)
+        
+        # Tính tổng kết
+        total_profit = total_value - total_invest
+        total_profit_percent = (total_profit / total_invest) * 100 if total_invest > 0 else 0
+        
+        summary_total = pd.DataFrame([{
+            'Tổng vốn (USD)': total_invest,
+            'Tổng giá trị (USD)': total_value,
+            'Tổng lợi nhuận (USD)': total_profit,
+            'Tỷ suất lợi nhuận %': total_profit_percent
+        }])
+        
+        # Tạo file Excel
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"portfolio_{user_id}_{timestamp}.xlsx"
+        filepath = os.path.join(EXPORT_DIR, filename)
+        
+        with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+            df_details.to_excel(writer, sheet_name='Chi tiết giao dịch', index=False)
+            df_summary.to_excel(writer, sheet_name='Tổng hợp theo coin', index=False)
+            summary_total.to_excel(writer, sheet_name='Tổng kết', index=False)
+            
+            # Định dạng các sheet
+            for sheet_name in writer.sheets:
+                worksheet = writer.sheets[sheet_name]
+                for column in worksheet.columns:
+                    max_length = 0
+                    column_letter = column[0].column_letter
+                    for cell in column:
+                        try:
+                            if len(str(cell.value)) > max_length:
+                                max_length = len(str(cell.value))
+                        except:
+                            pass
+                    adjusted_width = min(max_length + 2, 50)
+                    worksheet.column_dimensions[column_letter].width = adjusted_width
+        
+        logger.info(f"✅ Đã tạo file Excel cho user {user_id}: {filename}")
+        return filepath, None
+        
+    except Exception as e:
+        logger.error(f"❌ Lỗi khi xuất Excel: {e}")
+        return None, f"❌ Lỗi khi xuất file: {str(e)}"
 
 # ==================== HÀM LẤY GIÁ COIN ====================
 
@@ -487,7 +635,8 @@ def get_invest_menu_keyboard():
         [InlineKeyboardButton("📈 Lợi nhuận", callback_data="show_profit"),
          InlineKeyboardButton("✏️ Sửa/Xóa", callback_data="edit_transactions")],
         [InlineKeyboardButton("➖ Bán coin", callback_data="show_sell"),
-         InlineKeyboardButton("➕ Mua coin", callback_data="show_buy")]
+         InlineKeyboardButton("➕ Mua coin", callback_data="show_buy")],
+        [InlineKeyboardButton("📥 Xuất Excel", callback_data="export_excel")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -502,7 +651,8 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• Top 10 coin\n"
         "• Quản lý danh mục đầu tư\n"
         "• ✏️ Sửa/Xóa giao dịch\n"
-        "• Tính lợi nhuận chi tiết\n\n"
+        "• Tính lợi nhuận chi tiết\n"
+        "• 📥 Xuất báo cáo Excel\n\n"
         "👇 *Bấm ĐẦU TƯ COIN để bắt đầu*"
     )
     await update.message.reply_text(
@@ -523,7 +673,8 @@ async def help_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• `/edit` - Xem/sửa giao dịch\n"
         "• `/edit 5` - Xem chi tiết giao dịch #5\n"
         "• `/edit 5 0.8 42000` - Sửa giao dịch #5\n"
-        "• `/del 5` - Xóa giao dịch #5\n\n"
+        "• `/del 5` - Xóa giao dịch #5\n"
+        "• `/export` - Xuất báo cáo Excel\n\n"
         "*Lưu ý:* Dữ liệu được lưu vĩnh viễn"
     )
     await update.message.reply_text(help_msg, parse_mode=ParseMode.MARKDOWN)
@@ -822,6 +973,37 @@ async def delete_tx_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ ID không hợp lệ")
 
+async def export_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Command xuất Excel"""
+    uid = update.effective_user.id
+    msg = await update.message.reply_text("🔄 Đang tạo file Excel...")
+    
+    filepath, error = export_portfolio_to_excel(uid)
+    
+    if error:
+        await msg.edit_text(error)
+        return
+    
+    try:
+        # Gửi file
+        with open(filepath, 'rb') as f:
+            await update.message.reply_document(
+                document=f,
+                filename=os.path.basename(filepath),
+                caption="📊 *BÁO CÁO DANH MỤC ĐẦU TƯ*\n━━━━━━━━━━━━━━━━\n\n✅ Xuất thành công!",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        # Xóa file sau khi gửi
+        os.remove(filepath)
+        logger.info(f"🗑 Đã xóa file {filepath}")
+        
+    except Exception as e:
+        logger.error(f"Lỗi khi gửi file: {e}")
+        await msg.edit_text("❌ Lỗi khi gửi file. Vui lòng thử lại sau.")
+    
+    await msg.delete()
+
 # ==================== HANDLE MESSAGE ====================
 
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -842,7 +1024,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if error:
                 await update.message.reply_text(error)
             else:
-                # CHỈ HIỂN THỊ KẾT QUẢ ĐƠN GIẢN - KHÔNG CÓ HEADER, KHÔNG CÓ DẤU HIỆU GÌ
+                # CHỈ HIỂN THỊ KẾT QUẢ ĐƠN GIẢN
                 if isinstance(result, int):
                     await update.message.reply_text(f"{text} = {result:,}")
                 else:
@@ -972,6 +1154,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("✏️ Sửa/Xóa", callback_data="edit_transactions")],
                 [InlineKeyboardButton("➕ Mua", callback_data="show_buy"),
                  InlineKeyboardButton("➖ Bán", callback_data="show_sell")],
+                [InlineKeyboardButton("📥 Xuất Excel", callback_data="export_excel")],
                 [InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]
             ]
             
@@ -979,6 +1162,44 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 msg, parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
+        
+        elif data == "export_excel":
+            uid = query.from_user.id
+            await query.edit_message_text("🔄 Đang tạo file Excel...")
+            
+            filepath, error = export_portfolio_to_excel(uid)
+            
+            if error:
+                await query.edit_message_text(error)
+                return
+            
+            try:
+                # Gửi file
+                with open(filepath, 'rb') as f:
+                    await query.message.reply_document(
+                        document=f,
+                        filename=os.path.basename(filepath),
+                        caption="📊 *BÁO CÁO DANH MỤC ĐẦU TƯ*\n━━━━━━━━━━━━━━━━\n\n✅ Xuất thành công!",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                
+                # Xóa file sau khi gửi
+                os.remove(filepath)
+                logger.info(f"🗑 Đã xóa file {filepath}")
+                
+                # Quay lại menu
+                await query.edit_message_text(
+                    "💰 *MENU ĐẦU TƯ COIN*",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=get_invest_menu_keyboard()
+                )
+                
+            except Exception as e:
+                logger.error(f"Lỗi khi gửi file: {e}")
+                await query.edit_message_text(
+                    "❌ Lỗi khi gửi file. Vui lòng thử lại sau.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]])
+                )
         
         elif data == "edit_transactions":
             uid = query.from_user.id
@@ -1225,12 +1446,14 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("del", delete_tx_command))
     app.add_handler(CommandHandler("delete", delete_tx_command))
     app.add_handler(CommandHandler("xoa", delete_tx_command))
+    app.add_handler(CommandHandler("export", export_command))
     
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
     
     # Threads
     threading.Thread(target=schedule_backup, daemon=True).start()
+    threading.Thread(target=schedule_cleanup, daemon=True).start()
     threading.Thread(target=run_health_server, daemon=True).start()
     
     logger.info("✅ Bot sẵn sàng!")
