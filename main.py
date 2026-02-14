@@ -99,7 +99,7 @@ def init_database():
                   buy_date TEXT,
                   total_cost REAL)''')
     
-    # Bảng cảnh báo giá (ĐẊU TƯ COIN)
+    # Bảng cảnh báo giá (ĐẦU TƯ COIN)
     c.execute('''CREATE TABLE IF NOT EXISTS alerts
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   user_id INTEGER,
@@ -681,6 +681,33 @@ def format_currency_amount(amount, currency='VND'):
             return f"Rs {amount:,.2f}"
         elif currency == 'KHR':
             return f"៛{amount:,.0f}"
+        else:
+            return f"{amount:,.2f} {currency}"
+    except:
+        return f"{amount} {currency}"
+
+def format_currency_display(amount, currency):
+    """Định dạng số tiền hiển thị đẹp (dùng cho menu)"""
+    try:
+        amount = float(amount)
+        if currency == 'VND':
+            if amount >= 1000000:
+                return f"{amount/1000000:.1f} triệu VND"
+            elif amount >= 1000:
+                return f"{amount/1000:.0f} nghìn VND"
+            else:
+                return f"{amount:,.0f} VND"
+        elif currency in ['USD', 'USDT', 'SGD', 'HKD']:
+            return f"${amount:,.2f}"
+        elif currency == 'JPY':
+            return f"¥{amount:,.0f}"
+        elif currency == 'KHR':
+            if amount >= 1000:
+                return f"{amount/1000:.1f}K Riel"
+            else:
+                return f"៛{amount:,.0f}"
+        elif currency == 'LKR':
+            return f"Rs {amount:,.2f}"
         else:
             return f"{amount:,.2f} {currency}"
     except:
@@ -1759,7 +1786,11 @@ async def expense_add_income_handler(update: Update, ctx: ContextTypes.DEFAULT_T
     """Bắt đầu quy trình thêm thu nhập theo bước"""
     user_id = update.effective_user.id
     
-    # Lưu trạng thái
+    # Xóa trạng thái cũ nếu có
+    if user_id in user_input_state:
+        del user_input_state[user_id]
+    
+    # Lưu trạng thái mới
     user_input_state[user_id] = {
         'action': 'add_income',
         'step': 'waiting_for_amount'
@@ -1768,7 +1799,7 @@ async def expense_add_income_handler(update: Update, ctx: ContextTypes.DEFAULT_T
     await update.message.reply_text(
         "💰 *THÊM THU NHẬP - BƯỚC 1/3*\n\n"
         "Nhập *số tiền* (VD: 5000000 hoặc 100):\n"
-        "• Nhập số, có thể dùng dấu phẩy (VD: 5,000,000)\n"
+        "• Có thể dùng dấu phẩy (VD: 5,000,000)\n"
         "• Nhập `0` để hủy",
         parse_mode=ParseMode.MARKDOWN
     )
@@ -2112,7 +2143,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 
                 await update.message.reply_text(
                     f"💰 *THÊM THU NHẬP - BƯỚC 3/3*\n\n"
-                    f"📝 Số tiền: *{format_currency_amount(state['amount'], currency)}*\n\n"
+                    f"📝 Số tiền: *{format_currency_display(state['amount'], currency)}*\n\n"
                     f"Nhập *nguồn thu* và *ghi chú*:\n"
                     f"VD: `Lương tháng 3`\n"
                     f"VD: `Bán hàng online`\n"
@@ -2138,29 +2169,9 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 
                 # Lưu vào database
                 if add_income(user_id, state['amount'], source, state['currency'], note):
-                    # Format số tiền để hiển thị đẹp
-                    if state['currency'] == 'VND':
-                        if state['amount'] >= 1000000:
-                            display = f"{state['amount']/1000000:.1f} triệu VND"
-                        elif state['amount'] >= 1000:
-                            display = f"{state['amount']/1000:.0f} nghìn VND"
-                        else:
-                            display = f"{state['amount']:,.0f} VND"
-                    elif state['currency'] in ['USD', 'USDT', 'SGD', 'HKD']:
-                        display = f"${state['amount']:,.2f}"
-                    elif state['currency'] == 'JPY':
-                        display = f"¥{state['amount']:,.0f}"
-                    elif state['currency'] == 'KHR':
-                        if state['amount'] >= 1000:
-                            display = f"{state['amount']/1000:.1f}K Riel"
-                        else:
-                            display = f"៛{state['amount']:,.0f}"
-                    else:
-                        display = f"{state['amount']:,.2f} {state['currency']}"
-                    
                     await update.message.reply_text(
                         f"✅ *ĐÃ THÊM THU NHẬP THÀNH CÔNG*\n━━━━━━━━━━━━━━━━\n\n"
-                        f"💰 Số tiền: *{display}*\n"
+                        f"💰 Số tiền: *{format_currency_display(state['amount'], state['currency'])}*\n"
                         f"📌 Nguồn: *{source}*\n"
                         f"📝 Ghi chú: *{note if note else 'Không có'}*",
                         parse_mode=ParseMode.MARKDOWN
@@ -2835,9 +2846,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
         
         elif data == "expense_add_income":
-            currency_list = ', '.join(SUPPORTED_CURRENCIES.keys())
-            currency_detail = "\n".join([f"• {code}: {name}" for code, name in SUPPORTED_CURRENCIES.items()])
-            
             await query.edit_message_text(
                 "💰 *THÊM THU NHẬP*\n\n"
                 "Nhấn nút '💰 Thu nhập' trên bàn phím và làm theo hướng dẫn từng bước!",
