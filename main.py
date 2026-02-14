@@ -1556,19 +1556,84 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
         
         elif data == "show_stats":
-            uid = query.from_user.id
-            portfolio_data = get_portfolio(uid)
-            
-            if not portfolio_data:
-                await query.edit_message_text(
-                    "📭 Danh mục trống!",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]])
-                )
-                return
-            
-            # Gọi lại hàm stats
-            ctx.args = []
-            await stats_command(update, ctx)
+    uid = query.from_user.id
+    portfolio_data = get_portfolio(uid)
+    
+    if not portfolio_data:
+        await query.edit_message_text(
+            "📭 Danh mục trống!",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]])
+        )
+        return
+    
+    await query.edit_message_text("🔄 Đang tính toán thống kê...")
+    
+    stats = get_portfolio_stats(uid)
+    
+    if not stats:
+        await query.edit_message_text("📭 Không thể tính toán thống kê!")
+        return
+    
+    total_invest = stats['total_invest']
+    total_value = stats['total_value']
+    total_profit = stats['total_profit']
+    total_profit_percent = stats['total_profit_percent']
+    coin_profits = stats['coin_profits']
+    
+    stats_msg = (
+        f"📊 *THỐNG KÊ DANH MỤC*\n"
+        f"━━━━━━━━━━━━━━━━\n\n"
+        f"*TỔNG QUAN*\n"
+        f"• Vốn: `{fmt_price(total_invest)}`\n"
+        f"• Giá trị: `{fmt_price(total_value)}`\n"
+        f"• Lợi nhuận: `{fmt_price(total_profit)}`\n"
+        f"• Tỷ suất: `{total_profit_percent:+.2f}%`\n\n"
+    )
+    
+    # Top coin lời nhất
+    stats_msg += "*📈 TOP COIN LỜI NHẤT*\n"
+    count = 0
+    for symbol, profit, profit_pct, value, cost in coin_profits:
+        if profit > 0:
+            count += 1
+            stats_msg += f"{count}. *{symbol}*: `{fmt_price(profit)}` ({profit_pct:+.2f}%)\n"
+        if count >= 3:
+            break
+    
+    if count == 0:
+        stats_msg += "Không có coin lời\n"
+    
+    # Top coin lỗ nhất
+    stats_msg += f"\n*📉 TOP COIN LỖ NHẤT*\n"
+    count = 0
+    for symbol, profit, profit_pct, value, cost in reversed(coin_profits):
+        if profit < 0:
+            count += 1
+            stats_msg += f"{count}. *{symbol}*: `{fmt_price(profit)}` ({profit_pct:+.2f}%)\n"
+        if count >= 3:
+            break
+    
+    if count == 0:
+        stats_msg += "Không có coin lỗ\n"
+    
+    # Phân bổ vốn
+    stats_msg += f"\n*📊 PHÂN BỔ VỐN*\n"
+    for symbol, data in stats['coins'].items():
+        percent = (data['cost'] / total_invest * 100) if total_invest > 0 else 0
+        stats_msg += f"• {symbol}: `{percent:.1f}%`\n"
+    
+    stats_msg += f"\n📅 Cập nhật: {datetime.now().strftime('%H:%M %d/%m/%Y')}"
+    
+    keyboard = [[
+        InlineKeyboardButton("🔄 Làm mới", callback_data="show_stats"),
+        InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")
+    ]]
+    
+    await query.edit_message_text(
+        stats_msg,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
         
         elif data == "edit_transactions":
             uid = query.from_user.id
