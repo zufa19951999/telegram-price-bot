@@ -57,6 +57,9 @@ usdt_cache = {'rate': None, 'time': None}
 # Biến toàn cục cho bot
 app = None
 
+# ==================== BIẾN LƯU TRẠNG THÁI USER ====================
+user_input_state = {}
+
 # ==================== HEALTH CHECK SERVER CHO RENDER ====================
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -96,7 +99,7 @@ def init_database():
                   buy_date TEXT,
                   total_cost REAL)''')
     
-    # Bảng cảnh báo giá (ĐẦU TƯ COIN)
+    # Bảng cảnh báo giá (ĐẊU TƯ COIN)
     c.execute('''CREATE TABLE IF NOT EXISTS alerts
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   user_id INTEGER,
@@ -1250,13 +1253,9 @@ async def help_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• `/alert BTC above 50000` - Cảnh báo giá\n\n"
         
         "*QUẢN LÝ CHI TIÊU:*\n"
-        "• `thu nhập 5000000VND Lương` - Thêm thu nhập\n"
-        "• `thu nhập 100USD Freelance` - Thêm thu nhập USD\n"
-        "• `thu nhập 50000KHR` - Thêm thu nhập Riel Campuchia\n"
-        "• `thu nhập 50000` - Thêm 50,000 VND (mặc định)\n"
+        "• Nhấn nút '💰 Thu nhập' và làm theo hướng dẫn từng bước\n"
         "• `danh mục Ăn uống 3000000` - Tạo danh mục\n"
-        "• `chi tiêu 1 50000VND Cà phê` - Thêm chi tiêu (1 là mã danh mục)\n"
-        "• `chi tiêu 2 20USD Xăng` - Thêm chi tiêu USD\n"
+        "• `chi tiêu 1 50000 VND Cà phê` - Thêm chi tiêu (1 là mã danh mục)\n"
         "• `xóa chi [id]` - Xóa khoản chi\n"
         "• `xóa thu [id]` - Xóa khoản thu\n"
         "• `sửa budget [id] [số tiền]` - Sửa ngân sách\n\n"
@@ -1757,20 +1756,20 @@ async def expense_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 async def expense_add_income_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Hướng dẫn thêm thu nhập đa tiền tệ"""
-    currency_list = ', '.join(SUPPORTED_CURRENCIES.keys())
-    currency_detail = "\n".join([f"• {code}: {name}" for code, name in SUPPORTED_CURRENCIES.items()])
+    """Bắt đầu quy trình thêm thu nhập theo bước"""
+    user_id = update.effective_user.id
+    
+    # Lưu trạng thái
+    user_input_state[user_id] = {
+        'action': 'add_income',
+        'step': 'waiting_for_amount'
+    }
     
     await update.message.reply_text(
-        "💰 *THÊM THU NHẬP*\n\n"
-        "*Cú pháp:* `thu nhập [số tiền][loại tiền] [nguồn] [ghi chú]`\n\n"
-        "*Ví dụ:*\n"
-        "• `thu nhập 5000000VND Lương Tháng 3`\n"
-        "• `thu nhập 100USD Freelance`\n"
-        "• `thu nhập 50000KHR`\n"
-        "• `thu nhập 2000HKD Bán hàng`\n"
-        "• `thu nhập 50000` (mặc định VND)\n\n"
-        f"*Các loại tiền hỗ trợ:*\n{currency_detail}",
+        "💰 *THÊM THU NHẬP - BƯỚC 1/3*\n\n"
+        "Nhập *số tiền* (VD: 5000000 hoặc 100):\n"
+        "• Nhập số, có thể dùng dấu phẩy (VD: 5,000,000)\n"
+        "• Nhập `0` để hủy",
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -1791,7 +1790,7 @@ async def expense_add_expense_handler(update: Update, ctx: ContextTypes.DEFAULT_
         return
     
     msg = "💸 *THÊM CHI TIÊU*\n\n"
-    msg += "*Cú pháp:* `chi tiêu [mã] [số tiền][loại tiền] [ghi chú]`\n\n"
+    msg += "*Cú pháp:* `chi tiêu [mã] [số tiền] [mã tiền tệ] [ghi chú]`\n\n"
     msg += "*Các danh mục:*\n"
     for cat in categories:
         cat_id, name, budget, _ = cat
@@ -1800,9 +1799,9 @@ async def expense_add_expense_handler(update: Update, ctx: ContextTypes.DEFAULT_
     
     msg += f"\n*Các loại tiền hỗ trợ:* {currency_list}\n\n"
     msg += "*Ví dụ:*\n"
-    msg += "• `chi tiêu 1 50000VND Cà phê sáng`\n"
-    msg += "• `chi tiêu 2 20USD Xăng xe`\n"
-    msg += "• `chi tiêu 3 1000KHR Mua sắm`\n"
+    msg += "• `chi tiêu 1 50000 VND Cà phê sáng`\n"
+    msg += "• `chi tiêu 2 20 USD Xăng xe`\n"
+    msg += "• `chi tiêu 3 1000 KHR Mua sắm`\n"
     msg += "• `chi tiêu 4 50000` (mặc định VND)"
     
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
@@ -2045,6 +2044,134 @@ async def expense_manage_categories_handler(update: Update, ctx: ContextTypes.DE
 
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
+    user_id = update.effective_user.id
+    
+    # Kiểm tra nếu user đang trong quá trình nhập liệu
+    if user_id in user_input_state:
+        state = user_input_state[user_id]
+        
+        # Xử lý thêm thu nhập theo bước
+        if state['action'] == 'add_income':
+            
+            # Bước 1: Nhập số tiền
+            if state['step'] == 'waiting_for_amount':
+                if text == '0':
+                    del user_input_state[user_id]
+                    await update.message.reply_text("✅ Đã hủy thao tác thêm thu nhập.")
+                    return
+                
+                try:
+                    # Xóa dấu phẩy nếu có
+                    amount = float(text.replace(',', ''))
+                    if amount <= 0:
+                        await update.message.reply_text("❌ Số tiền phải lớn hơn 0! Nhập lại:")
+                        return
+                    
+                    # Lưu số tiền
+                    state['amount'] = amount
+                    state['step'] = 'waiting_for_currency'
+                    
+                    # Hiển thị danh sách tiền tệ
+                    currency_text = "📋 *DANH SÁCH MÃ TIỀN TỆ*\n\n"
+                    for code, name in SUPPORTED_CURRENCIES.items():
+                        currency_text += f"• `{code}`: {name}\n"
+                    
+                    await update.message.reply_text(
+                        f"💰 *THÊM THU NHẬP - BƯỚC 2/3*\n\n"
+                        f"📝 Số tiền: *{amount:,.0f}*\n\n"
+                        f"{currency_text}\n"
+                        f"Nhập *mã tiền tệ* (VD: VND, USD, KHR...)\n"
+                        f"• Nhập `0` để hủy",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                    
+                except ValueError:
+                    await update.message.reply_text("❌ Số tiền không hợp lệ! Vui lòng nhập số (VD: 5000000):")
+            
+            # Bước 2: Nhập loại tiền
+            elif state['step'] == 'waiting_for_currency':
+                if text == '0':
+                    del user_input_state[user_id]
+                    await update.message.reply_text("✅ Đã hủy thao tác thêm thu nhập.")
+                    return
+                
+                currency = text.upper()
+                
+                if currency not in SUPPORTED_CURRENCIES:
+                    currency_list = ', '.join(SUPPORTED_CURRENCIES.keys())
+                    await update.message.reply_text(
+                        f"❌ Mã tiền tệ '{currency}' không hợp lệ!\n"
+                        f"Mã hợp lệ: {currency_list}\n\n"
+                        f"Vui lòng nhập lại:"
+                    )
+                    return
+                
+                # Lưu loại tiền
+                state['currency'] = currency
+                state['step'] = 'waiting_for_source'
+                
+                await update.message.reply_text(
+                    f"💰 *THÊM THU NHẬP - BƯỚC 3/3*\n\n"
+                    f"📝 Số tiền: *{format_currency_amount(state['amount'], currency)}*\n\n"
+                    f"Nhập *nguồn thu* và *ghi chú*:\n"
+                    f"VD: `Lương tháng 3`\n"
+                    f"VD: `Bán hàng online`\n"
+                    f"• Nhập `0` để hủy\n"
+                    f"• Nhập `skip` để bỏ qua",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            
+            # Bước 3: Nhập nguồn và ghi chú
+            elif state['step'] == 'waiting_for_source':
+                if text == '0':
+                    del user_input_state[user_id]
+                    await update.message.reply_text("✅ Đã hủy thao tác thêm thu nhập.")
+                    return
+                
+                source = "Khác"
+                note = ""
+                
+                if text.lower() != 'skip' and text:
+                    parts = text.split()
+                    source = parts[0]
+                    note = " ".join(parts[1:]) if len(parts) > 1 else ""
+                
+                # Lưu vào database
+                if add_income(user_id, state['amount'], source, state['currency'], note):
+                    # Format số tiền để hiển thị đẹp
+                    if state['currency'] == 'VND':
+                        if state['amount'] >= 1000000:
+                            display = f"{state['amount']/1000000:.1f} triệu VND"
+                        elif state['amount'] >= 1000:
+                            display = f"{state['amount']/1000:.0f} nghìn VND"
+                        else:
+                            display = f"{state['amount']:,.0f} VND"
+                    elif state['currency'] in ['USD', 'USDT', 'SGD', 'HKD']:
+                        display = f"${state['amount']:,.2f}"
+                    elif state['currency'] == 'JPY':
+                        display = f"¥{state['amount']:,.0f}"
+                    elif state['currency'] == 'KHR':
+                        if state['amount'] >= 1000:
+                            display = f"{state['amount']/1000:.1f}K Riel"
+                        else:
+                            display = f"៛{state['amount']:,.0f}"
+                    else:
+                        display = f"{state['amount']:,.2f} {state['currency']}"
+                    
+                    await update.message.reply_text(
+                        f"✅ *ĐÃ THÊM THU NHẬP THÀNH CÔNG*\n━━━━━━━━━━━━━━━━\n\n"
+                        f"💰 Số tiền: *{display}*\n"
+                        f"📌 Nguồn: *{source}*\n"
+                        f"📝 Ghi chú: *{note if note else 'Không có'}*",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                else:
+                    await update.message.reply_text("❌ Lỗi khi thêm thu nhập! Vui lòng thử lại.")
+                
+                # Xóa trạng thái
+                del user_input_state[user_id]
+            
+            return
     
     # Xử lý menu chính
     if text == "💰 ĐẦU TƯ COIN":
@@ -2070,104 +2197,12 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif text == "🔄 Gần đây":
         await expense_recent_handler(update, ctx)
     elif text == "🔙 Về menu chính":
+        # Xóa trạng thái nếu có
+        if user_id in user_input_state:
+            del user_input_state[user_id]
         await start(update, ctx)
     
-    # Xử lý các lệnh nhập liệu
-    elif text.startswith("thu nhập"):
-        parts = text.split()
-        
-        # Cần ít nhất: thu nhập + số tiền
-        if len(parts) < 2:
-            await update.message.reply_text(
-                "❌ Thiếu thông tin!\n"
-                "Ví dụ: `thu nhập 100 USD Lương`",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            return
-            
-        try:
-            # Lấy số tiền từ parts[1]
-            amount_str = parts[1].replace(',', '')
-            amount = float(amount_str)
-            
-            # Xác định loại tiền
-            currency = 'VND'  # Mặc định
-            source = "Khác"
-            note = ""
-            start_idx = 2
-            
-            # Kiểm tra nếu có parts[2] và nó là loại tiền hợp lệ
-            if len(parts) > 2:
-                # Kiểm tra xem parts[2] có phải là mã tiền tệ không
-                if parts[2].upper() in SUPPORTED_CURRENCIES:
-                    currency = parts[2].upper()
-                    start_idx = 3
-                else:
-                    # Nếu parts[2] không phải mã tiền tệ, nó là nguồn thu
-                    source = parts[2]
-                    start_idx = 3
-            
-            # Xử lý nguồn thu và ghi chú
-            if len(parts) > start_idx:
-                if start_idx == 2:  # Trường hợp không có currency
-                    source = parts[2]
-                    note = " ".join(parts[3:]) if len(parts) > 3 else ""
-                else:  # Trường hợp có currency
-                    if len(parts) > start_idx:
-                        source = parts[start_idx]
-                        note = " ".join(parts[start_idx+1:]) if len(parts) > start_idx+1 else ""
-            
-            uid = update.effective_user.id
-            
-            # Thêm vào database
-            if add_income(uid, amount, source, currency, note):
-                # Format số tiền để hiển thị
-                if currency == 'VND':
-                    display_amount = f"{amount:,.0f} VND"
-                elif currency in ['USD', 'USDT', 'SGD', 'HKD']:
-                    display_amount = f"${amount:,.2f}"
-                elif currency == 'JPY':
-                    display_amount = f"¥{amount:,.0f}"
-                elif currency == 'EUR':
-                    display_amount = f"€{amount:,.2f}"
-                elif currency == 'GBP':
-                    display_amount = f"£{amount:,.2f}"
-                elif currency == 'CNY':
-                    display_amount = f"¥{amount:,.2f}"
-                elif currency == 'KRW':
-                    display_amount = f"₩{amount:,.0f}"
-                elif currency == 'THB':
-                    display_amount = f"฿{amount:,.2f}"
-                elif currency == 'LKR':
-                    display_amount = f"Rs {amount:,.2f}"
-                elif currency == 'KHR':
-                    display_amount = f"៛{amount:,.0f}"
-                else:
-                    display_amount = f"{amount:,.2f} {currency}"
-                
-                await update.message.reply_text(
-                    f"✅ *ĐÃ THÊM THU NHẬP*\n━━━━━━━━━━━━━━━━\n\n"
-                    f"💰 Số tiền: {display_amount}\n"
-                    f"📌 Nguồn: {source}\n"
-                    f"📝 Ghi chú: {note if note else 'Không có'}",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-            else:
-                await update.message.reply_text("❌ Lỗi khi ghi nhận thu nhập!")
-                
-        except ValueError:
-            await update.message.reply_text(
-                "❌ Số tiền không hợp lệ!\n"
-                "Ví dụ: `thu nhập 100 USD Lương` hoặc `thu nhập 5000000`",
-                parse_mode=ParseMode.MARKDOWN
-            )
-        except Exception as e:
-            logger.error(f"Lỗi thu nhập: {e}")
-            await update.message.reply_text(
-                "❌ Có lỗi xảy ra. Vui lòng thử lại!",
-                parse_mode=ParseMode.MARKDOWN
-            )
-    
+    # Xử lý các lệnh nhập liệu khác
     elif text.startswith("danh mục"):
         parts = text.split()
         if len(parts) >= 2:
@@ -2805,14 +2840,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
             await query.edit_message_text(
                 "💰 *THÊM THU NHẬP*\n\n"
-                "*Cú pháp:* `thu nhập [số tiền][loại tiền] [nguồn] [ghi chú]`\n\n"
-                "*Ví dụ:*\n"
-                "• `thu nhập 5000000VND Lương Tháng 3`\n"
-                "• `thu nhập 100USD Freelance`\n"
-                "• `thu nhập 50000KHR`\n"
-                "• `thu nhập 2000HKD Bán hàng`\n"
-                "• `thu nhập 50000` (mặc định VND)\n\n"
-                f"*Các loại tiền hỗ trợ:*\n{currency_detail}",
+                "Nhấn nút '💰 Thu nhập' trên bàn phím và làm theo hướng dẫn từng bước!",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Quay lại", callback_data="back_to_expense")]])
             )
@@ -2834,7 +2862,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 return
             
             msg = "💸 *THÊM CHI TIÊU*\n\n"
-            msg += "*Cú pháp:* `chi tiêu [mã] [số tiền][loại tiền] [ghi chú]`\n\n"
+            msg += "*Cú pháp:* `chi tiêu [mã] [số tiền] [mã tiền tệ] [ghi chú]`\n\n"
             msg += "*Các danh mục:*\n"
             for cat in categories:
                 cat_id, name, budget, _ = cat
@@ -2843,9 +2871,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
             msg += f"\n*Các loại tiền hỗ trợ:* {currency_list}\n\n"
             msg += "*Ví dụ:*\n"
-            msg += "• `chi tiêu 1 50000VND Cà phê sáng`\n"
-            msg += "• `chi tiêu 2 20USD Xăng xe`\n"
-            msg += "• `chi tiêu 3 1000KHR Mua sắm`\n"
+            msg += "• `chi tiêu 1 50000 VND Cà phê sáng`\n"
+            msg += "• `chi tiêu 2 20 USD Xăng xe`\n"
+            msg += "• `chi tiêu 3 1000 KHR Mua sắm`\n"
             msg += "• `chi tiêu 4 50000` (mặc định VND)"
             
             await query.edit_message_text(
