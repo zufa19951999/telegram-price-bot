@@ -627,14 +627,15 @@ def fmt_number(n):
     except:
         return str(n)
 
-# ==================== HÀM HỖ TRỢ ĐA TIỀN TỆ (MỚI) ====================
+# ==================== HÀM HỖ TRỢ ĐA TIỀN TỆ (CẬP NHẬT) ====================
 
-# Danh sách các loại tiền hỗ trợ
+# Danh sách các loại tiền hỗ trợ (ĐÃ SỬA HKR THÀNH KHR)
 SUPPORTED_CURRENCIES = {
     'VND': '🇻🇳 Việt Nam Đồng',
     'USD': '🇺🇸 US Dollar',
     'USDT': '💵 Tether (USDT)',
     'LKR': '🇱🇰 Sri Lanka Rupee',
+    'KHR': '🇰🇭 Riel Campuchia',  # Đã sửa từ HKR thành KHR
     'HKD': '🇭🇰 Hong Kong Dollar',
     'SGD': '🇸🇬 Singapore Dollar',
     'JPY': '🇯🇵 Japanese Yen',
@@ -675,6 +676,8 @@ def format_currency_amount(amount, currency='VND'):
             return f"฿{amount:,.2f}"
         elif currency == 'LKR':
             return f"Rs {amount:,.2f}"
+        elif currency == 'KHR':
+            return f"៛{amount:,.0f}"  # Ký hiệu Riel Campuchia
         else:
             return f"{amount:,.2f} {currency}"
     except:
@@ -1223,7 +1226,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• Cảnh báo giá\n\n"
         "*💰 QUẢN LÝ CHI TIÊU:*\n"
         "• Ghi chép thu nhập/chi tiêu\n"
-        "• Hỗ trợ đa tiền tệ (VND, USD, LKR, HKD, ...)\n"
+        "• Hỗ trợ đa tiền tệ (VND, USD, LKR, KHR, HKD...)\n"
         "• Quản lý ngân sách theo danh mục\n"
         "• Báo cáo theo ngày/tuần/tháng\n\n"
         "👇 *Chọn chức năng bên dưới*"
@@ -1249,7 +1252,8 @@ async def help_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "*QUẢN LÝ CHI TIÊU:*\n"
         "• `thu nhập 5000000VND Lương` - Thêm thu nhập\n"
         "• `thu nhập 100USD Freelance` - Thêm thu nhập USD\n"
-        "• `thu nhập 50000LKR` - Thêm thu nhập LKR\n"
+        "• `thu nhập 50000KHR` - Thêm thu nhập Riel Campuchia\n"
+        "• `thu nhập 50000` - Thêm 50,000 VND (mặc định)\n"
         "• `danh mục Ăn uống 3000000` - Tạo danh mục\n"
         "• `chi tiêu 1 50000VND Cà phê` - Thêm chi tiêu (1 là mã danh mục)\n"
         "• `chi tiêu 2 20USD Xăng` - Thêm chi tiêu USD\n"
@@ -1763,8 +1767,9 @@ async def expense_add_income_handler(update: Update, ctx: ContextTypes.DEFAULT_T
         "*Ví dụ:*\n"
         "• `thu nhập 5000000VND Lương Tháng 3`\n"
         "• `thu nhập 100USD Freelance`\n"
-        "• `thu nhập 50000LKR`\n"
-        "• `thu nhập 2000HKD Bán hàng`\n\n"
+        "• `thu nhập 50000KHR`\n"
+        "• `thu nhập 2000HKD Bán hàng`\n"
+        "• `thu nhập 50000` (mặc định VND)\n\n"
         f"*Các loại tiền hỗ trợ:*\n{currency_detail}",
         parse_mode=ParseMode.MARKDOWN
     )
@@ -1797,7 +1802,8 @@ async def expense_add_expense_handler(update: Update, ctx: ContextTypes.DEFAULT_
     msg += "*Ví dụ:*\n"
     msg += "• `chi tiêu 1 50000VND Cà phê sáng`\n"
     msg += "• `chi tiêu 2 20USD Xăng xe`\n"
-    msg += "• `chi tiêu 3 1000HKD Mua sắm`"
+    msg += "• `chi tiêu 3 1000KHR Mua sắm`\n"
+    msg += "• `chi tiêu 4 50000` (mặc định VND)"
     
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
@@ -2075,9 +2081,10 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 currency = 'VND'  # Mặc định
                 amount_str = parts[1]
                 
-                # Kiểm tra nếu amount có kèm currency code (ví dụ: 100USD, 5000LKR)
+                # Kiểm tra nếu amount có kèm currency code (ví dụ: 100USD, 5000KHR)
                 import re
-                match = re.match(r'^([0-9.]+)([A-Za-z]+)$', amount_str)
+                # Pattern: số (có thể có dấu chấm) + chữ cái (2-4 ký tự)
+                match = re.match(r'^(\d+(?:\.\d+)?)([A-Za-z]{2,4})$', amount_str)
                 if match:
                     amount = float(match.group(1))
                     currency = match.group(2).upper()
@@ -2090,7 +2097,16 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         )
                         return
                 else:
-                    amount = float(amount_str)
+                    # Nếu không có currency code, thử parse như số bình thường
+                    try:
+                        amount = float(amount_str)
+                    except ValueError:
+                        await update.message.reply_text(
+                            "❌ Số tiền không hợp lệ!\n"
+                            "Ví dụ: `thu nhập 100USD Lương` hoặc `thu nhập 5000000VND` hoặc `thu nhập 50000`",
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                        return
                 
                 source = parts[2] if len(parts) > 2 else "Khác"
                 note = " ".join(parts[3:]) if len(parts) > 3 else ""
@@ -2109,7 +2125,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             except ValueError:
                 await update.message.reply_text(
                     "❌ Số tiền không hợp lệ!\n"
-                    "Ví dụ: `thu nhập 100USD Lương` hoặc `thu nhập 5000LKR`",
+                    "Ví dụ: `thu nhập 100USD Lương` hoặc `thu nhập 5000000VND` hoặc `thu nhập 50000`",
                     parse_mode=ParseMode.MARKDOWN
                 )
     
@@ -2125,7 +2141,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 
                 # Kiểm tra nếu amount có kèm currency code
                 import re
-                match = re.match(r'^([0-9.]+)([A-Za-z]+)$', amount_str)
+                match = re.match(r'^(\d+(?:\.\d+)?)([A-Za-z]{2,4})$', amount_str)
                 if match:
                     amount = float(match.group(1))
                     currency = match.group(2).upper()
@@ -2138,7 +2154,16 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         )
                         return
                 else:
-                    amount = float(amount_str)
+                    # Nếu không có currency code, thử parse như số bình thường
+                    try:
+                        amount = float(amount_str)
+                    except ValueError:
+                        await update.message.reply_text(
+                            "❌ Số tiền không hợp lệ!\n"
+                            "Ví dụ: `chi tiêu 1 50000VND Cà phê` hoặc `chi tiêu 2 100USD`",
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                        return
                 
                 note = " ".join(parts[3:]) if len(parts) > 3 else ""
                 
@@ -2157,6 +2182,14 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     budget = category[2]
                     
                     # Kiểm tra vượt budget (chỉ tính cùng loại tiền VND)
+                    msg = (
+                        f"✅ *ĐÃ THÊM CHI TIÊU*\n━━━━━━━━━━━━━━━━\n\n"
+                        f"💸 Số tiền: {format_currency_amount(amount, currency)}\n"
+                        f"📌 Danh mục: {cat_name}\n"
+                        f"📝 Ghi chú: {note if note else 'Không có'}"
+                    )
+                    
+                    # Chỉ kiểm tra budget nếu là VND
                     if currency == 'VND' and budget > 0:
                         expenses = get_expenses_by_period(uid, 'month')
                         total_spent = 0
@@ -2165,13 +2198,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                                 total_spent = exp[1]
                                 break
                         
-                        msg = (
-                            f"✅ *ĐÃ THÊM CHI TIÊU*\n━━━━━━━━━━━━━━━━\n\n"
-                            f"💸 Số tiền: {format_currency_amount(amount, currency)}\n"
-                            f"📌 Danh mục: {cat_name}\n"
-                            f"📝 Ghi chú: {note if note else 'Không có'}\n\n"
-                        )
-                        
+                        msg += f"\n\n"
                         if total_spent > budget:
                             percent = (total_spent / budget * 100)
                             msg += f"⚠️ *CẢNH BÁO:* Đã vượt budget!\n"
@@ -2179,13 +2206,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                             msg += f"Đã chi: {format_currency_amount(total_spent, 'VND')} ({percent:.1f}%)"
                         else:
                             msg += f"Budget còn: {format_currency_amount(budget - total_spent, 'VND')}"
-                    else:
-                        msg = (
-                            f"✅ *ĐÃ THÊM CHI TIÊU*\n━━━━━━━━━━━━━━━━\n\n"
-                            f"💸 Số tiền: {format_currency_amount(amount, currency)}\n"
-                            f"📌 Danh mục: {cat_name}\n"
-                            f"📝 Ghi chú: {note if note else 'Không có'}"
-                        )
                     
                     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
                 else:
@@ -2804,8 +2824,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 "*Ví dụ:*\n"
                 "• `thu nhập 5000000VND Lương Tháng 3`\n"
                 "• `thu nhập 100USD Freelance`\n"
-                "• `thu nhập 50000LKR`\n"
-                "• `thu nhập 2000HKD Bán hàng`\n\n"
+                "• `thu nhập 50000KHR`\n"
+                "• `thu nhập 2000HKD Bán hàng`\n"
+                "• `thu nhập 50000` (mặc định VND)\n\n"
                 f"*Các loại tiền hỗ trợ:*\n{currency_detail}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Quay lại", callback_data="back_to_expense")]])
@@ -2839,7 +2860,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             msg += "*Ví dụ:*\n"
             msg += "• `chi tiêu 1 50000VND Cà phê sáng`\n"
             msg += "• `chi tiêu 2 20USD Xăng xe`\n"
-            msg += "• `chi tiêu 3 1000HKD Mua sắm`"
+            msg += "• `chi tiêu 3 1000KHR Mua sắm`\n"
+            msg += "• `chi tiêu 4 50000` (mặc định VND)"
             
             await query.edit_message_text(
                 msg, parse_mode=ParseMode.MARKDOWN,
