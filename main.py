@@ -140,11 +140,14 @@ def add_subscription(user_id, symbol):
     c = conn.cursor()
     try:
         added_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        symbol_upper = symbol.upper()
         c.execute("INSERT INTO subscriptions (user_id, symbol, added_date) VALUES (?, ?, ?)",
-                  (user_id, symbol.upper(), added_date))
+                  (user_id, symbol_upper, added_date))
         conn.commit()
+        logger.info(f"✅ User {user_id} đã thêm {symbol_upper}")
         success = True
-    except sqlite3.IntegrityError:
+    except sqlite3.IntegrityError as e:
+        logger.warning(f"⚠️ User {user_id} đã có {symbol.upper()}: {e}")
         success = False
     conn.close()
     return success
@@ -156,7 +159,10 @@ def remove_subscription(user_id, symbol):
     c.execute("DELETE FROM subscriptions WHERE user_id = ? AND symbol = ?",
               (user_id, symbol.upper()))
     conn.commit()
+    affected = c.rowcount
     conn.close()
+    logger.info(f"🗑 User {user_id} đã xóa {symbol.upper()}, affected: {affected}")
+    return affected > 0
 
 def get_subscriptions(user_id):
     """Lấy danh sách theo dõi"""
@@ -166,7 +172,8 @@ def get_subscriptions(user_id):
               (user_id,))
     result = [row[0] for row in c.fetchall()]
     conn.close()
-    return result
+    # Đảm bảo tất cả đều là chữ hoa
+    return [s.upper() for s in result]
 
 def add_transaction(user_id, symbol, amount, buy_price):
     """Thêm giao dịch mua"""
@@ -218,7 +225,6 @@ def update_transaction(transaction_id, user_id, new_amount, new_price):
         conn.close()
         return False
     
-    symbol = old_tx[0]
     new_total = new_amount * new_price
     
     c.execute('''UPDATE portfolio 
@@ -552,6 +558,8 @@ async def su_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔄 Đang xử lý...")
     coins = [arg.upper() for arg in ctx.args]
     
+    logger.info(f"User {uid} đang thêm coins: {coins}")
+    
     results = []
     added = []
     failed = []
@@ -566,8 +574,14 @@ async def su_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if add_subscription(uid, coin):
             added.append(coin)
             price_cache[coin] = price_data
+            logger.info(f"✅ Đã thêm {coin} cho user {uid}")
         else:
             existed.append(coin)
+            logger.info(f"ℹ️ {coin} đã tồn tại cho user {uid}")
+    
+    # Kiểm tra lại database
+    current_subs = get_subscriptions(uid)
+    logger.info(f"User {uid} hiện đang theo dõi: {current_subs}")
     
     if added:
         results.append(f"✅ Đã thêm: {', '.join(added)}")
@@ -576,7 +590,7 @@ async def su_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if failed:
         results.append(f"❌ Không tìm thấy: {', '.join(failed)}")
     
-    total = len(get_subscriptions(uid))
+    total = len(current_subs)
     results.append(f"\n📊 Tổng số đang theo dõi: {total}")
     
     await msg.delete()
@@ -976,6 +990,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         symbol = data.replace("sub_", "")
         uid = query.from_user.id
         
+        logger.info(f"User {uid} đang thêm {symbol} từ callback")
+        
         # Kiểm tra xem đã theo dõi chưa
         subs = get_subscriptions(uid)
         
@@ -994,14 +1010,17 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if add_subscription(uid, symbol):
                 msg = f"✅ Đã thêm *{symbol}* vào danh sách theo dõi!"
                 price_cache[symbol] = price_data
+                logger.info(f"✅ Đã thêm {symbol} cho user {uid}")
             else:
                 msg = f"❌ Không thể thêm *{symbol}*"
         
         # Lấy danh sách mới
         new_subs = get_subscriptions(uid)
+        logger.info(f"User {uid} sau khi thêm: {new_subs}")
+        
         if new_subs:
             msg += f"\n\n📋 *Danh sách hiện tại:*\n"
-            for coin in sorted(new_subs)[:10]:  # Chỉ hiển thị 10 coin đầu
+            for coin in sorted(new_subs)[:10]:
                 msg += f"• `{coin}`\n"
             if len(new_subs) > 10:
                 msg += f"• ... và {len(new_subs)-10} coin khác\n"
@@ -1028,8 +1047,10 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 remove_subscription(uid, c)
             msg = f"🗑 Đã xóa *TẤT CẢ* {len(subs)} coin khỏi danh sách theo dõi!"
         else:
-            remove_subscription(uid, coin)
-            msg = f"✅ Đã xóa *{coin}* khỏi danh sách theo dõi!"
+            if remove_subscription(uid, coin):
+                msg = f"✅ Đã xóa *{coin}* khỏi danh sách theo dõi!"
+            else:
+                msg = f"❌ Không tìm thấy *{coin}* trong danh sách!"
         
         # Lấy danh sách mới
         remaining = get_subscriptions(uid)
@@ -1058,6 +1079,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         uid = query.from_user.id
         subs = get_subscriptions(uid)
         
+        logger.info(f"User {uid} xem menu subscribe, subs: {subs}")
+        
         # Tạo keyboard động dựa trên coin đang theo dõi
         keyboard = []
         
@@ -1078,16 +1101,17 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             ["➕ BTC", "➕ ETH", "➕ USDT"],
             ["➕ BNB", "➕ SOL", "➕ XRP"],
             ["➕ DOGE", "➕ ADA", "➕ DOT"],
-            ["➕ MATIC", "➕ LINK", "➕ SHIB"],
-            ["➕ AVAX", "➕ UNI", "➕ ATOM"]
         ]
         
         for row in popular_coins:
             btn_row = []
             for btn in row:
                 coin = btn.replace("➕ ", "")
-                btn_row.append(InlineKeyboardButton(btn, callback_data=f"sub_{coin}"))
-            keyboard.append(btn_row)
+                # Chỉ hiển thị nút thêm nếu chưa có trong danh sách
+                if coin not in subs:
+                    btn_row.append(InlineKeyboardButton(btn, callback_data=f"sub_{coin}"))
+            if btn_row:  # Chỉ thêm row nếu có nút
+                keyboard.append(btn_row)
         
         # Nút xóa tất cả và quay lại
         if subs:
@@ -1123,12 +1147,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if subs:
             msg = "📋 *DANH SÁCH THEO DÕI*\n━━━━━━━━━━━━\n\n"
             for s in sorted(subs):
-                c = price_cache.get(s, {})
-                if c:
-                    price = fmt_price(c.get('p', '?'))
-                    change = c.get('c', 0)
-                    emoji = "📈" if change > 0 else "📉" if change < 0 else "➡️"
-                    msg += f"• *{s}*: `{price}` {emoji} `{change:+.1f}%`\n"
+                d = get_price(s)
+                if d:
+                    price_cache[s] = d
+                    emoji = "📈" if d['c'] > 0 else "📉" if d['c'] < 0 else "➡️"
+                    msg += f"• *{s}*: `{fmt_price(d['p'])}` {emoji} `{d['c']:+.1f}%`\n"
                 else:
                     msg += f"• *{s}*: `Đang cập nhật...`\n"
             
