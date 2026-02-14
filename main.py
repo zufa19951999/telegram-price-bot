@@ -2075,64 +2075,92 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Xử lý các lệnh nhập liệu
     elif text.startswith("thu nhập"):
         parts = text.split()
-        if len(parts) >= 3:  # Cần ít nhất: thu nhập + số tiền + loại tiền
+        if len(parts) >= 2:  # Cần ít nhất: thu nhập + số tiền
             try:
-                amount = float(parts[1])
-                currency = parts[2].upper()
+                # Phân tích cú pháp: thu nhập [số tiền][loại tiền] [nguồn] [ghi chú]
+                amount_str = parts[1]
+                
+                # Tách số và loại tiền
+                import re
+                match = re.match(r'^([0-9,.]+)([A-Za-z]*)$', amount_str)
+                if not match:
+                    await update.message.reply_text(
+                        "❌ Số tiền không hợp lệ!\n"
+                        "Ví dụ: `thu nhập 100 USD Lương` hoặc `thu nhập 5000000 VND Lương tháng 3`",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                    return
+                
+                amount_part = match.group(1).replace(',', '')
+                currency_part = match.group(2).upper() if match.group(2) else 'VND'
+                
+                # Kiểm tra số tiền
+                try:
+                    amount = float(amount_part)
+                except ValueError:
+                    await update.message.reply_text("❌ Số tiền không hợp lệ!")
+                    return
                 
                 # Kiểm tra currency có hợp lệ không
-                if currency not in SUPPORTED_CURRENCIES:
+                if currency_part not in SUPPORTED_CURRENCIES:
                     currency_list = ', '.join(SUPPORTED_CURRENCIES.keys())
                     await update.message.reply_text(
-                        f"❌ Loại tiền '{currency}' không hỗ trợ!\n"
+                        f"❌ Loại tiền '{currency_part}' không hỗ trợ!\n"
                         f"Các loại tiền hỗ trợ: {currency_list}"
                     )
                     return
                 
-                source = parts[3] if len(parts) > 3 else "Khác"
-                note = " ".join(parts[4:]) if len(parts) > 4 else ""
+                # Xác định nguồn thu và ghi chú
+                if len(parts) >= 3:
+                    source = parts[2]
+                    note = " ".join(parts[3:]) if len(parts) > 3 else ""
+                else:
+                    source = "Khác"
+                    note = ""
                 
                 uid = update.effective_user.id
-                if add_income(uid, amount, source, currency, note):
+                if add_income(uid, amount, source, currency_part, note):
+                    # Format số tiền theo loại tiền
+                    if currency_part == 'VND':
+                        formatted_amount = f"{amount:,.0f} VND"
+                    elif currency_part in ['USD', 'USDT', 'SGD', 'HKD']:
+                        formatted_amount = f"${amount:,.2f}"
+                    elif currency_part == 'JPY':
+                        formatted_amount = f"¥{amount:,.0f}"
+                    elif currency_part == 'EUR':
+                        formatted_amount = f"€{amount:,.2f}"
+                    elif currency_part == 'GBP':
+                        formatted_amount = f"£{amount:,.2f}"
+                    elif currency_part == 'CNY':
+                        formatted_amount = f"¥{amount:,.2f}"
+                    elif currency_part == 'KRW':
+                        formatted_amount = f"₩{amount:,.0f}"
+                    elif currency_part == 'THB':
+                        formatted_amount = f"฿{amount:,.2f}"
+                    elif currency_part == 'LKR':
+                        formatted_amount = f"Rs {amount:,.2f}"
+                    elif currency_part == 'KHR':
+                        formatted_amount = f"៛{amount:,.0f}"
+                    else:
+                        formatted_amount = f"{amount:,.2f} {currency_part}"
+                    
                     await update.message.reply_text(
                         f"✅ *ĐÃ THÊM THU NHẬP*\n━━━━━━━━━━━━━━━━\n\n"
-                        f"💰 Số tiền: {format_currency_amount(amount, currency)}\n"
+                        f"💰 Số tiền: {formatted_amount}\n"
                         f"📌 Nguồn: {source}\n"
                         f"📝 Ghi chú: {note if note else 'Không có'}",
                         parse_mode=ParseMode.MARKDOWN
                     )
                 else:
                     await update.message.reply_text("❌ Lỗi khi ghi nhận thu nhập!")
-            except ValueError:
-                await update.message.reply_text(
-                    "❌ Số tiền không hợp lệ!\n"
-                    "Ví dụ: `thu nhập 100 USD Lương` hoặc `thu nhập 5000000 VND Lương tháng 3`",
-                    parse_mode=ParseMode.MARKDOWN
-                )
+                    
             except Exception as e:
                 logger.error(f"Lỗi thu nhập: {e}")
-                await update.message.reply_text("❌ Có lỗi xảy ra, vui lòng thử lại!")
-        
-        elif len(parts) == 2:  # Chỉ có số tiền, mặc định VND
-            try:
-                amount = float(parts[1])
-                currency = 'VND'
-                source = "Khác"
-                note = ""
-                
-                uid = update.effective_user.id
-                if add_income(uid, amount, source, currency, note):
-                    await update.message.reply_text(
-                        f"✅ *ĐÃ THÊM THU NHẬP*\n━━━━━━━━━━━━━━━━\n\n"
-                        f"💰 Số tiền: {format_currency_amount(amount, currency)}\n"
-                        f"📌 Nguồn: {source}\n"
-                        f"📝 Ghi chú: Không có",
-                        parse_mode=ParseMode.MARKDOWN
-                    )
-                else:
-                    await update.message.reply_text("❌ Lỗi khi ghi nhận thu nhập!")
-            except ValueError:
-                await update.message.reply_text("❌ Số tiền không hợp lệ!")
+                await update.message.reply_text(
+                    "❌ Có lỗi xảy ra. Vui lòng thử lại!\n"
+                    "Ví dụ đúng: `thu nhập 100 USD Lương` hoặc `thu nhập 5000000`",
+                    parse_mode=ParseMode.MARKDOWN
+                )
     
     elif text.startswith("danh mục"):
         parts = text.split()
@@ -2150,6 +2178,49 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
             else:
                 await update.message.reply_text("❌ Lỗi khi thêm danh mục!")
+    
+    elif text.startswith("chi tiêu"):
+        parts = text.split()
+        if len(parts) >= 3:
+            try:
+                category_id = int(parts[1])
+                amount_str = parts[2]
+                
+                # Tách số và loại tiền
+                import re
+                match = re.match(r'^([0-9,.]+)([A-Za-z]*)$', amount_str)
+                if not match:
+                    await update.message.reply_text("❌ Số tiền không hợp lệ!")
+                    return
+                
+                amount_part = match.group(1).replace(',', '')
+                currency_part = match.group(2).upper() if match.group(2) else 'VND'
+                
+                amount = float(amount_part)
+                
+                # Kiểm tra currency
+                if currency_part not in SUPPORTED_CURRENCIES:
+                    currency_list = ', '.join(SUPPORTED_CURRENCIES.keys())
+                    await update.message.reply_text(
+                        f"❌ Loại tiền '{currency_part}' không hỗ trợ!\n"
+                        f"Các loại tiền hỗ trợ: {currency_list}"
+                    )
+                    return
+                
+                note = " ".join(parts[3:]) if len(parts) > 3 else ""
+                
+                uid = update.effective_user.id
+                if add_expense(uid, category_id, amount, currency_part, note):
+                    await update.message.reply_text(
+                        f"✅ *ĐÃ THÊM CHI TIÊU*\n━━━━━━━━━━━━━━━━\n\n"
+                        f"💰 Số tiền: {format_currency_amount(amount, currency_part)}\n"
+                        f"📝 Ghi chú: {note if note else 'Không có'}",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                else:
+                    await update.message.reply_text("❌ Lỗi khi thêm chi tiêu!")
+            except ValueError:
+                await update.message.reply_text("❌ ID hoặc số tiền không hợp lệ!")
     
     elif text.startswith("xóa chi"):
         parts = text.split()
