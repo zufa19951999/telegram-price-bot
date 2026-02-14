@@ -574,7 +574,7 @@ def get_usdt_vnd_rate():
         logger.error(f"❌ Lỗi get_usdt_vnd_rate: {e}")
         return {'source': 'Error', 'vnd': 25000, 'update_time': datetime.now().strftime('%H:%M:%S %d/%m/%Y')}
 
-# ==================== HÀM ĐỊNH DẠNG (GIỮ NGUYÊN + THÊM CHO ĐA TIỀN TỆ) ====================
+# ==================== HÀM ĐỊNH DẠNG ====================
 
 def fmt_price(p):
     try:
@@ -627,15 +627,15 @@ def fmt_number(n):
     except:
         return str(n)
 
-# ==================== HÀM HỖ TRỢ ĐA TIỀN TỆ (CẬP NHẬT) ====================
+# ==================== HÀM HỖ TRỢ ĐA TIỀN TỆ ====================
 
-# Danh sách các loại tiền hỗ trợ (ĐÃ SỬA HKR THÀNH KHR)
+# Danh sách các loại tiền hỗ trợ
 SUPPORTED_CURRENCIES = {
     'VND': '🇻🇳 Việt Nam Đồng',
     'USD': '🇺🇸 US Dollar',
     'USDT': '💵 Tether (USDT)',
     'LKR': '🇱🇰 Sri Lanka Rupee',
-    'KHR': '🇰🇭 Riel Campuchia',  # Đã sửa từ HKR thành KHR
+    'KHR': '🇰🇭 Riel Campuchia',
     'HKD': '🇭🇰 Hong Kong Dollar',
     'SGD': '🇸🇬 Singapore Dollar',
     'JPY': '🇯🇵 Japanese Yen',
@@ -677,13 +677,13 @@ def format_currency_amount(amount, currency='VND'):
         elif currency == 'LKR':
             return f"Rs {amount:,.2f}"
         elif currency == 'KHR':
-            return f"៛{amount:,.0f}"  # Ký hiệu Riel Campuchia
+            return f"៛{amount:,.0f}"
         else:
             return f"{amount:,.2f} {currency}"
     except:
         return f"{amount} {currency}"
 
-# ==================== HÀM TÍNH TOÁN ẨN (GIỮ NGUYÊN) ====================
+# ==================== HÀM TÍNH TOÁN ẨN ====================
 
 def tinh_toan(expression):
     """Tính toán biểu thức toán học đơn giản"""
@@ -826,7 +826,7 @@ def export_portfolio_to_csv(user_id):
         logger.error(f"❌ Lỗi khi xuất CSV: {e}")
         return None, f"❌ Lỗi khi xuất file: {str(e)}"
 
-# ==================== EXPENSE DATABASE FUNCTIONS (CẬP NHẬT ĐA TIỀN TỆ) ====================
+# ==================== EXPENSE DATABASE FUNCTIONS (ĐÃ SỬA) ====================
 
 def add_expense_category(user_id, name, budget=0):
     """Thêm danh mục chi tiêu"""
@@ -1160,7 +1160,7 @@ def delete_income(income_id, user_id):
         if conn:
             conn.close()
 
-# ==================== KEYBOARD (GIỮ NGUYÊN + THÊM CHO QUẢN LÝ CHI TIÊU) ====================
+# ==================== KEYBOARD ====================
 
 def get_main_keyboard():
     """Keyboard chính"""
@@ -1745,7 +1745,7 @@ async def export_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     await msg.delete()
 
-# ==================== EXPENSE COMMAND HANDLERS (CẬP NHẬT ĐA TIỀN TỆ) ====================
+# ==================== EXPENSE COMMAND HANDLERS (ĐÃ SỬA) ====================
 
 async def expense_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Menu quản lý chi tiêu"""
@@ -2041,7 +2041,7 @@ async def expense_manage_categories_handler(update: Update, ctx: ContextTypes.DE
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# ==================== HANDLE MESSAGE (CẬP NHẬT PHẦN CHI TIÊU) ====================
+# ==================== HANDLE MESSAGE (ĐÃ SỬA LỖI) ====================
 
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -2072,7 +2072,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif text == "🔙 Về menu chính":
         await start(update, ctx)
     
-    # Xử lý các lệnh nhập liệu (CẬP NHẬT PHẦN NÀY)
+    # Xử lý các lệnh nhập liệu (ĐÃ SỬA LỖI)
     elif text.startswith("thu nhập"):
         parts = text.split()
         if len(parts) >= 2:
@@ -2083,8 +2083,8 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 
                 # Kiểm tra nếu amount có kèm currency code (ví dụ: 100USD, 5000KHR)
                 import re
-                # Pattern: số (có thể có dấu chấm) + chữ cái (2-4 ký tự)
-                match = re.match(r'^(\d+(?:\.\d+)?)([A-Za-z]{2,4})$', amount_str)
+                # Pattern đơn giản: bắt đầu bằng số, theo sau bởi chữ cái
+                match = re.match(r'^(\d+)([A-Za-z]+)$', amount_str)
                 if match:
                     amount = float(match.group(1))
                     currency = match.group(2).upper()
@@ -2122,10 +2122,10 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     )
                 else:
                     await update.message.reply_text("❌ Lỗi khi ghi nhận thu nhập!")
-            except ValueError:
+            except Exception as e:
+                logger.error(f"Lỗi xử lý thu nhập: {e}")
                 await update.message.reply_text(
-                    "❌ Số tiền không hợp lệ!\n"
-                    "Ví dụ: `thu nhập 100USD Lương` hoặc `thu nhập 5000000VND` hoặc `thu nhập 50000`",
+                    "❌ Có lỗi xảy ra. Vui lòng thử lại!",
                     parse_mode=ParseMode.MARKDOWN
                 )
     
@@ -2141,7 +2141,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 
                 # Kiểm tra nếu amount có kèm currency code
                 import re
-                match = re.match(r'^(\d+(?:\.\d+)?)([A-Za-z]{2,4})$', amount_str)
+                match = re.match(r'^(\d+)([A-Za-z]+)$', amount_str)
                 if match:
                     amount = float(match.group(1))
                     currency = match.group(2).upper()
@@ -2210,10 +2210,10 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
                 else:
                     await update.message.reply_text("❌ Lỗi khi ghi nhận chi tiêu!")
-            except ValueError:
+            except Exception as e:
+                logger.error(f"Lỗi xử lý chi tiêu: {e}")
                 await update.message.reply_text(
-                    "❌ Mã danh mục hoặc số tiền không hợp lệ!\n"
-                    "Ví dụ: `chi tiêu 1 50000VND Cà phê` hoặc `chi tiêu 2 100USD`",
+                    "❌ Có lỗi xảy ra. Vui lòng thử lại!",
                     parse_mode=ParseMode.MARKDOWN
                 )
     
@@ -2309,7 +2309,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     formatted_result = f"{result:,.10f}".rstrip('0').rstrip('.') if '.' in str(result) else str(result)
                     await update.message.reply_text(f"{text} = {formatted_result}")
 
-# ==================== HANDLE CALLBACK (GIỮ NGUYÊN PHẦN COIN, THÊM PHẦN CHI TIÊU) ====================
+# ==================== HANDLE CALLBACK ====================
 
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -2806,7 +2806,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
         
-        # ========== CALLBACK QUẢN LÝ CHI TIÊU (MỚI) ==========
+        # ========== CALLBACK QUẢN LÝ CHI TIÊU ==========
         elif data == "back_to_expense":
             await query.edit_message_text(
                 "💰 *QUẢN LÝ CHI TIÊU CÁ NHÂN*",
@@ -3157,10 +3157,10 @@ if __name__ == '__main__':
     # Export command (GIỮ NGUYÊN)
     app.add_handler(CommandHandler("export", export_command))
     
-    # Message handler (ĐÃ CẬP NHẬT)
+    # Message handler (ĐÃ SỬA)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # Callback handler (ĐÃ CẬP NHẬT)
+    # Callback handler (ĐÃ SỬA)
     app.add_handler(CallbackQueryHandler(handle_callback))
     
     # Threads (GIỮ NGUYÊN)
