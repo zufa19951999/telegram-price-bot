@@ -141,7 +141,7 @@ def add_subscription(user_id, symbol):
     try:
         added_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         c.execute("INSERT INTO subscriptions (user_id, symbol, added_date) VALUES (?, ?, ?)",
-                  (user_id, symbol, added_date))
+                  (user_id, symbol.upper(), added_date))
         conn.commit()
         success = True
     except sqlite3.IntegrityError:
@@ -154,7 +154,7 @@ def remove_subscription(user_id, symbol):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("DELETE FROM subscriptions WHERE user_id = ? AND symbol = ?",
-              (user_id, symbol))
+              (user_id, symbol.upper()))
     conn.commit()
     conn.close()
 
@@ -178,7 +178,7 @@ def add_transaction(user_id, symbol, amount, buy_price):
     c.execute('''INSERT INTO portfolio 
                  (user_id, symbol, amount, buy_price, buy_date, total_cost)
                  VALUES (?, ?, ?, ?, ?, ?)''',
-              (user_id, symbol, amount, buy_price, buy_date, total_cost))
+              (user_id, symbol.upper(), amount, buy_price, buy_date, total_cost))
     conn.commit()
     conn.close()
 
@@ -972,42 +972,49 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     
-    elif data == "show_subscribe":
-        await query.edit_message_text(
-            "🔔 *QUẢN LÝ THEO DÕI*\n\n"
-            "📝 *Thêm:* /su btc eth doge\n"
-            "🗑 *Xóa:* /uns - Menu xóa\n"
-            "📋 *DS:* /list",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("➕ BTC", callback_data="sub_BTC"),
-                 InlineKeyboardButton("➕ ETH", callback_data="sub_ETH"),
-                 InlineKeyboardButton("➕ USDT", callback_data="sub_USDT")],
-                [InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]
-            ])
-        )
-    
     elif data.startswith("sub_"):
         symbol = data.replace("sub_", "")
         uid = query.from_user.id
         
-        price_data = get_price(symbol)
-        if not price_data:
-            await query.edit_message_text(f"❌ Không thể thêm *{symbol}*", parse_mode='Markdown')
-            return
+        # Kiểm tra xem đã theo dõi chưa
+        subs = get_subscriptions(uid)
         
-        if add_subscription(uid, symbol):
-            msg = f"✅ Đã thêm *{symbol}*"
-            price_cache[symbol] = price_data
+        if symbol in subs:
+            msg = f"ℹ️ *{symbol}* đã có trong danh sách theo dõi!"
         else:
-            msg = f"ℹ️ *{symbol}* đã có"
+            price_data = get_price(symbol)
+            if not price_data:
+                await query.edit_message_text(
+                    f"❌ Không thể thêm *{symbol}*",
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Quay lại", callback_data="show_subscribe")]])
+                )
+                return
+            
+            if add_subscription(uid, symbol):
+                msg = f"✅ Đã thêm *{symbol}* vào danh sách theo dõi!"
+                price_cache[symbol] = price_data
+            else:
+                msg = f"❌ Không thể thêm *{symbol}*"
         
-        total = len(get_subscriptions(uid))
-        msg += f"\n\n📊 Tổng: {total}"
+        # Lấy danh sách mới
+        new_subs = get_subscriptions(uid)
+        if new_subs:
+            msg += f"\n\n📋 *Danh sách hiện tại:*\n"
+            for coin in sorted(new_subs)[:10]:  # Chỉ hiển thị 10 coin đầu
+                msg += f"• `{coin}`\n"
+            if len(new_subs) > 10:
+                msg += f"• ... và {len(new_subs)-10} coin khác\n"
+            msg += f"\n📊 Tổng: {len(new_subs)} coin"
         
-        keyboard = [[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]]
+        keyboard = [[
+            InlineKeyboardButton("🔔 Tiếp tục quản lý", callback_data="show_subscribe"),
+            InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")
+        ]]
+        
         await query.edit_message_text(
-            msg, parse_mode=ParseMode.MARKDOWN,
+            msg,
+            parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     
@@ -1019,22 +1026,93 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             subs = get_subscriptions(uid)
             for c in subs:
                 remove_subscription(uid, c)
-            msg = f"🗑 Đã xóa {len(subs)} coin"
+            msg = f"🗑 Đã xóa *TẤT CẢ* {len(subs)} coin khỏi danh sách theo dõi!"
         else:
             remove_subscription(uid, coin)
-            msg = f"✅ Đã xóa *{coin}*"
+            msg = f"✅ Đã xóa *{coin}* khỏi danh sách theo dõi!"
         
+        # Lấy danh sách mới
         remaining = get_subscriptions(uid)
         if remaining:
-            msg += f"\n\n📋 Còn: {', '.join(remaining[:5])}"
-            if len(remaining) > 5:
-                msg += f" và {len(remaining)-5} coin khác"
+            msg += f"\n\n📋 *Các coin còn lại:*\n"
+            for c in sorted(remaining)[:10]:
+                msg += f"• `{c}`\n"
+            if len(remaining) > 10:
+                msg += f"• ... và {len(remaining)-10} coin khác\n"
+            msg += f"\n📊 Tổng: {len(remaining)} coin"
         else:
-            msg += "\n\n📭 Danh sách trống"
+            msg += "\n\n📭 Danh sách theo dõi hiện đang trống."
         
-        keyboard = [[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]]
+        keyboard = [[
+            InlineKeyboardButton("🔔 Quản lý tiếp", callback_data="show_subscribe"),
+            InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")
+        ]]
+        
         await query.edit_message_text(
-            msg, parse_mode=ParseMode.MARKDOWN,
+            msg,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    elif data == "show_subscribe":
+        uid = query.from_user.id
+        subs = get_subscriptions(uid)
+        
+        # Tạo keyboard động dựa trên coin đang theo dõi
+        keyboard = []
+        
+        # Nếu có coin đang theo dõi, hiển thị để xóa
+        if subs:
+            row = []
+            for i, coin in enumerate(sorted(subs)):
+                row.append(InlineKeyboardButton(f"❌ {coin}", callback_data=f"uns_{coin}"))
+                if len(row) == 3:
+                    keyboard.append(row)
+                    row = []
+            if row:
+                keyboard.append(row)
+            keyboard.append([])  # Thêm dòng trống để phân cách
+        
+        # Thêm các nút thêm coin nhanh
+        popular_coins = [
+            ["➕ BTC", "➕ ETH", "➕ USDT"],
+            ["➕ BNB", "➕ SOL", "➕ XRP"],
+            ["➕ DOGE", "➕ ADA", "➕ DOT"],
+            ["➕ MATIC", "➕ LINK", "➕ SHIB"],
+            ["➕ AVAX", "➕ UNI", "➕ ATOM"]
+        ]
+        
+        for row in popular_coins:
+            btn_row = []
+            for btn in row:
+                coin = btn.replace("➕ ", "")
+                btn_row.append(InlineKeyboardButton(btn, callback_data=f"sub_{coin}"))
+            keyboard.append(btn_row)
+        
+        # Nút xóa tất cả và quay lại
+        if subs:
+            keyboard.append([InlineKeyboardButton("🗑 Xóa tất cả", callback_data="uns_all")])
+        keyboard.append([InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")])
+        
+        # Tạo message hiển thị danh sách đang theo dõi
+        msg = "🔔 *QUẢN LÝ THEO DÕI*\n━━━━━━━━━━━━━━━━\n\n"
+        
+        if subs:
+            msg += "📋 *Đang theo dõi:*\n"
+            for i, coin in enumerate(sorted(subs), 1):
+                msg += f"{i}. `{coin}`\n"
+                if i == 15 and len(subs) > 15:
+                    msg += f"... và {len(subs)-15} coin khác\n"
+                    break
+            msg += f"\n📊 Tổng số: {len(subs)} coin\n\n"
+        else:
+            msg += "📭 Bạn chưa theo dõi coin nào!\n\n"
+        
+        msg += "👇 *Chọn để thêm hoặc xóa:*"
+        
+        await query.edit_message_text(
+            msg,
+            parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     
@@ -1046,10 +1124,13 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             msg = "📋 *DANH SÁCH THEO DÕI*\n━━━━━━━━━━━━\n\n"
             for s in sorted(subs):
                 c = price_cache.get(s, {})
-                price = fmt_price(c.get('p', '?'))
-                change = c.get('c', 0)
-                emoji = "📈" if change > 0 else "📉" if change < 0 else "➡️"
-                msg += f"• *{s}*: `{price}` {emoji} `{change:+.1f}%`\n"
+                if c:
+                    price = fmt_price(c.get('p', '?'))
+                    change = c.get('c', 0)
+                    emoji = "📈" if change > 0 else "📉" if change < 0 else "➡️"
+                    msg += f"• *{s}*: `{price}` {emoji} `{change:+.1f}%`\n"
+                else:
+                    msg += f"• *{s}*: `Đang cập nhật...`\n"
             
             keyboard = []
             row = []
