@@ -6,19 +6,31 @@ import json
 import sqlite3
 import logging
 import shutil
+import sys
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.constants import ParseMode
+from telegram.error import TimedOut, NetworkError
 
 # Cấu hình logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('bot.log') if os.path.exists('/data') else logging.StreamHandler(sys.stdout)
+    ]
 )
 logger = logging.getLogger(__name__)
+
+# Bắt exception toàn cục
+def global_exception_handler(exc_type, exc_value, exc_traceback):
+    logger.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
+
+sys.excepthook = global_exception_handler
 
 load_dotenv()
 
@@ -28,20 +40,37 @@ CMC_API_URL = "https://pro-api.coinmarketcap.com/v1"
 
 # ==================== CẤU HÌNH DATABASE TRÊN RENDER DISK ====================
 
-DATA_DIR = '/data' if os.path.exists('/data') else os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(DATA_DIR, 'crypto_bot.db')
-BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
-
-os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(BACKUP_DIR, exist_ok=True)
-
-logger.info(f"📁 Dữ liệu sẽ được lưu tại: {DB_PATH}")
-logger.info(f"💾 Backup sẽ được lưu tại: {BACKUP_DIR}")
+try:
+    DATA_DIR = '/data' if os.path.exists('/data') else os.path.dirname(os.path.abspath(__file__))
+    DB_PATH = os.path.join(DATA_DIR, 'crypto_bot.db')
+    BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
+    
+    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    
+    # Kiểm tra quyền ghi
+    test_file = os.path.join(DATA_DIR, 'test_write.txt')
+    with open(test_file, 'w') as f:
+        f.write('test')
+    os.remove(test_file)
+    
+    logger.info(f"📁 Dữ liệu sẽ được lưu tại: {DB_PATH}")
+    logger.info(f"💾 Backup sẽ được lưu tại: {BACKUP_DIR}")
+    logger.info("✅ Disk có quyền ghi")
+    
+except Exception as e:
+    logger.error(f"❌ Lỗi cấu hình disk: {e}")
+    # Fallback về thư mục hiện tại
+    DATA_DIR = os.path.dirname(os.path.abspath(__file__))
+    DB_PATH = os.path.join(DATA_DIR, 'crypto_bot.db')
+    BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
+    os.makedirs(BACKUP_DIR, exist_ok=True)
 
 # Cache
 price_cache = {}
 usdt_cache = {'rate': None, 'time': None}
 app = None
+shutdown_event = threading.Event()
 
 # ==================== HEALTH CHECK SERVER ====================
 
@@ -55,41 +84,57 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.wfile.write(response.encode('utf-8'))
     
     def log_message(self, format, *args):
-        return
+        pass
 
 def run_health_server():
-    port = int(os.environ.get('PORT', 10000))
-    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    logger.info(f"✅ Health server running on port {port}")
-    server.serve_forever()
+    """Chạy HTTP server cho Render health check"""
+    try:
+        port = int(os.environ.get('PORT', 10000))
+        server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+        logger.info(f"✅ Health server running on port {port}")
+        server.serve_forever()
+    except Exception as e:
+        logger.error(f"❌ Health server error: {e}")
 
 # ==================== DATABASE SETUP ====================
 
 def init_database():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    # Bảng theo dõi coin
-    c.execute('''CREATE TABLE IF NOT EXISTS subscriptions
-                 (user_id INTEGER, symbol TEXT, 
-                  added_date TEXT,
-                  PRIMARY KEY (user_id, symbol))''')
-    
-    # Bảng danh mục đầu tư
-    c.execute('''CREATE TABLE IF NOT EXISTS portfolio
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER,
-                  symbol TEXT,
-                  amount REAL,
-                  buy_price REAL,
-                  buy_date TEXT,
-                  total_cost REAL)''')
-    
-    conn.commit()
-    conn.close()
-    logger.info(f"✅ Database initialized at {DB_PATH}")
+    """Khởi tạo database với retry"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            conn = sqlite3.connect(DB_PATH, timeout=10)
+            c = conn.cursor()
+            
+            # Bảng theo dõi coin
+            c.execute('''CREATE TABLE IF NOT EXISTS subscriptions
+                         (user_id INTEGER, symbol TEXT, 
+                          added_date TEXT,
+                          PRIMARY KEY (user_id, symbol))''')
+            
+            # Bảng danh mục đầu tư
+            c.execute('''CREATE TABLE IF NOT EXISTS portfolio
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          user_id INTEGER,
+                          symbol TEXT,
+                          amount REAL,
+                          buy_price REAL,
+                          buy_date TEXT,
+                          total_cost REAL)''')
+            
+            conn.commit()
+            conn.close()
+            logger.info(f"✅ Database initialized at {DB_PATH}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Lỗi database (attempt {attempt+1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2)
+            else:
+                return False
 
 def backup_database():
+    """Backup database với retry"""
     try:
         if os.path.exists(DB_PATH):
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -101,166 +146,210 @@ def backup_database():
         logger.error(f"❌ Lỗi backup: {e}")
 
 def clean_old_backups(days=7):
-    now = time.time()
-    for f in os.listdir(BACKUP_DIR):
-        if f.startswith('backup_') and f.endswith('.db'):
-            filepath = os.path.join(BACKUP_DIR, f)
-            if os.path.getmtime(filepath) < now - days * 86400:
-                os.remove(filepath)
-                logger.info(f"🗑 Đã xóa backup cũ: {f}")
+    """Xóa backup cũ"""
+    try:
+        now = time.time()
+        for f in os.listdir(BACKUP_DIR):
+            if f.startswith('backup_') and f.endswith('.db'):
+                filepath = os.path.join(BACKUP_DIR, f)
+                if os.path.getmtime(filepath) < now - days * 86400:
+                    os.remove(filepath)
+                    logger.info(f"🗑 Đã xóa backup cũ: {f}")
+    except Exception as e:
+        logger.error(f"Lỗi xóa backup cũ: {e}")
 
 def schedule_backup():
-    while True:
+    """Chạy backup mỗi ngày"""
+    while not shutdown_event.is_set():
         try:
             backup_database()
-            time.sleep(86400)
+            # Đợi 24 giờ nhưng check shutdown_event mỗi 60 giây
+            for _ in range(1440):  # 1440 * 60 = 86400 giây
+                if shutdown_event.wait(60):
+                    break
         except Exception as e:
             logger.error(f"Lỗi backup schedule: {e}")
             time.sleep(3600)
 
 # ==================== DATABASE FUNCTIONS ====================
 
+def db_execute(query, params=None, fetch_one=False, fetch_all=False):
+    """Hàm database an toàn với retry"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            conn = sqlite3.connect(DB_PATH, timeout=10)
+            c = conn.cursor()
+            if params:
+                c.execute(query, params)
+            else:
+                c.execute(query)
+            
+            if fetch_one:
+                result = c.fetchone()
+            elif fetch_all:
+                result = c.fetchall()
+            else:
+                result = None
+            
+            conn.commit()
+            conn.close()
+            return result
+        except sqlite3.OperationalError as e:
+            logger.error(f"Database error (attempt {attempt+1}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(1)
+            else:
+                return None
+        except Exception as e:
+            logger.error(f"Unexpected database error: {e}")
+            return None
+
 def add_subscription(user_id, symbol):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
     try:
         added_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        c.execute("INSERT INTO subscriptions (user_id, symbol, added_date) VALUES (?, ?, ?)",
-                  (user_id, symbol, added_date))
-        conn.commit()
-        success = True
-    except sqlite3.IntegrityError:
-        success = False
-    conn.close()
-    return success
+        db_execute(
+            "INSERT OR IGNORE INTO subscriptions (user_id, symbol, added_date) VALUES (?, ?, ?)",
+            (user_id, symbol.upper(), added_date)
+        )
+        return True
+    except:
+        return False
 
 def remove_subscription(user_id, symbol):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("DELETE FROM subscriptions WHERE user_id = ? AND symbol = ?",
-              (user_id, symbol))
-    conn.commit()
-    conn.close()
+    try:
+        db_execute(
+            "DELETE FROM subscriptions WHERE user_id = ? AND symbol = ?",
+            (user_id, symbol.upper())
+        )
+        return True
+    except:
+        return False
 
 def get_subscriptions(user_id):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT symbol FROM subscriptions WHERE user_id = ? ORDER BY symbol",
-              (user_id,))
-    result = [row[0] for row in c.fetchall()]
-    conn.close()
-    return result
+    try:
+        result = db_execute(
+            "SELECT symbol FROM subscriptions WHERE user_id = ? ORDER BY symbol",
+            (user_id,), fetch_all=True
+        )
+        return [row[0] for row in result] if result else []
+    except:
+        return []
 
 def add_transaction(user_id, symbol, amount, buy_price):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    buy_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    total_cost = amount * buy_price
-    
-    c.execute('''INSERT INTO portfolio 
-                 (user_id, symbol, amount, buy_price, buy_date, total_cost)
-                 VALUES (?, ?, ?, ?, ?, ?)''',
-              (user_id, symbol, amount, buy_price, buy_date, total_cost))
-    conn.commit()
-    conn.close()
+    try:
+        buy_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        total_cost = amount * buy_price
+        db_execute(
+            '''INSERT INTO portfolio 
+               (user_id, symbol, amount, buy_price, buy_date, total_cost)
+               VALUES (?, ?, ?, ?, ?, ?)''',
+            (user_id, symbol.upper(), amount, buy_price, buy_date, total_cost)
+        )
+        return True
+    except:
+        return False
 
 def get_portfolio(user_id):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''SELECT symbol, amount, buy_price, buy_date, total_cost 
-                 FROM portfolio WHERE user_id = ? ORDER BY buy_date''',
-              (user_id,))
-    result = c.fetchall()
-    conn.close()
-    return result
+    try:
+        return db_execute(
+            '''SELECT symbol, amount, buy_price, buy_date, total_cost 
+               FROM portfolio WHERE user_id = ? ORDER BY buy_date''',
+            (user_id,), fetch_all=True
+        ) or []
+    except:
+        return []
 
 def get_transaction_detail(user_id):
-    """Lấy chi tiết từng giao dịch kèm ID"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''SELECT id, symbol, amount, buy_price, buy_date, total_cost 
-                 FROM portfolio WHERE user_id = ? ORDER BY buy_date''',
-              (user_id,))
-    result = c.fetchall()
-    conn.close()
-    return result
+    try:
+        return db_execute(
+            '''SELECT id, symbol, amount, buy_price, buy_date, total_cost 
+               FROM portfolio WHERE user_id = ? ORDER BY buy_date''',
+            (user_id,), fetch_all=True
+        ) or []
+    except:
+        return []
 
 def update_transaction(transaction_id, user_id, new_amount, new_price):
-    """Cập nhật thông tin giao dịch"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    c.execute('''SELECT symbol, amount, buy_price, total_cost 
-                 FROM portfolio WHERE id = ? AND user_id = ?''',
-              (transaction_id, user_id))
-    old_tx = c.fetchone()
-    
-    if not old_tx:
-        conn.close()
+    try:
+        new_total = new_amount * new_price
+        db_execute(
+            '''UPDATE portfolio 
+               SET amount = ?, buy_price = ?, total_cost = ?
+               WHERE id = ? AND user_id = ?''',
+            (new_amount, new_price, new_total, transaction_id, user_id)
+        )
+        return True
+    except:
         return False
-    
-    symbol = old_tx[0]
-    new_total = new_amount * new_price
-    
-    c.execute('''UPDATE portfolio 
-                 SET amount = ?, buy_price = ?, total_cost = ?
-                 WHERE id = ? AND user_id = ?''',
-              (new_amount, new_price, new_total, transaction_id, user_id))
-    
-    conn.commit()
-    conn.close()
-    return True
 
 def delete_transaction(transaction_id, user_id):
-    """Xóa một giao dịch"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''DELETE FROM portfolio 
-                 WHERE id = ? AND user_id = ?''',
-              (transaction_id, user_id))
-    conn.commit()
-    affected = c.rowcount
-    conn.close()
-    return affected > 0
+    try:
+        db_execute(
+            "DELETE FROM portfolio WHERE id = ? AND user_id = ?",
+            (transaction_id, user_id)
+        )
+        return True
+    except:
+        return False
 
 def delete_sold_transactions(user_id, kept_transactions):
     """Xóa các giao dịch đã bán và cập nhật lại"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    c.execute("DELETE FROM portfolio WHERE user_id = ?", (user_id,))
-    
-    for tx in kept_transactions:
-        c.execute('''INSERT INTO portfolio 
-                     (user_id, symbol, amount, buy_price, buy_date, total_cost)
-                     VALUES (?, ?, ?, ?, ?, ?)''',
-                  (user_id, tx['symbol'], tx['amount'], tx['buy_price'], 
-                   tx['buy_date'], tx['total_cost']))
-    
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        c.execute("DELETE FROM portfolio WHERE user_id = ?", (user_id,))
+        
+        for tx in kept_transactions:
+            c.execute('''INSERT INTO portfolio 
+                         (user_id, symbol, amount, buy_price, buy_date, total_cost)
+                         VALUES (?, ?, ?, ?, ?, ?)''',
+                      (user_id, tx['symbol'], tx['amount'], tx['buy_price'], 
+                       tx['buy_date'], tx['total_cost']))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Lỗi delete_sold_transactions: {e}")
+        return False
 
 # ==================== HÀM LẤY GIÁ COIN ====================
 
 def get_price(symbol):
+    """Lấy giá coin từ CoinMarketCap với cache"""
+    if not CMC_API_KEY:
+        return None
+    
+    symbol = symbol.upper()
+    
+    # Kiểm tra cache (30 giây)
+    if symbol in price_cache:
+        cache_time, cache_data = price_cache[symbol]
+        if time.time() - cache_time < 30:
+            return cache_data
+    
     try:
-        if symbol.upper() == 'USDT':
+        if symbol == 'USDT':
             clean = 'USDT'
         else:
-            clean = symbol.upper().replace('USDT', '').replace('USD', '')
+            clean = symbol.replace('USDT', '').replace('USD', '')
         
         headers = {'X-CMC_PRO_API_KEY': CMC_API_KEY, 'Accept': 'application/json'}
         params = {'symbol': clean, 'convert': 'USD'}
         
-        res = requests.get(f"{CMC_API_URL}/cryptocurrency/quotes/latest", 
-                          headers=headers, params=params, timeout=10)
+        res = requests.get(
+            f"{CMC_API_URL}/cryptocurrency/quotes/latest", 
+            headers=headers, params=params, timeout=5
+        )
         
         if res.status_code == 200:
             data = res.json()
             coin_data = data['data'][clean]
             quote_data = coin_data['quote']['USD']
             
-            return {
+            result = {
                 'p': quote_data['price'], 
                 'v': quote_data['volume_24h'], 
                 'c': quote_data['percent_change_24h'], 
@@ -268,25 +357,37 @@ def get_price(symbol):
                 'n': coin_data['name'],
                 'r': coin_data.get('cmc_rank', 'N/A')
             }
-        return None
+            
+            # Lưu cache
+            price_cache[symbol] = (time.time(), result)
+            return result
+    except requests.exceptions.Timeout:
+        logger.error(f"Timeout khi lấy giá {symbol}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Lỗi request khi lấy giá {symbol}: {e}")
     except Exception as e:
-        logger.error(f"Lỗi get_price {symbol}: {e}")
-        return None
+        logger.error(f"Lỗi không xác định khi lấy giá {symbol}: {e}")
+    
+    return None
 
 # ==================== HÀM LẤY TỶ GIÁ USDT/VND ====================
 
 def get_usdt_vnd_rate():
+    """Lấy tỷ giá USDT/VND từ nhiều nguồn với cache"""
     global usdt_cache
     
+    # Kiểm tra cache (3 phút)
     if usdt_cache['rate'] and usdt_cache['time']:
         if (datetime.now() - usdt_cache['time']).total_seconds() < 180:
             return usdt_cache['rate']
     
     # CoinGecko
     try:
-        res = requests.get("https://api.coingecko.com/api/v3/simple/price",
-                          params={'ids': 'tether', 'vs_currencies': 'vnd'},
-                          timeout=5)
+        res = requests.get(
+            "https://api.coingecko.com/api/v3/simple/price",
+            params={'ids': 'tether', 'vs_currencies': 'vnd'},
+            timeout=5
+        )
         if res.status_code == 200:
             data = res.json()
             if 'tether' in data:
@@ -301,9 +402,28 @@ def get_usdt_vnd_rate():
     except:
         pass
     
+    # Binance (nếu có)
+    try:
+        res = requests.get(
+            "https://api.binance.com/api/v3/ticker/price?symbol=USDTVND",
+            timeout=3
+        )
+        if res.status_code == 200:
+            data = res.json()
+            result = {
+                'source': 'Binance',
+                'vnd': float(data['price']),
+                'update_time': datetime.now().strftime('%H:%M:%S %d/%m/%Y')
+            }
+            usdt_cache['rate'] = result
+            usdt_cache['time'] = datetime.now()
+            return result
+    except:
+        pass
+    
     # Fallback
     result = {
-        'source': 'Fallback',
+        'source': 'Mặc định',
         'vnd': 25000,
         'update_time': datetime.now().strftime('%H:%M:%S %d/%m/%Y')
     }
@@ -316,7 +436,9 @@ def get_usdt_vnd_rate():
 def fmt_price(p):
     try:
         p = float(p)
-        if p < 0.01:
+        if p < 0.00001:
+            return f"${p:.8f}"
+        elif p < 0.01:
             return f"${p:.6f}"
         elif p < 1:
             return f"${p:.4f}"
@@ -344,6 +466,14 @@ def fmt_vol(v):
             return f"${v:,.2f}"
     except: 
         return str(v)
+
+def fmt_percent(c):
+    try:
+        c = float(c)
+        emoji = "📈" if c > 0 else "📉" if c < 0 else "➡️"
+        return f"{emoji} {c:+.2f}%"
+    except:
+        return str(c)
 
 # ==================== KEYBOARD ====================
 
@@ -440,7 +570,7 @@ async def s_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔄 Đang tra cứu...")
     results = []
     
-    for arg in ctx.args:
+    for arg in ctx.args[:5]:  # Giới hạn 5 coin
         symbol = arg.upper()
         d = get_price(symbol)
         
@@ -452,15 +582,14 @@ async def s_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     f"*{d['n']}* #{d['r']}\n"
                     f"💰 USD: `{fmt_price(d['p'])}`\n"
                     f"🇻🇳 VND: `{fmt_vnd(vnd_price)}`\n"
-                    f"📈 24h: `{d['c']:.2f}%`"
+                    f"📈 24h: {fmt_percent(d['c'])}"
                 )
             else:
                 results.append(
                     f"*{d['n']}* #{d['r']}\n"
                     f"💰 Giá: `{fmt_price(d['p'])}`\n"
-                    f"📈 24h: `{d['c']:.2f}%`"
+                    f"📈 24h: {fmt_percent(d['c'])}"
                 )
-            price_cache[symbol] = d
         else:
             results.append(f"❌ *{symbol}*: Không có dữ liệu")
     
@@ -476,7 +605,7 @@ async def su_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("❌ /su btc eth doge")
     
     msg = await update.message.reply_text("🔄 Đang xử lý...")
-    coins = [arg.upper() for arg in ctx.args]
+    coins = [arg.upper() for arg in ctx.args[:10]]  # Giới hạn 10 coin
     
     results = []
     added = []
@@ -491,9 +620,13 @@ async def su_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         if add_subscription(uid, coin):
             added.append(coin)
-            price_cache[coin] = price_data
         else:
-            existed.append(coin)
+            # Kiểm tra nếu đã có
+            subs = get_subscriptions(uid)
+            if coin in subs:
+                existed.append(coin)
+            else:
+                failed.append(coin)
     
     if added:
         results.append(f"✅ Đã thêm: {', '.join(added)}")
@@ -576,9 +709,7 @@ async def list_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for s in sorted(subs):
         d = get_price(s)
         if d:
-            price_cache[s] = d
-            emoji = "📈" if d['c'] > 0 else "📉" if d['c'] < 0 else "➡️"
-            msg += f"• *{s}*: `{fmt_price(d['p'])}` {emoji} `{d['c']:+.1f}%`\n"
+            msg += f"• *{s}*: `{fmt_price(d['p'])}` {fmt_percent(d['c'])}\n"
         else:
             msg += f"• *{s}*: `Đang cập nhật...`\n"
     
@@ -604,21 +735,22 @@ async def buy_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not price_data:
         return await update.message.reply_text(f"❌ Không thể lấy giá *{symbol}*", parse_mode='Markdown')
     
-    add_transaction(uid, symbol, amount, buy_price)
-    
-    current_price = price_data['p']
-    profit = (current_price - buy_price) * amount
-    profit_percent = ((current_price - buy_price) / buy_price) * 100
-    
-    msg = (
-        f"✅ *ĐÃ MUA {symbol}*\n━━━━━━━━━━━━━━━━\n\n"
-        f"📊 SL: `{amount:.4f}`\n"
-        f"💰 Giá mua: `{fmt_price(buy_price)}`\n"
-        f"💵 Vốn: `{fmt_price(amount * buy_price)}`\n"
-        f"📈 Giá hiện: `{fmt_price(current_price)}`\n"
-        f"{'✅' if profit>=0 else '❌'} LN: `{fmt_price(profit)}` ({profit_percent:+.2f}%)"
-    )
-    await update.message.reply_text(msg, parse_mode='Markdown')
+    if add_transaction(uid, symbol, amount, buy_price):
+        current_price = price_data['p']
+        profit = (current_price - buy_price) * amount
+        profit_percent = ((current_price - buy_price) / buy_price) * 100
+        
+        msg = (
+            f"✅ *ĐÃ MUA {symbol}*\n━━━━━━━━━━━━━━━━\n\n"
+            f"📊 SL: `{amount:.4f}`\n"
+            f"💰 Giá mua: `{fmt_price(buy_price)}`\n"
+            f"💵 Vốn: `{fmt_price(amount * buy_price)}`\n"
+            f"📈 Giá hiện: `{fmt_price(current_price)}`\n"
+            f"{'✅' if profit>=0 else '❌'} LN: `{fmt_price(profit)}` ({profit_percent:+.2f}%)"
+        )
+        await update.message.reply_text(msg, parse_mode='Markdown')
+    else:
+        await update.message.reply_text("❌ Lỗi khi thêm giao dịch")
 
 async def sell_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -682,19 +814,20 @@ async def sell_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             new_portfolio.append(tx)
     
-    delete_sold_transactions(uid, new_portfolio)
-    
-    profit = sold_value - sold_cost
-    profit_percent = (profit / sold_cost) * 100 if sold_cost > 0 else 0
-    
-    msg = (
-        f"✅ *ĐÃ BÁN {sell_amount:.4f} {symbol}*\n━━━━━━━━━━━━━━━━\n\n"
-        f"💰 Giá bán: `{fmt_price(current_price)}`\n"
-        f"💵 Giá trị: `{fmt_price(sold_value)}`\n"
-        f"📊 Vốn: `{fmt_price(sold_cost)}`\n"
-        f"{'✅' if profit>=0 else '❌'} LN: `{fmt_price(profit)}` ({profit_percent:+.2f}%)"
-    )
-    await update.message.reply_text(msg, parse_mode='Markdown')
+    if delete_sold_transactions(uid, new_portfolio):
+        profit = sold_value - sold_cost
+        profit_percent = (profit / sold_cost) * 100 if sold_cost > 0 else 0
+        
+        msg = (
+            f"✅ *ĐÃ BÁN {sell_amount:.4f} {symbol}*\n━━━━━━━━━━━━━━━━\n\n"
+            f"💰 Giá bán: `{fmt_price(current_price)}`\n"
+            f"💵 Giá trị: `{fmt_price(sold_value)}`\n"
+            f"📊 Vốn: `{fmt_price(sold_cost)}`\n"
+            f"{'✅' if profit>=0 else '❌'} LN: `{fmt_price(profit)}` ({profit_percent:+.2f}%)"
+        )
+        await update.message.reply_text(msg, parse_mode='Markdown')
+    else:
+        await update.message.reply_text("❌ Lỗi khi xử lý giao dịch")
 
 async def edit_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Chỉnh sửa giao dịch"""
@@ -711,9 +844,9 @@ async def edit_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         keyboard = []
         row = []
         
-        for i, tx in enumerate(transactions, 1):
+        for i, tx in enumerate(transactions[:10], 1):  # Giới hạn 10 giao dịch
             tx_id, symbol, amount, price, date, total = tx
-            short_date = date.split()[0]
+            short_date = date.split()[0] if date else "N/A"
             msg += f"*{i}.* {symbol} - {amount:.4f} @ {fmt_price(price)} - {short_date}\n"
             
             row.append(InlineKeyboardButton(f"✏️ #{tx_id}", callback_data=f"edit_{tx_id}"))
@@ -882,19 +1015,18 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     f"*{d['n']}* #{d['r']}\n"
                     f"💰 USD: `{fmt_price(d['p'])}`\n"
                     f"🇻🇳 VND: `{fmt_vnd(vnd_price)}`\n"
-                    f"📈 24h: `{d['c']:.2f}%`\n"
                     f"📦 Volume: `{fmt_vol(d['v'])}`\n"
-                    f"💎 Market Cap: `{fmt_vol(d['m'])}`"
+                    f"💎 Market Cap: `{fmt_vol(d['m'])}`\n"
+                    f"📈 24h: {fmt_percent(d['c'])}"
                 )
             else:
                 msg = (
                     f"*{d['n']}* #{d['r']}\n"
                     f"💰 Giá: `{fmt_price(d['p'])}`\n"
-                    f"📈 24h: `{d['c']:.2f}%`\n"
                     f"📦 Volume: `{fmt_vol(d['v'])}`\n"
-                    f"💎 Market Cap: `{fmt_vol(d['m'])}`"
+                    f"💎 Market Cap: `{fmt_vol(d['m'])}`\n"
+                    f"📈 24h: {fmt_percent(d['c'])}"
                 )
-            price_cache[symbol] = d
         else:
             msg = f"❌ *{symbol}*: Không có dữ liệu"
         
@@ -930,7 +1062,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         if add_subscription(uid, symbol):
             msg = f"✅ Đã thêm *{symbol}*"
-            price_cache[symbol] = price_data
         else:
             msg = f"ℹ️ *{symbol}* đã có"
         
@@ -977,11 +1108,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if subs:
             msg = "📋 *DANH SÁCH THEO DÕI*\n━━━━━━━━━━━━\n\n"
             for s in sorted(subs):
-                c = price_cache.get(s, {})
-                price = fmt_price(c.get('p', '?'))
-                change = c.get('c', 0)
-                emoji = "📈" if change > 0 else "📉" if change < 0 else "➡️"
-                msg += f"• *{s}*: `{price}` {emoji} `{change:+.1f}%`\n"
+                d = get_price(s)
+                if d:
+                    msg += f"• *{s}*: `{fmt_price(d['p'])}` {fmt_percent(d['c'])}\n"
+                else:
+                    msg += f"• *{s}*: `Đang cập nhật...`\n"
             
             keyboard = []
             row = []
@@ -1084,9 +1215,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         keyboard = []
         row = []
         
-        for tx in transactions:
+        for tx in transactions[:10]:  # Giới hạn 10 giao dịch
             tx_id, symbol, amount, price, date, total = tx
-            short_date = date.split()[0]
+            short_date = date.split()[0] if date else "N/A"
             msg += f"• #{tx_id}: {symbol} {amount:.4f} @ {fmt_price(price)} ({short_date})\n"
             
             row.append(InlineKeyboardButton(f"#{tx_id}", callback_data=f"edit_{tx_id}"))
@@ -1191,7 +1322,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 total_invest += cost
                 total_value += current
                 
-                short_date = date.split()[0]
+                short_date = date.split()[0] if date else "N/A"
                 msg += f"*#{tx_id}: {symbol}*\n"
                 msg += f"📅 {short_date}\n"
                 msg += f"📊 SL: `{amount:.4f}`\n"
@@ -1242,9 +1373,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         try:
             headers = {'X-CMC_PRO_API_KEY': CMC_API_KEY}
-            res = requests.get(f"{CMC_API_URL}/cryptocurrency/listings/latest",
-                              headers=headers, params={'limit': 10, 'convert': 'USD'},
-                              timeout=10)
+            res = requests.get(
+                f"{CMC_API_URL}/cryptocurrency/listings/latest",
+                headers=headers, params={'limit': 10, 'convert': 'USD'},
+                timeout=10
+            )
             
             if res.status_code == 200:
                 data = res.json()['data']
@@ -1253,10 +1386,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 for i, coin in enumerate(data, 1):
                     quote = coin['quote']['USD']
                     change = quote['percent_change_24h']
-                    emoji = "📈" if change > 0 else "📉" if change < 0 else "➡️"
                     
                     msg += f"{i}. *{coin['symbol']}* - {coin['name']}\n"
-                    msg += f"   💰 `{fmt_price(quote['price'])}` {emoji} `{change:+.2f}%`\n"
+                    msg += f"   💰 `{fmt_price(quote['price'])}` {fmt_percent(change)}\n"
             else:
                 msg = "❌ Không thể lấy dữ liệu"
         except Exception as e:
@@ -1272,69 +1404,85 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ==================== AUTO UPDATE ====================
 
 def auto_update():
+    """Tự động cập nhật giá cho người theo dõi"""
     global app
-    while True:
+    last_update = {}
+    
+    while not shutdown_event.is_set():
         try:
-            time.sleep(60)
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            c.execute("SELECT DISTINCT user_id FROM subscriptions")
-            users = c.fetchall()
-            conn.close()
+            # Đợi 60 giây nhưng check shutdown_event mỗi 10 giây
+            for _ in range(6):
+                if shutdown_event.wait(10):
+                    return
             
-            for (uid,) in users:
+            users = get_subscriptions_all() or []
+            
+            for uid in users:
                 try:
+                    # Kiểm tra thời gian cập nhật gần nhất
+                    now = time.time()
+                    if uid in last_update and now - last_update[uid] < 300:  # 5 phút
+                        continue
+                    
                     subs = get_subscriptions(uid)
                     if not subs:
                         continue
                     
                     updates = []
-                    for s in subs:
+                    for s in subs[:10]:  # Giới hạn 10 coin
                         d = get_price(s)
                         if d:
-                            price_cache[s] = d
-                            emoji = "📈" if d['c'] > 0 else "📉" if d['c'] < 0 else "➡️"
-                            updates.append(f"• *{d['n']}*: `{fmt_price(d['p'])}` {emoji} `{d['c']:+.1f}%`")
+                            updates.append(f"• *{d['n']}*: `{fmt_price(d['p'])}` {fmt_percent(d['c'])}")
                     
                     if updates and app:
                         try:
-                            msg = "🔄 *CẬP NHẬT GIÁ*\n" + "\n".join(updates[:10])
-                            if len(updates) > 10:
-                                msg += f"\n... và {len(updates)-10} coin khác"
-                            app.bot.send_message(uid, msg, parse_mode='Markdown')
+                            msg = "🔄 *CẬP NHẬT GIÁ*\n" + "\n".join(updates)
+                            await app.bot.send_message(uid, msg, parse_mode='Markdown')
+                            last_update[uid] = now
                         except Exception as e:
                             logger.error(f"Lỗi gửi tin cho user {uid}: {e}")
+                            
                 except Exception as e:
                     logger.error(f"Lỗi xử lý user {uid}: {e}")
+                    
         except Exception as e:
             logger.error(f"Lỗi auto_update: {e}")
-            time.sleep(10)
+            time.sleep(60)
+
+def get_subscriptions_all():
+    """Lấy tất cả user_id có theo dõi"""
+    try:
+        result = db_execute("SELECT DISTINCT user_id FROM subscriptions", fetch_all=True)
+        return [row[0] for row in result] if result else []
+    except:
+        return []
 
 # ==================== MAIN ====================
 
 if __name__ == '__main__':
+    logger.info("🚀 Khởi động bot...")
+    
+    # Kiểm tra token
     if not TELEGRAM_TOKEN:
         logger.error("❌ Thiếu TELEGRAM_TOKEN")
-        exit(1)
+        sys.exit(1)
     
     if not CMC_API_KEY:
-        logger.warning("⚠️ Thiếu CMC_API_KEY")
+        logger.warning("⚠️ Thiếu CMC_API_KEY - Chức năng lấy giá coin sẽ không hoạt động")
     
-    try:
-        init_database()
-        test_file = os.path.join(DATA_DIR, 'test.txt')
-        with open(test_file, 'w') as f:
-            f.write('test')
-        os.remove(test_file)
-        logger.info("✅ Disk có quyền ghi")
-    except Exception as e:
-        logger.error(f"❌ Lỗi database: {e}")
-        exit(1)
+    # Khởi tạo database
+    if not init_database():
+        logger.error("❌ Không thể khởi tạo database")
+        sys.exit(1)
     
-    logger.info("🚀 Khởi động bot...")
     logger.info(f"💾 Database: {DB_PATH}")
     
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    # Khởi tạo bot với timeout
+    try:
+        app = Application.builder().token(TELEGRAM_TOKEN).build()
+    except Exception as e:
+        logger.error(f"❌ Lỗi khởi tạo bot: {e}")
+        sys.exit(1)
     
     # Command handlers
     app.add_handler(CommandHandler("start", start))
@@ -1352,13 +1500,36 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("delete", delete_tx_command))
     app.add_handler(CommandHandler("xoa", delete_tx_command))
     
+    # Message handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # Callback handler
     app.add_handler(CallbackQueryHandler(handle_callback))
     
     # Threads
-    threading.Thread(target=auto_update, daemon=True).start()
-    threading.Thread(target=schedule_backup, daemon=True).start()
-    threading.Thread(target=run_health_server, daemon=True).start()
+    threads = [
+        threading.Thread(target=auto_update, daemon=True),
+        threading.Thread(target=schedule_backup, daemon=True),
+        threading.Thread(target=run_health_server, daemon=True)
+    ]
+    
+    for t in threads:
+        t.start()
     
     logger.info("✅ Bot sẵn sàng!")
-    app.run_polling()
+    
+    # Chạy bot với error handling
+    try:
+        app.run_polling(
+            allowed_updates=['message', 'callback_query'],
+            drop_pending_updates=True,
+            timeout=30
+        )
+    except (TimedOut, NetworkError) as e:
+        logger.error(f"❌ Lỗi kết nối: {e}")
+        time.sleep(5)
+    except Exception as e:
+        logger.error(f"❌ Lỗi không xác định: {e}")
+    finally:
+        shutdown_event.set()
+        logger.info("🛑 Bot đã dừng")
