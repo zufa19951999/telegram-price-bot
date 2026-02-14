@@ -48,7 +48,6 @@ logger.info(f"📊 File export sẽ được lưu tại: {EXPORT_DIR}")
 # Cache
 price_cache = {}
 usdt_cache = {'rate': None, 'time': None}
-forex_cache = {}
 
 # Biến toàn cục cho bot
 app = None
@@ -422,48 +421,6 @@ def check_alerts():
             logger.error(f"❌ Lỗi check_alerts: {e}")
             time.sleep(10)
 
-# ==================== FOREX FUNCTIONS ====================
-
-def get_forex_rate(from_currency, to_currency):
-    """Lấy tỷ giá ngoại tệ"""
-    cache_key = f"{from_currency}_{to_currency}"
-    
-    # Kiểm tra cache (5 phút)
-    if cache_key in forex_cache:
-        cached_time, cached_rate = forex_cache[cache_key]
-        if (datetime.now() - cached_time).total_seconds() < 300:
-            return cached_rate
-    
-    try:
-        # Dùng API miễn phí
-        url = f"https://api.exchangerate-api.com/v4/latest/{from_currency}"
-        res = requests.get(url, timeout=5)
-        
-        if res.status_code == 200:
-            data = res.json()
-            rate = data['rates'].get(to_currency)
-            if rate:
-                forex_cache[cache_key] = (datetime.now(), rate)
-                return rate
-    except Exception as e:
-        logger.warning(f"⚠️ Lỗi lấy tỷ giá {from_currency}/{to_currency}: {e}")
-    
-    # Fallback rates
-    fallback = {
-        'USD_VND': 25000,
-        'USD_CNY': 7.2,
-        'USD_JPY': 150,
-        'USD_EUR': 0.92,
-        'USD_GBP': 0.79,
-        'USD_KRW': 1350,
-        'USD_SGD': 1.35,
-        'USD_AUD': 1.52,
-        'VND_USD': 0.00004,
-    }
-    
-    key = f"{from_currency}_{to_currency}"
-    return fallback.get(key, None)
-
 # ==================== HÀM LẤY GIÁ COIN ====================
 
 def get_price(symbol):
@@ -677,67 +634,59 @@ def tinh_toan(expression):
 
 # ==================== HÀM THỐNG KÊ ====================
 
-def get_portfolio_history(user_id, days=30):
-    """Lấy lịch sử danh mục theo ngày"""
-    conn = None
+def get_portfolio_stats(user_id):
+    """Lấy thống kê danh mục"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
+        portfolio_data = get_portfolio(user_id)
         
-        # Lấy tất cả giao dịch
-        c.execute('''SELECT buy_date, symbol, amount, buy_price, total_cost 
-                     FROM portfolio WHERE user_id = ? ORDER BY buy_date''',
-                  (user_id,))
-        transactions = c.fetchall()
-        
-        if not transactions:
+        if not portfolio_data:
             return None
         
-        # Tính lịch sử theo ngày
-        history = []
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=days)
+        # Tính tổng quan
+        total_invest = 0
+        total_value = 0
+        coins = {}
         
-        current_date = start_date
-        while current_date <= end_date:
-            date_str = current_date.strftime('%Y-%m-%d')
+        for row in portfolio_data:
+            symbol, amount, price, date, cost = row[0], row[1], row[2], row[3], row[4]
             
-            # Tính giá trị danh mục tại ngày này
-            total_value = 0
-            total_cost = 0
+            if symbol not in coins:
+                coins[symbol] = {'amount': 0, 'cost': 0}
+            coins[symbol]['amount'] += amount
+            coins[symbol]['cost'] += cost
             
-            for tx in transactions:
-                tx_date = datetime.strptime(tx[0].split()[0], '%Y-%m-%d')
-                if tx_date <= current_date:
-                    symbol, amount, price, cost = tx[1], tx[2], tx[3], tx[4]
-                    
-                    # Lấy giá (nếu có cache)
-                    price_data = get_price(symbol)
-                    current_price = price_data['p'] if price_data else price
-                    
-                    total_value += amount * current_price
-                    total_cost += cost
+            total_invest += cost
             
-            profit = total_value - total_cost
-            profit_percent = (profit / total_cost * 100) if total_cost > 0 else 0
-            
-            history.append({
-                'date': date_str,
-                'value': total_value,
-                'cost': total_cost,
-                'profit': profit,
-                'profit_percent': profit_percent
-            })
-            
-            current_date += timedelta(days=1)
+            price_data = get_price(symbol)
+            current_price = price_data['p'] if price_data else price
+            total_value += amount * current_price
         
-        return history
+        total_profit = total_value - total_invest
+        total_profit_percent = (total_profit / total_invest * 100) if total_invest > 0 else 0
+        
+        # Top coin lời/lỗ
+        coin_profits = []
+        for symbol, data in coins.items():
+            price_data = get_price(symbol)
+            current_price = price_data['p'] if price_data else 0
+            current_value = data['amount'] * current_price
+            profit = current_value - data['cost']
+            profit_pct = (profit / data['cost'] * 100) if data['cost'] > 0 else 0
+            coin_profits.append((symbol, profit, profit_pct, current_value, data['cost']))
+        
+        coin_profits.sort(key=lambda x: x[1], reverse=True)
+        
+        return {
+            'total_invest': total_invest,
+            'total_value': total_value,
+            'total_profit': total_profit,
+            'total_profit_percent': total_profit_percent,
+            'coins': coins,
+            'coin_profits': coin_profits
+        }
     except Exception as e:
-        logger.error(f"❌ Lỗi lấy history: {e}")
+        logger.error(f"❌ Lỗi get_portfolio_stats: {e}")
         return None
-    finally:
-        if conn:
-            conn.close()
 
 # ==================== HÀM XUẤT CSV ====================
 
@@ -827,11 +776,10 @@ def get_invest_menu_keyboard():
         [InlineKeyboardButton("📈 Lợi nhuận", callback_data="show_profit"),
          InlineKeyboardButton("✏️ Sửa/Xóa", callback_data="edit_transactions")],
         [InlineKeyboardButton("🔔 Cảnh báo giá", callback_data="show_alerts"),
-         InlineKeyboardButton("💱 Chuyển đổi", callback_data="show_convert")],
-        [InlineKeyboardButton("📊 Thống kê", callback_data="show_stats"),
-         InlineKeyboardButton("📥 Xuất CSV", callback_data="export_csv")],
-        [InlineKeyboardButton("➖ Bán coin", callback_data="show_sell"),
-         InlineKeyboardButton("➕ Mua coin", callback_data="show_buy")]
+         InlineKeyboardButton("📊 Thống kê", callback_data="show_stats")],
+        [InlineKeyboardButton("📥 Xuất CSV", callback_data="export_csv"),
+         InlineKeyboardButton("➖ Bán coin", callback_data="show_sell")],
+        [InlineKeyboardButton("➕ Mua coin", callback_data="show_buy")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -848,8 +796,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• ✏️ Sửa/Xóa giao dịch\n"
         "• Tính lợi nhuận chi tiết\n"
         "• 🔔 Cảnh báo giá\n"
-        "• 💱 Chuyển đổi tiền tệ đa dạng\n"
-        "• 📊 Thống kê theo thời gian\n"
+        "• 📊 Thống kê danh mục\n"
         "• 📥 Xuất báo cáo CSV\n\n"
         "👇 *Bấm ĐẦU TƯ COIN để bắt đầu*"
     )
@@ -877,13 +824,8 @@ async def help_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• `/alert ETH below 3000` - Báo khi ETH dưới 3k\n"
         "• `/alerts` - Xem danh sách cảnh báo\n"
         "• `/alert_del 5` - Xóa cảnh báo số 5\n\n"
-        "*CHUYỂN ĐỔI TIỀN TỆ:*\n"
-        "• `/convert 1 BTC USD` - 1 BTC = ? USD\n"
-        "• `/convert 1000 USD VND` - 1000 USD = ? VND\n"
-        "• `/convert 50000 VND BTC` - 50k VND = ? BTC\n\n"
         "*THỐNG KÊ:*\n"
-        "• `/stats` - Thống kê 30 ngày\n"
-        "• `/stats 7` - Thống kê 7 ngày\n"
+        "• `/stats` - Xem thống kê danh mục\n"
         "• `/export` - Xuất báo cáo CSV\n\n"
         "*Lưu ý:* Dữ liệu được lưu vĩnh viễn"
     )
@@ -1270,174 +1212,28 @@ async def alert_del_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ ID không hợp lệ")
 
-# ==================== CONVERT COMMAND ====================
-
-async def convert_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Chuyển đổi tiền tệ: /convert 1 BTC USD hoặc /convert 1000 USD VND"""
-    if len(ctx.args) < 3:
-        help_msg = (
-            "💱 *CHUYỂN ĐỔI TIỀN TỆ*\n\n"
-            "*Ví dụ:*\n"
-            "• `/convert 1 BTC USD` - 1 BTC = ? USD\n"
-            "• `/convert 1000 USD VND` - 1000 USD = ? VND\n"
-            "• `/convert 0.5 ETH USD` - 0.5 ETH = ? USD\n"
-            "• `/convert 50000 VND USD` - 50000 VND = ? USD\n"
-            "• `/convert 1 BTC VND` - 1 BTC = ? VND\n\n"
-            "*Hỗ trợ:* BTC, ETH, USDT, BNB, SOL, USD, VND, CNY, JPY, EUR, GBP, KRW, SGD, AUD"
-        )
-        await update.message.reply_text(help_msg, parse_mode='Markdown')
-        return
-    
-    try:
-        amount = float(ctx.args[0])
-        from_curr = ctx.args[1].upper()
-        to_curr = ctx.args[2].upper()
-    except ValueError:
-        return await update.message.reply_text("❌ Số tiền không hợp lệ!")
-    
-    # Danh sách crypto
-    crypto_list = ['BTC', 'ETH', 'USDT', 'BNB', 'SOL', 'XRP', 'ADA', 'DOGE', 'DOT', 'MATIC']
-    
-    # Danh sách fiat
-    fiat_list = ['USD', 'VND', 'CNY', 'JPY', 'EUR', 'GBP', 'KRW', 'SGD', 'AUD']
-    
-    msg = await update.message.reply_text("🔄 Đang tính toán...")
-    
-    result_text = ""
-    
-    # Trường hợp 1: Crypto -> Fiat
-    if from_curr in crypto_list and to_curr in fiat_list:
-        price_data = get_price(from_curr)
-        if not price_data:
-            await msg.edit_text(f"❌ Không thể lấy giá {from_curr}")
-            return
-        
-        usd_price = price_data['p']
-        usd_amount = amount * usd_price
-        
-        if to_curr == 'USD':
-            result = usd_amount
-            result_text = f"💱 *{fmt_number(amount)} {from_curr}* = `${fmt_number(result)}`"
-        else:
-            rate = get_forex_rate('USD', to_curr)
-            if not rate:
-                await msg.edit_text(f"❌ Không hỗ trợ {to_curr}")
-                return
-            result = usd_amount * rate
-            result_text = f"💱 *{fmt_number(amount)} {from_curr}* = `{fmt_number(result)} {to_curr}`"
-    
-    # Trường hợp 2: Fiat -> Crypto
-    elif from_curr in fiat_list and to_curr in crypto_list:
-        if from_curr == 'USD':
-            usd_amount = amount
-        else:
-            rate = get_forex_rate(from_curr, 'USD')
-            if not rate:
-                await msg.edit_text(f"❌ Không hỗ trợ {from_curr}")
-                return
-            usd_amount = amount * rate
-        
-        price_data = get_price(to_curr)
-        if not price_data:
-            await msg.edit_text(f"❌ Không thể lấy giá {to_curr}")
-            return
-        
-        result = usd_amount / price_data['p']
-        result_text = f"💱 *{fmt_number(amount)} {from_curr}* = `{result:.8f} {to_curr}`"
-    
-    # Trường hợp 3: Fiat -> Fiat
-    elif from_curr in fiat_list and to_curr in fiat_list:
-        if from_curr == 'USD':
-            usd_amount = amount
-        else:
-            rate_to_usd = get_forex_rate(from_curr, 'USD')
-            if not rate_to_usd:
-                await msg.edit_text(f"❌ Không hỗ trợ {from_curr}")
-                return
-            usd_amount = amount * rate_to_usd
-        
-        if to_curr == 'USD':
-            result = usd_amount
-        else:
-            rate = get_forex_rate('USD', to_curr)
-            if not rate:
-                await msg.edit_text(f"❌ Không hỗ trợ {to_curr}")
-                return
-            result = usd_amount * rate
-        
-        result_text = f"💱 *{fmt_number(amount)} {from_curr}* = `{fmt_number(result)} {to_curr}`"
-    
-    # Trường hợp 4: Crypto -> Crypto
-    elif from_curr in crypto_list and to_curr in crypto_list:
-        price_from = get_price(from_curr)
-        price_to = get_price(to_curr)
-        
-        if not price_from or not price_to:
-            await msg.edit_text(f"❌ Không thể lấy giá")
-            return
-        
-        usd_amount = amount * price_from['p']
-        result = usd_amount / price_to['p']
-        result_text = f"💱 *{fmt_number(amount)} {from_curr}* = `{result:.8f} {to_curr}`"
-    
-    else:
-        await msg.edit_text(f"❌ Không hỗ trợ cặp {from_curr} -> {to_curr}")
-        return
-    
-    # Thêm tỷ giá tham khảo
-    if from_curr in crypto_list:
-        price_data = get_price(from_curr)
-        if price_data:
-            result_text += f"\n\n📊 1 {from_curr} = `{fmt_price(price_data['p'])}`"
-    
-    await msg.edit_text(result_text, parse_mode='Markdown')
-
 # ==================== STATS COMMAND ====================
 
 async def stats_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Thống kê danh mục theo thời gian"""
+    """Xem thống kê danh mục"""
     uid = update.effective_user.id
-    
-    # Mặc định 30 ngày, có thể thay đổi
-    days = 30
-    if ctx.args and ctx.args[0].isdigit():
-        days = min(int(ctx.args[0]), 365)  # Tối đa 1 năm
     
     msg = await update.message.reply_text("🔄 Đang tính toán thống kê...")
     
-    # Lấy dữ liệu hiện tại
-    portfolio_data = get_portfolio(uid)
-    if not portfolio_data:
+    stats = get_portfolio_stats(uid)
+    
+    if not stats:
         await msg.edit_text("📭 Danh mục trống!")
         return
     
-    # Tính tổng quan
-    total_invest = 0
-    total_value = 0
-    coins = {}
-    
-    for row in portfolio_data:
-        symbol, amount, price, date, cost = row[0], row[1], row[2], row[3], row[4]
-        
-        if symbol not in coins:
-            coins[symbol] = {'amount': 0, 'cost': 0}
-        coins[symbol]['amount'] += amount
-        coins[symbol]['cost'] += cost
-        
-        total_invest += cost
-        
-        price_data = get_price(symbol)
-        current_price = price_data['p'] if price_data else price
-        total_value += amount * current_price
-    
-    total_profit = total_value - total_invest
-    total_profit_percent = (total_profit / total_invest * 100) if total_invest > 0 else 0
-    
-    # Lấy lịch sử
-    history = get_portfolio_history(uid, days)
+    total_invest = stats['total_invest']
+    total_value = stats['total_value']
+    total_profit = stats['total_profit']
+    total_profit_percent = stats['total_profit_percent']
+    coin_profits = stats['coin_profits']
     
     stats_msg = (
-        f"📊 *THỐNG KÊ {days} NGÀY*\n"
+        f"📊 *THỐNG KÊ DANH MỤC*\n"
         f"━━━━━━━━━━━━━━━━\n\n"
         f"*TỔNG QUAN*\n"
         f"• Vốn: `{fmt_price(total_invest)}`\n"
@@ -1446,58 +1242,42 @@ async def stats_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"• Tỷ suất: `{total_profit_percent:+.2f}%`\n\n"
     )
     
-    if history:
-        first_day = history[0]
-        last_day = history[-1]
-        
-        change_value = last_day['value'] - first_day['value']
-        change_percent = ((last_day['value'] - first_day['value']) / first_day['value'] * 100) if first_day['value'] > 0 else 0
-        
-        stats_msg += (
-            f"*BIẾN ĐỘNG*\n"
-            f"• {days} ngày trước: `{fmt_price(first_day['value'])}`\n"
-            f"• Hiện tại: `{fmt_price(last_day['value'])}`\n"
-            f"• Thay đổi: `{fmt_price(change_value)}`\n"
-            f"• Tỷ lệ: `{change_percent:+.2f}%`\n\n"
-        )
-    
     # Top coin lời nhất
     stats_msg += "*📈 TOP COIN LỜI NHẤT*\n"
-    coin_profits = []
-    for symbol, data in coins.items():
-        price_data = get_price(symbol)
-        current_price = price_data['p'] if price_data else 0
-        current_value = data['amount'] * current_price
-        profit = current_value - data['cost']
-        profit_pct = (profit / data['cost'] * 100) if data['cost'] > 0 else 0
-        coin_profits.append((symbol, profit, profit_pct, current_value))
+    count = 0
+    for symbol, profit, profit_pct, value, cost in coin_profits:
+        if profit > 0:
+            count += 1
+            stats_msg += f"{count}. *{symbol}*: `{fmt_price(profit)}` ({profit_pct:+.2f}%)\n"
+        if count >= 3:
+            break
     
-    coin_profits.sort(key=lambda x: x[1], reverse=True)
-    
-    for i, (symbol, profit, profit_pct, value) in enumerate(coin_profits[:3], 1):
-        stats_msg += f"{i}. *{symbol}*: `{fmt_price(profit)}` ({profit_pct:+.2f}%)\n"
+    if count == 0:
+        stats_msg += "Không có coin lời\n"
     
     # Top coin lỗ nhất
     stats_msg += f"\n*📉 TOP COIN LỖ NHẤT*\n"
-    coin_profits.sort(key=lambda x: x[1])
-    
-    for i, (symbol, profit, profit_pct, value) in enumerate(coin_profits[:3], 1):
+    count = 0
+    for symbol, profit, profit_pct, value, cost in reversed(coin_profits):
         if profit < 0:
-            stats_msg += f"{i}. *{symbol}*: `{fmt_price(profit)}` ({profit_pct:+.2f}%)\n"
+            count += 1
+            stats_msg += f"{count}. *{symbol}*: `{fmt_price(profit)}` ({profit_pct:+.2f}%)\n"
+        if count >= 3:
+            break
+    
+    if count == 0:
+        stats_msg += "Không có coin lỗ\n"
     
     # Phân bổ vốn
     stats_msg += f"\n*📊 PHÂN BỔ VỐN*\n"
-    for symbol, data in coins.items():
+    for symbol, data in stats['coins'].items():
         percent = (data['cost'] / total_invest * 100) if total_invest > 0 else 0
         stats_msg += f"• {symbol}: `{percent:.1f}%`\n"
     
     stats_msg += f"\n📅 Cập nhật: {datetime.now().strftime('%H:%M %d/%m/%Y')}"
     
     keyboard = [[
-        InlineKeyboardButton("📈 7 ngày", callback_data="stats_7"),
-        InlineKeyboardButton("📊 30 ngày", callback_data="stats_30"),
-        InlineKeyboardButton("📉 90 ngày", callback_data="stats_90")
-    ], [
+        InlineKeyboardButton("🔄 Làm mới", callback_data="show_stats"),
         InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")
     ]]
     
@@ -1775,22 +1555,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
         
-        elif data == "show_convert":
-            await query.edit_message_text(
-                "💱 *CHUYỂN ĐỔI TIỀN TỆ*\n━━━━━━━━━━━━━━━━\n\n"
-                "Dùng lệnh: `/convert [số] [từ] [đến]`\n\n"
-                "*Ví dụ:*\n"
-                "• `/convert 1 BTC USD`\n"
-                "• `/convert 1000 USD VND`\n"
-                "• `/convert 50000 VND BTC`\n"
-                "• `/convert 0.5 ETH VND`\n\n"
-                "*Hỗ trợ:*\n"
-                "• Crypto: BTC, ETH, USDT, BNB, SOL\n"
-                "• Fiat: USD, VND, CNY, JPY, EUR, GBP",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]])
-            )
-        
         elif data == "show_stats":
             uid = query.from_user.id
             portfolio_data = get_portfolio(uid)
@@ -1802,12 +1566,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
                 return
             
-            ctx.args = ['30']
-            await stats_command(update, ctx)
-        
-        elif data.startswith("stats_"):
-            days = data.replace("stats_", "")
-            ctx.args = [days]
+            # Gọi lại hàm stats
+            ctx.args = []
             await stats_command(update, ctx)
         
         elif data == "edit_transactions":
@@ -2060,9 +1820,6 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("alert", alert_command))
     app.add_handler(CommandHandler("alerts", alerts_command))
     app.add_handler(CommandHandler("alert_del", alert_del_command))
-    
-    # Convert command
-    app.add_handler(CommandHandler("convert", convert_command))
     
     # Stats command
     app.add_handler(CommandHandler("stats", stats_command))
