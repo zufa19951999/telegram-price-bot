@@ -15,12 +15,10 @@ from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQuer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.constants import ParseMode
 
-# THIẾT LẬP MÚI GIỜ VIỆT NAM (UTC+7)
-VN_TIMEZONE = timezone(timedelta(hours=7))
-
+# THIẾT LẬP MÚI GIỜ VIỆT NAM (UTC+7) - Cách đơn giản
 def get_vn_time():
-    """Lấy thời gian Việt Nam hiện tại"""
-    return datetime.now(VN_TIMEZONE)
+    """Lấy thời gian Việt Nam hiện tại (UTC+7)"""
+    return datetime.utcnow() + timedelta(hours=7)
 
 def format_vn_time(format_str="%H:%M:%S %d/%m/%Y"):
     """Format thời gian Việt Nam"""
