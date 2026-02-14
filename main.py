@@ -72,17 +72,11 @@ def run_health_server():
 # ==================== DATABASE SETUP ====================
 
 def init_database():
-    """Khởi tạo database và các bảng"""
+    """Khởi tạo database và các bảng - CHỈ GIỮ PORTFOLIO"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Bảng theo dõi coin
-    c.execute('''CREATE TABLE IF NOT EXISTS subscriptions
-                 (user_id INTEGER, symbol TEXT, 
-                  added_date TEXT,
-                  PRIMARY KEY (user_id, symbol))''')
-    
-    # Bảng danh mục đầu tư
+    # Chỉ tạo bảng portfolio, KHÔNG tạo bảng subscriptions
     c.execute('''CREATE TABLE IF NOT EXISTS portfolio
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   user_id INTEGER,
@@ -132,86 +126,7 @@ def schedule_backup():
             logger.error(f"Lỗi trong schedule_backup: {e}")
             time.sleep(3600)  # Thử lại sau 1 giờ nếu lỗi
 
-# ==================== DATABASE FUNCTIONS ====================
-
-def add_subscription(user_id, symbol):
-    """Thêm theo dõi - ĐÃ SỬA LỖI"""
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        added_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        symbol_upper = symbol.upper()
-        
-        # Kiểm tra xem đã tồn tại chưa
-        c.execute("SELECT * FROM subscriptions WHERE user_id = ? AND symbol = ?",
-                  (user_id, symbol_upper))
-        if c.fetchone():
-            logger.warning(f"⚠️ User {user_id} đã có {symbol_upper}")
-            return False
-        
-        # Thêm mới
-        c.execute("INSERT INTO subscriptions (user_id, symbol, added_date) VALUES (?, ?, ?)",
-                  (user_id, symbol_upper, added_date))
-        conn.commit()
-        logger.info(f"✅ User {user_id} đã thêm {symbol_upper}")
-        return True
-        
-    except sqlite3.Error as e:
-        logger.error(f"❌ Lỗi SQLite khi thêm subscription: {e}")
-        return False
-    except Exception as e:
-        logger.error(f"❌ Lỗi khi thêm subscription: {e}")
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-def remove_subscription(user_id, symbol):
-    """Xóa theo dõi"""
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        symbol_upper = symbol.upper()
-        
-        c.execute("DELETE FROM subscriptions WHERE user_id = ? AND symbol = ?",
-                  (user_id, symbol_upper))
-        conn.commit()
-        affected = c.rowcount
-        
-        if affected > 0:
-            logger.info(f"🗑 User {user_id} đã xóa {symbol_upper}")
-            return True
-        else:
-            logger.warning(f"⚠️ User {user_id} không có {symbol_upper} để xóa")
-            return False
-            
-    except Exception as e:
-        logger.error(f"❌ Lỗi khi xóa subscription: {e}")
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-def get_subscriptions(user_id):
-    """Lấy danh sách theo dõi - ĐÃ SỬA LỖI"""
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT symbol FROM subscriptions WHERE user_id = ? ORDER BY symbol",
-                  (user_id,))
-        rows = c.fetchall()
-        result = [row[0].upper() for row in rows]
-        logger.info(f"📋 User {user_id} có {len(result)} coins: {result}")
-        return result
-    except Exception as e:
-        logger.error(f"❌ Lỗi khi lấy subscriptions: {e}")
-        return []
-    finally:
-        if conn:
-            conn.close()
+# ==================== DATABASE FUNCTIONS - CHỈ PORTFOLIO ====================
 
 def add_transaction(user_id, symbol, amount, buy_price):
     """Thêm giao dịch mua"""
@@ -536,8 +451,6 @@ def get_invest_menu_keyboard():
          InlineKeyboardButton("Ξ ETH", callback_data="price_ETH"),
          InlineKeyboardButton("💵 USDT", callback_data="price_USDT")],
         [InlineKeyboardButton("📊 Top 10", callback_data="show_top10"),
-         InlineKeyboardButton("🔔 Quản lý theo dõi", callback_data="show_subscribe")],
-        [InlineKeyboardButton("📋 DS theo dõi", callback_data="show_mylist"),
          InlineKeyboardButton("💼 Danh mục", callback_data="show_portfolio")],
         [InlineKeyboardButton("📈 Lợi nhuận", callback_data="show_profit"),
          InlineKeyboardButton("✏️ Sửa/Xóa", callback_data="edit_transactions")],
@@ -555,7 +468,6 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• Xem giá bất kỳ coin nào (BTC, ETH, DOGE, SOL...)\n"
         "• Xem tỷ giá USDT/VND\n"
         "• Top 10 coin\n"
-        "• Theo dõi nhiều coin cùng lúc\n"
         "• Quản lý danh mục đầu tư\n"
         "• ✏️ Sửa/Xóa giao dịch\n"
         "• Tính lợi nhuận chi tiết\n\n"
@@ -572,9 +484,6 @@ async def help_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "📘 *HƯỚNG DẪN*\n\n"
         "*LỆNH NHANH:*\n"
         "• `/s btc eth doge` - Xem giá nhiều coin\n"
-        "• `/su btc eth doge` - Thêm nhiều coin theo dõi\n"
-        "• `/uns` - Menu xóa coin\n"
-        "• `/list` - Xem danh sách theo dõi\n"
         "• `/usdt` - Xem tỷ giá USDT/VND\n\n"
         "*QUẢN LÝ ĐẦU TƯ:*\n"
         "• `/buy btc 0.5 40000` - Mua coin\n"
@@ -648,133 +557,6 @@ async def s_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "\n━━━━━━━━━━━━\n".join(results),
         parse_mode='Markdown'
     )
-
-async def su_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Command thêm coin theo dõi - ĐÃ SỬA LỖI"""
-    uid = update.effective_user.id
-    if not ctx.args: 
-        return await update.message.reply_text("❌ /su btc eth doge")
-    
-    msg = await update.message.reply_text("🔄 Đang xử lý...")
-    coins = [arg.upper() for arg in ctx.args]
-    
-    logger.info(f"🔍 User {uid} đang thêm coins: {coins}")
-    
-    # Lấy danh sách hiện tại
-    current_subs = get_subscriptions(uid)
-    logger.info(f"📋 Danh sách hiện tại: {current_subs}")
-    
-    results = []
-    added = []
-    existed = []
-    
-    for coin in coins:
-        # Kiểm tra xem đã có chưa
-        if coin in current_subs:
-            existed.append(coin)
-            logger.info(f"ℹ️ {coin} đã tồn tại cho user {uid}")
-        else:
-            # Thêm mới - KHÔNG cần kiểm tra giá
-            if add_subscription(uid, coin):
-                added.append(coin)
-                logger.info(f"✅ Đã thêm {coin} cho user {uid}")
-            else:
-                results.append(f"❌ *{coin}*: Lỗi khi thêm vào database")
-    
-    # Lấy danh sách mới nhất
-    new_subs = get_subscriptions(uid)
-    
-    if added:
-        results.append(f"✅ Đã thêm: {', '.join(added)}")
-    if existed:
-        results.append(f"ℹ️ Đã có: {', '.join(existed)}")
-    
-    total = len(new_subs)
-    results.append(f"\n📊 Tổng số đang theo dõi: {total}")
-    
-    if new_subs:
-        results.append(f"\n📋 Danh sách: {', '.join(sorted(new_subs))}")
-    
-    await msg.delete()
-    await update.message.reply_text("\n".join(results), parse_mode='Markdown')
-
-async def uns_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    
-    if not ctx.args:
-        subs = get_subscriptions(uid)
-        if not subs:
-            return await update.message.reply_text("📭 Bạn chưa theo dõi coin nào!")
-        
-        keyboard = []
-        row = []
-        for i, coin in enumerate(sorted(subs)):
-            row.append(InlineKeyboardButton(f"❌ {coin}", callback_data=f"uns_{coin}"))
-            if len(row) == 3:
-                keyboard.append(row)
-                row = []
-        if row:
-            keyboard.append(row)
-        
-        keyboard.append([
-            InlineKeyboardButton("🗑 Xóa tất cả", callback_data="uns_all"),
-            InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")
-        ])
-        
-        await update.message.reply_text(
-            "📋 *CHỌN COIN ĐỂ XÓA*",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return
-    
-    if ctx.args[0].lower() == 'all':
-        subs = get_subscriptions(uid)
-        if not subs:
-            return await update.message.reply_text("📭 Bạn chưa theo dõi coin nào!")
-        
-        for coin in subs:
-            remove_subscription(uid, coin)
-        
-        await update.message.reply_text(
-            f"🗑 Đã xóa *TẤT CẢ* {len(subs)} coin",
-            parse_mode='Markdown'
-        )
-        return
-    
-    coins = [arg.upper() for arg in ctx.args]
-    results = []
-    for coin in coins:
-        if coin in get_subscriptions(uid):
-            if remove_subscription(uid, coin):
-                results.append(f"✅ Đã xóa *{coin}*")
-            else:
-                results.append(f"❌ Lỗi khi xóa *{coin}*")
-        else:
-            results.append(f"❌ *{coin}*: Không có trong danh sách")
-    
-    await update.message.reply_text("\n".join(results), parse_mode='Markdown')
-
-async def list_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    subs = get_subscriptions(uid)
-    
-    if not subs:
-        await update.message.reply_text("📭 Chưa theo dõi coin nào!\nDùng /su [coin]")
-        return
-    
-    msg = "📋 *DANH SÁCH THEO DÕI*\n━━━━━━━━━━━━\n\n"
-    
-    for s in sorted(subs):
-        d = get_price(s)
-        if d:
-            price_cache[s] = d
-            emoji = "📈" if d['c'] > 0 else "📉" if d['c'] < 0 else "➡️"
-            msg += f"• *{s}*: `{fmt_price(d['p'])}` {emoji} `{d['c']:+.1f}%`\n"
-        else:
-            msg += f"• *{s}*: `Đang cập nhật...`\n"
-    
-    await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def buy_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -1092,196 +874,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
         
-        elif data.startswith("sub_"):
-            symbol = data.replace("sub_", "")
-            uid = query.from_user.id
-            
-            logger.info(f"User {uid} đang thêm {symbol} từ callback")
-            
-            # Lấy danh sách hiện tại
-            current_subs = get_subscriptions(uid)
-            
-            if symbol in current_subs:
-                msg = f"ℹ️ *{symbol}* đã có trong danh sách theo dõi!"
-            else:
-                if add_subscription(uid, symbol):
-                    msg = f"✅ Đã thêm *{symbol}* vào danh sách theo dõi!"
-                    logger.info(f"✅ Đã thêm {symbol} cho user {uid}")
-                else:
-                    msg = f"❌ Không thể thêm *{symbol}* vào database"
-            
-            # Lấy danh sách mới
-            new_subs = get_subscriptions(uid)
-            logger.info(f"User {uid} sau khi thêm: {new_subs}")
-            
-            if new_subs:
-                msg += f"\n\n📋 *Danh sách hiện tại:*\n"
-                for coin in sorted(new_subs)[:10]:
-                    msg += f"• `{coin}`\n"
-                if len(new_subs) > 10:
-                    msg += f"• ... và {len(new_subs)-10} coin khác\n"
-                msg += f"\n📊 Tổng: {len(new_subs)} coin"
-            
-            keyboard = [[
-                InlineKeyboardButton("🔔 Tiếp tục quản lý", callback_data="show_subscribe"),
-                InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")
-            ]]
-            
-            await query.edit_message_text(
-                msg,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        
-        elif data.startswith("uns_"):
-            coin = data.replace("uns_", "")
-            uid = query.from_user.id
-            
-            if coin == "all":
-                subs = get_subscriptions(uid)
-                for c in subs:
-                    remove_subscription(uid, c)
-                msg = f"🗑 Đã xóa *TẤT CẢ* {len(subs)} coin khỏi danh sách theo dõi!"
-            else:
-                if remove_subscription(uid, coin):
-                    msg = f"✅ Đã xóa *{coin}* khỏi danh sách theo dõi!"
-                else:
-                    msg = f"❌ Không tìm thấy *{coin}* trong danh sách!"
-            
-            # Lấy danh sách mới
-            remaining = get_subscriptions(uid)
-            if remaining:
-                msg += f"\n\n📋 *Các coin còn lại:*\n"
-                for c in sorted(remaining)[:10]:
-                    msg += f"• `{c}`\n"
-                if len(remaining) > 10:
-                    msg += f"• ... và {len(remaining)-10} coin khác\n"
-                msg += f"\n📊 Tổng: {len(remaining)} coin"
-            else:
-                msg += "\n\n📭 Danh sách theo dõi hiện đang trống."
-            
-            keyboard = [[
-                InlineKeyboardButton("🔔 Quản lý tiếp", callback_data="show_subscribe"),
-                InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")
-            ]]
-            
-            await query.edit_message_text(
-                msg,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        
-        elif data == "show_subscribe":
-            uid = query.from_user.id
-            subs = get_subscriptions(uid)
-            
-            logger.info(f"User {uid} xem menu subscribe, subs: {subs}")
-            
-            # Tạo keyboard động dựa trên coin đang theo dõi
-            keyboard = []
-            
-            # Nếu có coin đang theo dõi, hiển thị để xóa
-            if subs:
-                row = []
-                for i, coin in enumerate(sorted(subs)):
-                    row.append(InlineKeyboardButton(f"❌ {coin}", callback_data=f"uns_{coin}"))
-                    if len(row) == 3:
-                        keyboard.append(row)
-                        row = []
-                if row:
-                    keyboard.append(row)
-                keyboard.append([])  # Thêm dòng trống để phân cách
-            
-            # Thêm các nút thêm coin nhanh
-            popular_coins = [
-                ["➕ BTC", "➕ ETH", "➕ USDT"],
-                ["➕ BNB", "➕ SOL", "➕ XRP"],
-                ["➕ DOGE", "➕ ADA", "➕ DOT"],
-            ]
-            
-            for row in popular_coins:
-                btn_row = []
-                for btn in row:
-                    coin = btn.replace("➕ ", "")
-                    # Chỉ hiển thị nút thêm nếu chưa có trong danh sách
-                    if coin not in subs:
-                        btn_row.append(InlineKeyboardButton(btn, callback_data=f"sub_{coin}"))
-                if btn_row:  # Chỉ thêm row nếu có nút
-                    keyboard.append(btn_row)
-            
-            # Nút xóa tất cả và quay lại
-            if subs:
-                keyboard.append([InlineKeyboardButton("🗑 Xóa tất cả", callback_data="uns_all")])
-            keyboard.append([InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")])
-            
-            # Tạo message hiển thị danh sách đang theo dõi
-            msg = "🔔 *QUẢN LÝ THEO DÕI*\n━━━━━━━━━━━━━━━━\n\n"
-            
-            if subs:
-                msg += "📋 *Đang theo dõi:*\n"
-                for i, coin in enumerate(sorted(subs), 1):
-                    msg += f"{i}. `{coin}`\n"
-                    if i == 15 and len(subs) > 15:
-                        msg += f"... và {len(subs)-15} coin khác\n"
-                        break
-                msg += f"\n📊 Tổng số: {len(subs)} coin\n\n"
-            else:
-                msg += "📭 Bạn chưa theo dõi coin nào!\n\n"
-            
-            msg += "👇 *Chọn để thêm hoặc xóa:*"
-            
-            await query.edit_message_text(
-                msg,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        
-        elif data == "show_mylist":
-            uid = query.from_user.id
-            subs = get_subscriptions(uid)
-            
-            if subs:
-                msg = "📋 *DANH SÁCH THEO DÕI*\n━━━━━━━━━━━━\n\n"
-                for s in sorted(subs):
-                    d = price_cache.get(s)
-                    if d:
-                        emoji = "📈" if d['c'] > 0 else "📉" if d['c'] < 0 else "➡️"
-                        msg += f"• *{s}*: `{fmt_price(d['p'])}` {emoji} `{d['c']:+.1f}%`\n"
-                    else:
-                        # Thử lấy giá mới
-                        d = get_price(s)
-                        if d:
-                            price_cache[s] = d
-                            emoji = "📈" if d['c'] > 0 else "📉" if d['c'] < 0 else "➡️"
-                            msg += f"• *{s}*: `{fmt_price(d['p'])}` {emoji} `{d['c']:+.1f}%`\n"
-                        else:
-                            msg += f"• *{s}*: `Đang cập nhật...`\n"
-                
-                keyboard = []
-                row = []
-                for i, coin in enumerate(sorted(subs)):
-                    row.append(InlineKeyboardButton(f"❌ {coin}", callback_data=f"uns_{coin}"))
-                    if len(row) == 3:
-                        keyboard.append(row)
-                        row = []
-                if row:
-                    keyboard.append(row)
-                
-                keyboard.append([
-                    InlineKeyboardButton("🗑 Xóa tất cả", callback_data="uns_all"),
-                    InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")
-                ])
-                
-                await query.edit_message_text(
-                    msg, parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-            else:
-                await query.edit_message_text(
-                    "📭 Chưa theo dõi coin nào!",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]])
-                )
-        
         elif data == "show_portfolio":
             uid = query.from_user.id
             portfolio_data = get_portfolio(uid)
@@ -1551,55 +1143,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]])
         )
 
-# ==================== AUTO UPDATE ====================
-
-def auto_update():
-    global app
-    last_update = {}
-    
-    while True:
-        try:
-            time.sleep(60)
-            
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            c.execute("SELECT DISTINCT user_id FROM subscriptions")
-            users = c.fetchall()
-            conn.close()
-            
-            for (uid,) in users:
-                try:
-                    now = time.time()
-                    if uid in last_update and now - last_update[uid] < 300:
-                        continue
-                    
-                    subs = get_subscriptions(uid)
-                    if not subs:
-                        continue
-                    
-                    updates = []
-                    for s in subs[:10]:
-                        d = get_price(s)
-                        if d:
-                            price_cache[s] = d
-                            emoji = "📈" if d['c'] > 0 else "📉" if d['c'] < 0 else "➡️"
-                            updates.append(f"• *{d['n']}*: `{fmt_price(d['p'])}` {emoji} `{d['c']:+.1f}%`")
-                    
-                    if updates and app:
-                        try:
-                            msg = "🔄 *CẬP NHẬT GIÁ*\n" + "\n".join(updates)
-                            app.bot.send_message(uid, msg, parse_mode='Markdown')
-                            last_update[uid] = now
-                        except Exception as e:
-                            logger.error(f"Lỗi gửi tin cho user {uid}: {e}")
-                            
-                except Exception as e:
-                    logger.error(f"Lỗi xử lý user {uid}: {e}")
-                    
-        except Exception as e:
-            logger.error(f"Lỗi auto_update: {e}")
-            time.sleep(10)
-
 # ==================== MAIN ====================
 
 if __name__ == '__main__':
@@ -1626,15 +1169,11 @@ if __name__ == '__main__':
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Command handlers
+    # Command handlers - ĐÃ LOẠI BỎ /su, /uns, /list, /ds
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("usdt", usdt_command))
     app.add_handler(CommandHandler("s", s_command))
-    app.add_handler(CommandHandler("su", su_command))
-    app.add_handler(CommandHandler("uns", uns_command))
-    app.add_handler(CommandHandler("list", list_command))
-    app.add_handler(CommandHandler("ds", list_command))
     app.add_handler(CommandHandler("buy", buy_command))
     app.add_handler(CommandHandler("sell", sell_command))
     app.add_handler(CommandHandler("edit", edit_command))
@@ -1646,7 +1185,6 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(handle_callback))
     
     # Threads
-    threading.Thread(target=auto_update, daemon=True).start()
     threading.Thread(target=schedule_backup, daemon=True).start()
     threading.Thread(target=run_health_server, daemon=True).start()
     
