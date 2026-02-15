@@ -831,22 +831,22 @@ try:
         return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
     def get_invest_menu_keyboard():
-    keyboard = [
-        [InlineKeyboardButton("₿ BTC", callback_data="price_BTC"),
-         InlineKeyboardButton("Ξ ETH", callback_data="price_ETH"),
-         InlineKeyboardButton("Ξ SOL", callback_data="price_SOL"),
-         InlineKeyboardButton("💵 USDT", callback_data="price_USDT")],
-        [InlineKeyboardButton("📊 Top 10", callback_data="show_top10"),
-         InlineKeyboardButton("💼 Danh mục", callback_data="show_portfolio")],
-        [InlineKeyboardButton("📈 Lợi nhuận", callback_data="show_profit"),
-         InlineKeyboardButton("✏️ Sửa/Xóa", callback_data="edit_transactions")],
-        [InlineKeyboardButton("🔔 Cảnh báo giá", callback_data="show_alerts"),
-         InlineKeyboardButton("📊 Thống kê", callback_data="show_stats")],
-        [InlineKeyboardButton("📥 Xuất CSV", callback_data="export_csv"),
-         InlineKeyboardButton("➖ Bán coin", callback_data="show_sell")],
-        [InlineKeyboardButton("➕ Mua coin", callback_data="show_buy")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
+        keyboard = [
+            [InlineKeyboardButton("₿ BTC", callback_data="price_BTC"),
+             InlineKeyboardButton("Ξ ETH", callback_data="price_ETH"),
+             InlineKeyboardButton("Ξ SOL", callback_data="price_SOL"),
+             InlineKeyboardButton("💵 USDT", callback_data="price_USDT")],
+            [InlineKeyboardButton("📊 Top 10", callback_data="show_top10"),
+             InlineKeyboardButton("💼 Danh mục", callback_data="show_portfolio")],
+            [InlineKeyboardButton("📈 Lợi nhuận", callback_data="show_profit"),
+             InlineKeyboardButton("✏️ Sửa/Xóa", callback_data="edit_transactions")],
+            [InlineKeyboardButton("🔔 Cảnh báo giá", callback_data="show_alerts"),
+             InlineKeyboardButton("📊 Thống kê", callback_data="show_stats")],
+            [InlineKeyboardButton("📥 Xuất CSV", callback_data="export_csv"),
+             InlineKeyboardButton("➖ Bán coin", callback_data="show_sell")],
+            [InlineKeyboardButton("➕ Mua coin", callback_data="show_buy")]
+        ]
+        return InlineKeyboardMarkup(keyboard)
 
     def get_expense_menu_keyboard():
         keyboard = [
