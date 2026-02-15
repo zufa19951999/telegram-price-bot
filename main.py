@@ -115,7 +115,7 @@ def init_database():
                   budget REAL,
                   created_at TEXT)''')
     
-    # Bảng ghi chép chi tiêu (QUẢN LÝ CHI TIÊU) - có hỗ trợ đa tiền tệ
+    # Bảng ghi chép chi tiêu (QUẢN LÝ CHI TIÊU)
     c.execute('''CREATE TABLE IF NOT EXISTS expenses
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   user_id INTEGER,
@@ -127,7 +127,7 @@ def init_database():
                   created_at TEXT,
                   FOREIGN KEY (category_id) REFERENCES expense_categories(id))''')
     
-    # Bảng thu nhập (QUẢN LÝ CHI TIÊU) - có hỗ trợ đa tiền tệ
+    # Bảng thu nhập (QUẢN LÝ CHI TIÊU)
     c.execute('''CREATE TABLE IF NOT EXISTS incomes
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   user_id INTEGER,
@@ -194,7 +194,7 @@ def schedule_backup():
             logger.error(f"Lỗi trong schedule_backup: {e}")
             time.sleep(3600)
 
-# ==================== PORTFOLIO DATABASE FUNCTIONS (GIỮ NGUYÊN) ====================
+# ==================== PORTFOLIO DATABASE FUNCTIONS ====================
 
 def add_transaction(user_id, symbol, amount, buy_price):
     """Thêm giao dịch mua"""
@@ -334,7 +334,7 @@ def delete_sold_transactions(user_id, kept_transactions):
         if conn:
             conn.close()
 
-# ==================== ALERTS FUNCTIONS (GIỮ NGUYÊN) ====================
+# ==================== ALERTS FUNCTIONS ====================
 
 def add_alert(user_id, symbol, target_price, condition):
     """Thêm cảnh báo giá"""
@@ -450,7 +450,7 @@ def check_alerts():
             logger.error(f"❌ Lỗi check_alerts: {e}")
             time.sleep(10)
 
-# ==================== HÀM LẤY GIÁ COIN (GIỮ NGUYÊN) ====================
+# ==================== HÀM LẤY GIÁ COIN ====================
 
 def get_price(symbol):
     """Lấy giá coin từ CoinMarketCap"""
@@ -507,7 +507,7 @@ def get_price(symbol):
         logger.error(f"❌ Lỗi get_price {symbol}: {e}")
         return None
 
-# ==================== HÀM LẤY TỶ GIÁ USDT/VND (GIỮ NGUYÊN) ====================
+# ==================== HÀM LẤY TỶ GIÁ USDT/VND ====================
 
 def get_usdt_vnd_rate():
     """Lấy tỷ giá USDT/VND từ nhiều nguồn"""
@@ -629,7 +629,6 @@ def fmt_number(n):
 
 # ==================== HÀM HỖ TRỢ ĐA TIỀN TỆ ====================
 
-# Danh sách các loại tiền hỗ trợ
 SUPPORTED_CURRENCIES = {
     'VND': '🇻🇳 Việt Nam Đồng',
     'USD': '🇺🇸 US Dollar',
@@ -732,7 +731,7 @@ def tinh_toan(expression):
     except Exception as e:
         return None, f"❌ Lỗi: {str(e)}"
 
-# ==================== HÀM THỐNG KÊ PORTFOLIO (GIỮ NGUYÊN) ====================
+# ==================== HÀM THỐNG KÊ PORTFOLIO ====================
 
 def get_portfolio_stats(user_id):
     """Lấy thống kê danh mục"""
@@ -786,7 +785,7 @@ def get_portfolio_stats(user_id):
         logger.error(f"❌ Lỗi get_portfolio_stats: {e}")
         return None
 
-# ==================== HÀM XUẤT CSV (GIỮ NGUYÊN) ====================
+# ==================== HÀM XUẤT CSV ====================
 
 def export_portfolio_to_csv(user_id):
     """Xuất danh mục đầu tư ra file CSV"""
@@ -1113,42 +1112,6 @@ def get_expenses_by_period(user_id, period='month'):
         if conn:
             conn.close()
 
-def get_total_income_by_period(user_id, period='month'):
-    """Tổng thu nhập theo kỳ"""
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        now = get_vn_time()
-        
-        if period == 'day':
-            date_filter = now.strftime("%Y-%m-%d")
-            query = '''SELECT SUM(amount) FROM incomes 
-                      WHERE user_id = ? AND income_date = ?'''
-            c.execute(query, (user_id, date_filter))
-        
-        elif period == 'month':
-            month_filter = now.strftime("%Y-%m")
-            query = '''SELECT SUM(amount) FROM incomes 
-                      WHERE user_id = ? AND strftime('%Y-%m', income_date) = ?'''
-            c.execute(query, (user_id, month_filter))
-        
-        else:
-            year_filter = now.strftime("%Y")
-            query = '''SELECT SUM(amount) FROM incomes 
-                      WHERE user_id = ? AND strftime('%Y', income_date) = ?'''
-            c.execute(query, (user_id, year_filter))
-        
-        result = c.fetchone()[0]
-        return result or 0
-    except Exception as e:
-        logger.error(f"❌ Lỗi total income: {e}")
-        return 0
-    finally:
-        if conn:
-            conn.close()
-
 def delete_expense(expense_id, user_id):
     """Xóa một khoản chi"""
     conn = None
@@ -1195,7 +1158,7 @@ def get_main_keyboard():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def get_invest_menu_keyboard():
-    """Keyboard menu đầu tư coin (GIỮ NGUYÊN)"""
+    """Keyboard menu đầu tư coin"""
     keyboard = [
         [InlineKeyboardButton("₿ BTC", callback_data="price_BTC"),
          InlineKeyboardButton("Ξ ETH", callback_data="price_ETH"),
@@ -1235,7 +1198,7 @@ def get_expense_inline_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# ==================== COMMAND HANDLERS (GIỮ NGUYÊN) ====================
+# ==================== COMMAND HANDLERS ====================
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     welcome_msg = (
@@ -1288,7 +1251,7 @@ async def help_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(help_msg, parse_mode=ParseMode.MARKDOWN)
 
-# ==================== PORTFOLIO COMMANDS (GIỮ NGUYÊN) ====================
+# ==================== PORTFOLIO COMMANDS ====================
 
 async def usdt_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔄 Đang tra cứu...")
@@ -1584,7 +1547,7 @@ async def delete_tx_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ ID không hợp lệ")
 
-# ==================== ALERT COMMANDS (GIỮ NGUYÊN) ====================
+# ==================== ALERT COMMANDS ====================
 
 async def alert_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if len(ctx.args) < 3:
@@ -1666,7 +1629,7 @@ async def alert_del_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ ID không hợp lệ")
 
-# ==================== STATS COMMAND (GIỮ NGUYÊN) ====================
+# ==================== STATS COMMAND ====================
 
 async def stats_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -1737,7 +1700,7 @@ async def stats_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# ==================== EXPORT COMMAND (GIỮ NGUYÊN) ====================
+# ==================== EXPORT COMMAND ====================
 
 async def export_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -1984,56 +1947,14 @@ async def expense_manage_categories_handler(update: Update, ctx: ContextTypes.DE
     
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
-# ==================== HANDLE MESSAGE ====================
+# ==================== EXPENSE SHORTCUT HANDLERS ====================
 
-async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def expense_shortcut_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Xử lý các lệnh tắt cho quản lý chi tiêu"""
     text = update.message.text.strip()
     user_id = update.effective_user.id
     
-    # XỬ LÝ MENU CHÍNH
-    if text == "💰 ĐẦU TƯ COIN":
-        await update.message.reply_text(
-            "💰 *MENU ĐẦU TƯ COIN*",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=get_invest_menu_keyboard()
-        )
-        return
-        
-    elif text == "💸 QUẢN LÝ CHI TIÊU":
-        await expense_command(update, ctx)
-        return
-        
-    elif text == "❓ HƯỚNG DẪN":
-        await help_command(update, ctx)
-        return
-    
-    # XỬ LÝ MENU CHI TIÊU
-    elif text == "💰 Thu nhập":
-        await expense_add_income_handler(update, ctx)
-        return
-        
-    elif text == "💸 Chi tiêu":
-        await expense_add_expense_handler(update, ctx)
-        return
-        
-    elif text == "📊 Báo cáo":
-        await expense_report_handler(update, ctx)
-        return
-        
-    elif text == "📋 Danh mục":
-        await expense_manage_categories_handler(update, ctx)
-        return
-        
-    elif text == "🔄 Gần đây":
-        await expense_recent_handler(update, ctx)
-        return
-        
-    elif text == "🔙 Về menu chính":
-        await start(update, ctx)
-        return
-    
-    # ===== XỬ LÝ THU NHẬP =====
-    # Cú pháp: tn [số tiền] [mã tiền tệ] [nguồn] [ghi chú]
+    # ===== THU NHẬP: tn [số tiền] [mã tiền tệ] [nguồn] [ghi chú] =====
     if text.startswith('tn '):
         parts = text.split()
         
@@ -2086,8 +2007,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Lỗi thu nhập: {e}")
             await update.message.reply_text("❌ Có lỗi xảy ra!")
     
-    # ===== XỬ LÝ DANH MỤC =====
-    # Cú pháp: dm [tên] [ngân sách]
+    # ===== DANH MỤC: dm [tên] [ngân sách] =====
     elif text.startswith('dm '):
         parts = text.split()
         if len(parts) < 2:
@@ -2114,8 +2034,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("❌ Lỗi khi thêm danh mục!")
     
-    # ===== XỬ LÝ CHI TIÊU =====
-    # Cú pháp: ct [mã danh mục] [số tiền] [mã tiền tệ] [ghi chú]
+    # ===== CHI TIÊU: ct [mã danh mục] [số tiền] [mã tiền tệ] [ghi chú] =====
     elif text.startswith('ct '):
         parts = text.split()
         if len(parts) < 3:
@@ -2141,7 +2060,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
             note = " ".join(parts[start_idx:]) if len(parts) > start_idx else ""
             
-            # Kiểm tra danh mục
+            # Kiểm tra danh mục tồn tại
             categories = get_expense_categories(user_id)
             category_exists = False
             category_name = ""
@@ -2172,7 +2091,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Lỗi chi tiêu: {e}")
             await update.message.reply_text("❌ Có lỗi xảy ra!")
     
-    # ===== XEM DANH SÁCH GẦN ĐÂY =====
+    # ===== XEM DANH SÁCH GẦN ĐÂY: ds =====
     elif text == 'ds':
         recent_incomes = get_recent_incomes(user_id, 5)
         recent_expenses = get_recent_expenses(user_id, 5)
@@ -2198,11 +2117,11 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
     
-    # ===== BÁO CÁO NHANH =====
+    # ===== BÁO CÁO NHANH: bc =====
     elif text == 'bc':
         await expense_report_handler(update, ctx)
     
-    # ===== XÓA CHI TIÊU =====
+    # ===== XÓA CHI TIÊU: xoa chi [id] =====
     elif text.startswith('xoa chi '):
         parts = text.split()
         if len(parts) < 3:
@@ -2218,7 +2137,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("❌ ID không hợp lệ!")
     
-    # ===== XÓA THU NHẬP =====
+    # ===== XÓA THU NHẬP: xoa thu [id] =====
     elif text.startswith('xoa thu '):
         parts = text.split()
         if len(parts) < 3:
@@ -2234,7 +2153,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("❌ ID không hợp lệ!")
     
-    # ===== XÓA DANH MỤC =====
+    # ===== XÓA DANH MỤC: xoa dm [id] =====
     elif text.startswith('xoa dm '):
         parts = text.split()
         if len(parts) < 3:
@@ -2251,7 +2170,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("❌ ID không hợp lệ!")
     
-    # ===== SỬA BUDGET =====
+    # ===== SỬA BUDGET: sua budget [id] [số tiền] =====
     elif text.startswith('sua budget '):
         parts = text.split()
         if len(parts) < 4:
@@ -2272,19 +2191,78 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"❌ Không tìm thấy danh mục #{category_id}")
         except ValueError:
             await update.message.reply_text("❌ ID hoặc số tiền không hợp lệ!")
+
+# ==================== HANDLE MESSAGE ====================
+
+async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    user_id = update.effective_user.id
     
-    # ===== TÍNH NĂNG ẨN =====
-    else:
-        if any(op in text for op in ['+', '-', '*', '/', '%']) and not text.startswith('/'):
-            result, error = tinh_toan(text)
-            if error:
-                await update.message.reply_text(error)
+    # XỬ LÝ MENU CHÍNH
+    if text == "💰 ĐẦU TƯ COIN":
+        await update.message.reply_text(
+            "💰 *MENU ĐẦU TƯ COIN*",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=get_invest_menu_keyboard()
+        )
+        return
+        
+    elif text == "💸 QUẢN LÝ CHI TIÊU":
+        await expense_command(update, ctx)
+        return
+        
+    elif text == "❓ HƯỚNG DẪN":
+        await help_command(update, ctx)
+        return
+    
+    # XỬ LÝ MENU CHI TIÊU
+    elif text == "💰 Thu nhập":
+        await expense_add_income_handler(update, ctx)
+        return
+        
+    elif text == "💸 Chi tiêu":
+        await expense_add_expense_handler(update, ctx)
+        return
+        
+    elif text == "📊 Báo cáo":
+        await expense_report_handler(update, ctx)
+        return
+        
+    elif text == "📋 Danh mục":
+        await expense_manage_categories_handler(update, ctx)
+        return
+        
+    elif text == "🔄 Gần đây":
+        await expense_recent_handler(update, ctx)
+        return
+        
+    elif text == "🔙 Về menu chính":
+        await start(update, ctx)
+        return
+    
+    # XỬ LÝ CÁC LỆNH TẮT CHI TIÊU
+    elif text.startswith(('tn ', 'dm ', 'ct ', 'ds', 'bc', 'xoa chi ', 'xoa thu ', 'xoa dm ', 'sua budget ')):
+        await expense_shortcut_handler(update, ctx)
+        return
+    
+    # TÍNH NĂNG ẨN
+    elif any(op in text for op in ['+', '-', '*', '/', '%']) and not text.startswith('/'):
+        result, error = tinh_toan(text)
+        if error:
+            await update.message.reply_text(error)
+        else:
+            if isinstance(result, int):
+                await update.message.reply_text(f"{text} = {result:,}")
             else:
-                if isinstance(result, int):
-                    await update.message.reply_text(f"{text} = {result:,}")
-                else:
-                    formatted = f"{result:,.10f}".rstrip('0').rstrip('.')
-                    await update.message.reply_text(f"{text} = {formatted}")
+                formatted = f"{result:,.10f}".rstrip('0').rstrip('.')
+                await update.message.reply_text(f"{text} = {formatted}")
+    
+    # KHÔNG PHẢI LỆNH HỢP LỆ
+    else:
+        await update.message.reply_text(
+            "❌ Không hiểu lệnh. Gõ /help để xem hướng dẫn.",
+            reply_markup=get_main_keyboard()
+        )
 
 # ==================== HANDLE CALLBACK ====================
 
@@ -2307,7 +2285,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 reply_markup=get_main_keyboard()
             )
         
-        # ========== CALLBACK ĐẦU TƯ COIN (GIỮ NGUYÊN) ==========
+        # ========== CALLBACK ĐẦU TƯ COIN ==========
         elif data == "back_to_invest":
             await query.edit_message_text(
                 "💰 *MENU ĐẦU TƯ COIN*",
@@ -2879,7 +2857,7 @@ if __name__ == '__main__':
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Command handlers (GIỮ NGUYÊN)
+    # Command handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("usdt", usdt_command))
@@ -2891,24 +2869,24 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("delete", delete_tx_command))
     app.add_handler(CommandHandler("xoa", delete_tx_command))
     
-    # Alert commands (GIỮ NGUYÊN)
+    # Alert commands
     app.add_handler(CommandHandler("alert", alert_command))
     app.add_handler(CommandHandler("alerts", alerts_command))
     app.add_handler(CommandHandler("alert_del", alert_del_command))
     
-    # Stats command (GIỮ NGUYÊN)
+    # Stats command
     app.add_handler(CommandHandler("stats", stats_command))
     
-    # Export command (GIỮ NGUYÊN)
+    # Export command
     app.add_handler(CommandHandler("export", export_command))
     
-    # Message handler (ĐÃ SỬA)
+    # Message handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # Callback handler (ĐÃ SỬA)
+    # Callback handler
     app.add_handler(CallbackQueryHandler(handle_callback))
     
-    # Threads (GIỮ NGUYÊN)
+    # Threads
     threading.Thread(target=schedule_backup, daemon=True).start()
     threading.Thread(target=schedule_cleanup, daemon=True).start()
     threading.Thread(target=check_alerts, daemon=True).start()
