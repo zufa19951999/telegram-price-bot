@@ -142,6 +142,39 @@ def init_database():
     conn.close()
     logger.info(f"✅ Database initialized at {DB_PATH}")
 
+def migrate_database():
+    """Cập nhật cấu trúc database nếu cần"""
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Kiểm tra xem bảng incomes có cột currency chưa
+        c.execute("PRAGMA table_info(incomes)")
+        columns = [column[1] for column in c.fetchall()]
+        
+        if 'currency' not in columns:
+            logger.info("🔄 Đang cập nhật database: thêm cột currency vào bảng incomes")
+            c.execute("ALTER TABLE incomes ADD COLUMN currency TEXT DEFAULT 'VND'")
+            conn.commit()
+            logger.info("✅ Đã cập nhật database thành công")
+        
+        # Kiểm tra bảng expenses có cột currency chưa
+        c.execute("PRAGMA table_info(expenses)")
+        columns = [column[1] for column in c.fetchall()]
+        
+        if 'currency' not in columns:
+            logger.info("🔄 Đang cập nhật database: thêm cột currency vào bảng expenses")
+            c.execute("ALTER TABLE expenses ADD COLUMN currency TEXT DEFAULT 'VND'")
+            conn.commit()
+            logger.info("✅ Đã cập nhật database thành công")
+            
+    except Exception as e:
+        logger.error(f"❌ Lỗi khi migrate database: {e}")
+    finally:
+        if conn:
+            conn.close()
+            
 def backup_database():
     """Tự động backup database"""
     try:
@@ -2843,6 +2876,7 @@ if __name__ == '__main__':
     
     try:
         init_database()
+        migrate_database()
         test_file = os.path.join(DATA_DIR, 'test.txt')
         with open(test_file, 'w') as f:
             f.write('test')
