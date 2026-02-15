@@ -1832,23 +1832,14 @@ async def export_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ==================== EXPENSE COMMAND HANDLERS ====================
 
 async def expense_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Menu quản lý chi tiêu"""
+    """Menu quản lý chi tiêu - dạng bảng inline keyboard"""
     await update.message.reply_text(
-        "💰 *QUẢN LÝ CHI TIÊU*\n\n"
-        "📝 *CÁC LỆNH:*\n\n"
-        "• `tn 500000` - Thêm thu nhập 500,000 VND\n"
-        "• `tn 100 USD Lương` - Thêm 100 USD, nguồn Lương\n"
-        "• `tn 5000 KHR Bán hàng` - Thêm 5,000 Riel\n\n"
-        "• `dm Ăn uống 3000000` - Tạo danh mục\n"
-        "• `ct 1 50000 VND Ăn trưa` - Chi tiêu danh mục 1\n"
-        "• `ds` - Xem giao dịch gần đây\n"
-        "• `bc` - Báo cáo tháng này\n"
-        "• `xoa chi 5` - Xóa khoản chi số 5\n"
-        "• `xoa thu 3` - Xóa khoản thu số 3",
+        "💰 *QUẢN LÝ CHI TIÊU*\n━━━━━━━━━━━━━━━━\n\n"
+        "👇 Chọn chức năng bên dưới:",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=get_expense_main_keyboard()
+        reply_markup=get_expense_menu_keyboard()  # Dùng inline keyboard
     )
-
+    
 async def expense_add_income_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Hướng dẫn thêm thu nhập"""
     await update.message.reply_text(
