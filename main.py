@@ -863,6 +863,7 @@ try:
         return InlineKeyboardMarkup(keyboard)
 
     # ==================== COMMAND HANDLERS ====================
+
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     welcome_msg = (
         "🚀 *ĐẦU TƯ COIN & QUẢN LÝ CHI TIÊU*\n\n"
@@ -882,6 +883,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "👇 *Chọn chức năng bên dưới*"
     )
     await update.message.reply_text(welcome_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=get_main_keyboard())
+
 
 async def help_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     help_msg = (
@@ -908,6 +910,7 @@ async def help_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(help_msg, parse_mode=ParseMode.MARKDOWN)
 
+
 @rate_limit(30)
 async def usdt_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔄 Đang tra cứu...")
@@ -927,6 +930,7 @@ async def usdt_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     await msg.delete()
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+
 
 @rate_limit(30)
 async def s_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -952,6 +956,7 @@ async def s_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     await msg.delete()
     await update.message.reply_text("\n━━━━━━━━━━━━\n".join(results) + f"\n\n🕐 {format_vn_time_short()}", parse_mode='Markdown')
+
 
 @rate_limit(30)
 async def buy_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -991,6 +996,7 @@ async def buy_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, parse_mode='Markdown')
     else:
         await update.message.reply_text(f"❌ Lỗi khi thêm giao dịch *{symbol}*", parse_mode='Markdown')
+
 
 @rate_limit(30)
 async def sell_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1074,6 +1080,7 @@ async def sell_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"🕐 {format_vn_time()}"
     )
     await update.message.reply_text(msg, parse_mode='Markdown')
+
 
 @rate_limit(30)
 async def edit_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1186,6 +1193,7 @@ async def edit_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ /edit - Xem DS\n/edit [id] - Xem chi tiết\n/edit [id] [sl] [giá] - Sửa")
 
+
 @rate_limit(30)
 async def delete_tx_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -1209,6 +1217,7 @@ async def delete_tx_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     except ValueError:
         await update.message.reply_text("❌ ID không hợp lệ")
+
 
 @rate_limit(30)
 async def alert_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1245,6 +1254,7 @@ async def alert_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Lỗi khi tạo cảnh báo!")
 
+
 @rate_limit(30)
 async def alerts_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -1266,6 +1276,7 @@ async def alerts_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     msg += f"🕐 {format_vn_time_short()}"
     await update.message.reply_text(msg, parse_mode='Markdown')
+
 
 @rate_limit(30)
 async def stats_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
