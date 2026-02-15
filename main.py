@@ -3036,7 +3036,7 @@ elif data == "expense_help":
 
 elif data == "expense_income_month":
     uid = query.from_user.id
-    await expense_report_handler(update, ctx)  # Gọi lại handler cũ
+    await expense_report_handler(update, ctx)
     await query.message.delete()
 
 elif data == "expense_income_summary":
@@ -3054,7 +3054,6 @@ elif data == "expense_income_summary":
             month += 12
             year -= 1
         
-        # Query tổng thu nhập tháng
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         month_str = f"{year:04d}-{month:02d}"
@@ -3093,7 +3092,6 @@ elif data.startswith("cat_view_"):
     cat_id = int(data.replace("cat_view_", ""))
     uid = query.from_user.id
     
-    # Lấy thông tin danh mục
     categories = get_expense_categories(uid)
     category = next((c for c in categories if c[0] == cat_id), None)
     
@@ -3103,7 +3101,6 @@ elif data.startswith("cat_view_"):
     
     cat_id, name, budget, created = category
     
-    # Lấy chi tiêu trong tháng của danh mục này
     now = get_vn_time()
     month_filter = now.strftime("%Y-%m")
     
