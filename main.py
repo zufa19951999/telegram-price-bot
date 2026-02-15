@@ -1181,6 +1181,8 @@ def delete_income(income_id, user_id):
 
 # ==================== KEYBOARD ====================
 
+# ==================== KEYBOARD ====================
+
 def get_main_keyboard():
     """Keyboard chính"""
     keyboard = [
@@ -1209,25 +1211,16 @@ def get_invest_menu_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 def get_expense_menu_keyboard():
-    """Keyboard menu quản lý chi tiêu (dạng bảng như đầu tư coin)"""
+    """Keyboard menu quản lý chi tiêu (dạng bảng)"""
     keyboard = [
-        # Hàng 1: Thu nhập & Chi tiêu
         [InlineKeyboardButton("💰 THU NHẬP", callback_data="expense_income_menu"),
          InlineKeyboardButton("💸 CHI TIÊU", callback_data="expense_expense_menu")],
-        
-        # Hàng 2: Danh mục & Báo cáo
         [InlineKeyboardButton("📋 DANH MỤC", callback_data="expense_categories"),
          InlineKeyboardButton("📊 BÁO CÁO", callback_data="expense_report_menu")],
-        
-        # Hàng 3: Hôm nay & Tháng này
         [InlineKeyboardButton("📅 HÔM NAY", callback_data="expense_today"),
          InlineKeyboardButton("📅 THÁNG NÀY", callback_data="expense_month")],
-        
-        # Hàng 4: Gần đây & Xuất dữ liệu
         [InlineKeyboardButton("🔄 GẦN ĐÂY", callback_data="expense_recent"),
          InlineKeyboardButton("📥 XUẤT CSV", callback_data="expense_export")],
-        
-        # Hàng 5: Hướng dẫn & Về menu chính
         [InlineKeyboardButton("❓ HƯỚNG DẪN", callback_data="expense_help"),
          InlineKeyboardButton("🔙 VỀ MENU CHÍNH", callback_data="back_to_main")]
     ]
@@ -1263,18 +1256,16 @@ def get_categories_menu_keyboard(user_id):
     
     for cat in categories:
         cat_id, name, budget, _ = cat
-        # Hiển thị tên viết tắt nếu dài
         display_name = name[:10] + "..." if len(name) > 10 else name
         button = InlineKeyboardButton(f"{display_name}", callback_data=f"cat_view_{cat_id}")
         row.append(button)
-        if len(row) == 2:  # 2 nút mỗi hàng
+        if len(row) == 2:
             keyboard.append(row)
             row = []
     
     if row:
         keyboard.append(row)
     
-    # Thêm các nút chức năng
     keyboard.extend([
         [InlineKeyboardButton("➕ THÊM DANH MỤC", callback_data="expense_add_category"),
          InlineKeyboardButton("✏️ SỬA BUDGET", callback_data="expense_edit_budget")],
@@ -1291,8 +1282,6 @@ def get_report_menu_keyboard():
          InlineKeyboardButton("📊 TUẦN NÀY", callback_data="expense_week")],
         [InlineKeyboardButton("📊 THÁNG NÀY", callback_data="expense_month"),
          InlineKeyboardButton("📊 NĂM NAY", callback_data="expense_year")],
-        [InlineKeyboardButton("📊 TÙY CHỈNH", callback_data="expense_custom"),
-         InlineKeyboardButton("📈 SO SÁNH", callback_data="expense_compare")],
         [InlineKeyboardButton("🔙 VỀ MENU", callback_data="back_to_expense")]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -1830,14 +1819,245 @@ async def export_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await msg.delete()
 
 # ==================== EXPENSE COMMAND HANDLERS ====================
-
+async def expense_shortcut_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Xử lý các lệnh tắt cho quản lý chi tiêu"""
+    text = update.message.text.strip()
+    user_id = update.effective_user.id
+    
+    # THU NHẬP: tn [số tiền] [mã tiền tệ] [nguồn] [ghi chú]
+    if text.startswith('tn '):
+        parts = text.split()
+        if len(parts) < 2:
+            await update.message.reply_text("❌ Thiếu số tiền! VD: `tn 500000`", parse_mode=ParseMode.MARKDOWN)
+            return
+        
+        try:
+            amount_str = parts[1].replace(',', '')
+            amount = float(amount_str)
+            
+            if amount <= 0:
+                await update.message.reply_text("❌ Số tiền phải lớn hơn 0!")
+                return
+            
+            currency = 'VND'
+            source = "Khác"
+            note = ""
+            
+            if len(parts) >= 3:
+                if parts[2].upper() in SUPPORTED_CURRENCIES:
+                    currency = parts[2].upper()
+                    if len(parts) >= 4:
+                        source = parts[3]
+                        note = " ".join(parts[4:]) if len(parts) > 4 else ""
+                else:
+                    source = parts[2]
+                    note = " ".join(parts[3:]) if len(parts) > 3 else ""
+            
+            if add_income(user_id, amount, source, currency, note):
+                await update.message.reply_text(
+                    f"✅ *ĐÃ THÊM THU NHẬP*\n━━━━━━━━━━━━━━━━\n\n"
+                    f"💰 Số tiền: *{format_currency_simple(amount, currency)}*\n"
+                    f"📌 Nguồn: *{source}*\n"
+                    f"📝 Ghi chú: *{note if note else 'Không có'}*",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            else:
+                await update.message.reply_text("❌ Lỗi khi thêm thu nhập!")
+        except ValueError:
+            await update.message.reply_text("❌ Số tiền không hợp lệ!")
+        except Exception as e:
+            logger.error(f"Lỗi thu nhập: {e}")
+            await update.message.reply_text("❌ Có lỗi xảy ra!")
+    
+    # DANH MỤC: dm [tên] [ngân sách]
+    elif text.startswith('dm '):
+        parts = text.split()
+        if len(parts) < 2:
+            await update.message.reply_text("❌ Thiếu tên danh mục! VD: `dm Ăn uống 3000000`")
+            return
+        
+        name = parts[1]
+        budget = 0
+        
+        if len(parts) > 2:
+            try:
+                budget = float(parts[2].replace(',', ''))
+            except ValueError:
+                await update.message.reply_text("❌ Ngân sách không hợp lệ!")
+                return
+        
+        if add_expense_category(user_id, name, budget):
+            await update.message.reply_text(
+                f"✅ *ĐÃ THÊM DANH MỤC*\n━━━━━━━━━━━━━━━━\n\n"
+                f"📋 Tên: *{name.upper()}*\n"
+                f"💰 Budget: {format_currency_simple(budget, 'VND')}",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            await update.message.reply_text("❌ Lỗi khi thêm danh mục!")
+    
+    # CHI TIÊU: ct [mã danh mục] [số tiền] [mã tiền tệ] [ghi chú]
+    elif text.startswith('ct '):
+        parts = text.split()
+        if len(parts) < 3:
+            await update.message.reply_text("❌ Thiếu thông tin! VD: `ct 1 50000 VND Ăn trưa`")
+            return
+        
+        try:
+            category_id = int(parts[1])
+            amount_str = parts[2].replace(',', '')
+            amount = float(amount_str)
+            
+            if amount <= 0:
+                await update.message.reply_text("❌ Số tiền phải lớn hơn 0!")
+                return
+            
+            currency = 'VND'
+            start_idx = 3
+            
+            if len(parts) > 3 and parts[3].upper() in SUPPORTED_CURRENCIES:
+                currency = parts[3].upper()
+                start_idx = 4
+            
+            note = " ".join(parts[start_idx:]) if len(parts) > start_idx else ""
+            
+            categories = get_expense_categories(user_id)
+            category_exists = False
+            category_name = ""
+            for cat in categories:
+                if cat[0] == category_id:
+                    category_exists = True
+                    category_name = cat[1]
+                    break
+            
+            if not category_exists:
+                await update.message.reply_text(f"❌ Không tìm thấy danh mục #{category_id}!")
+                return
+            
+            if add_expense(user_id, category_id, amount, currency, note):
+                await update.message.reply_text(
+                    f"✅ *ĐÃ THÊM CHI TIÊU*\n━━━━━━━━━━━━━━━━\n\n"
+                    f"💰 Số tiền: *{format_currency_simple(amount, currency)}*\n"
+                    f"📂 Danh mục: *{category_name}*\n"
+                    f"📝 Ghi chú: *{note if note else 'Không có'}*",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            else:
+                await update.message.reply_text("❌ Lỗi khi thêm chi tiêu!")
+        except ValueError:
+            await update.message.reply_text("❌ ID hoặc số tiền không hợp lệ!")
+        except Exception as e:
+            logger.error(f"Lỗi chi tiêu: {e}")
+            await update.message.reply_text("❌ Có lỗi xảy ra!")
+    
+    # XEM GẦN ĐÂY: ds
+    elif text == 'ds':
+        recent_incomes = get_recent_incomes(user_id, 5)
+        recent_expenses = get_recent_expenses(user_id, 5)
+        
+        if not recent_incomes and not recent_expenses:
+            await update.message.reply_text("📭 Chưa có giao dịch nào!")
+            return
+        
+        msg = "🔄 *GIAO DỊCH GẦN ĐÂY*\n━━━━━━━━━━━━━━━━\n\n"
+        
+        if recent_incomes:
+            msg += "*💰 THU NHẬP:*\n"
+            for inc in recent_incomes:
+                inc_id, amount, source, note, date, currency = inc
+                msg += f"• #{inc_id} {date}: {format_currency_simple(amount, currency)} - {source}\n"
+            msg += "\n"
+        
+        if recent_expenses:
+            msg += "*💸 CHI TIÊU:*\n"
+            for exp in recent_expenses:
+                exp_id, cat_name, amount, note, date, currency = exp
+                msg += f"• #{exp_id} {date}: {format_currency_simple(amount, currency)} - {cat_name}\n"
+        
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+    
+    # BÁO CÁO: bc
+    elif text == 'bc':
+        await expense_report_handler(update, ctx)
+    
+    # XÓA CHI TIÊU: xoa chi [id]
+    elif text.startswith('xoa chi '):
+        parts = text.split()
+        if len(parts) < 3:
+            await update.message.reply_text("❌ Cần có ID! VD: `xoa chi 5`")
+            return
+        
+        try:
+            expense_id = int(parts[2])
+            if delete_expense(expense_id, user_id):
+                await update.message.reply_text(f"✅ Đã xóa khoản chi #{expense_id}")
+            else:
+                await update.message.reply_text(f"❌ Không tìm thấy khoản chi #{expense_id}")
+        except ValueError:
+            await update.message.reply_text("❌ ID không hợp lệ!")
+    
+    # XÓA THU NHẬP: xoa thu [id]
+    elif text.startswith('xoa thu '):
+        parts = text.split()
+        if len(parts) < 3:
+            await update.message.reply_text("❌ Cần có ID! VD: `xoa thu 3`")
+            return
+        
+        try:
+            income_id = int(parts[2])
+            if delete_income(income_id, user_id):
+                await update.message.reply_text(f"✅ Đã xóa khoản thu #{income_id}")
+            else:
+                await update.message.reply_text(f"❌ Không tìm thấy khoản thu #{income_id}")
+        except ValueError:
+            await update.message.reply_text("❌ ID không hợp lệ!")
+    
+    # XÓA DANH MỤC: xoa dm [id]
+    elif text.startswith('xoa dm '):
+        parts = text.split()
+        if len(parts) < 3:
+            await update.message.reply_text("❌ Cần có ID! VD: `xoa dm 2`")
+            return
+        
+        try:
+            category_id = int(parts[2])
+            success, message = delete_expense_category(category_id, user_id)
+            if success:
+                await update.message.reply_text(f"✅ {message}")
+            else:
+                await update.message.reply_text(f"❌ {message}")
+        except ValueError:
+            await update.message.reply_text("❌ ID không hợp lệ!")
+    
+    # SỬA BUDGET: sua budget [id] [số tiền]
+    elif text.startswith('sua budget '):
+        parts = text.split()
+        if len(parts) < 4:
+            await update.message.reply_text("❌ Cần có ID và số tiền! VD: `sua budget 1 5000000`")
+            return
+        
+        try:
+            category_id = int(parts[2])
+            new_budget = float(parts[3].replace(',', ''))
+            
+            if update_category_budget(category_id, user_id, new_budget):
+                await update.message.reply_text(
+                    f"✅ Đã cập nhật budget cho danh mục #{category_id}\n"
+                    f"Budget mới: {format_currency_simple(new_budget, 'VND')}",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            else:
+                await update.message.reply_text(f"❌ Không tìm thấy danh mục #{category_id}")
+        except ValueError:
+            await update.message.reply_text("❌ ID hoặc số tiền không hợp lệ!")
+            
 async def expense_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Menu quản lý chi tiêu - dạng bảng inline keyboard"""
+    """Menu quản lý chi tiêu - dạng bảng"""
     await update.message.reply_text(
         "💰 *QUẢN LÝ CHI TIÊU*\n━━━━━━━━━━━━━━━━\n\n"
         "👇 Chọn chức năng bên dưới:",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=get_expense_menu_keyboard()  # Dùng inline keyboard
+        reply_markup=get_expense_menu_keyboard()
     )
     
 async def expense_add_income_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2303,31 +2523,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
     elif text == "❓ HƯỚNG DẪN":
         await help_command(update, ctx)
-        return
-    
-    # XỬ LÝ MENU CHI TIÊU
-    elif text == "💰 Thu nhập":
-        await expense_add_income_handler(update, ctx)
-        return
-        
-    elif text == "💸 Chi tiêu":
-        await expense_add_expense_handler(update, ctx)
-        return
-        
-    elif text == "📊 Báo cáo":
-        await expense_report_handler(update, ctx)
-        return
-        
-    elif text == "📋 Danh mục":
-        await expense_manage_categories_handler(update, ctx)
-        return
-        
-    elif text == "🔄 Gần đây":
-        await expense_recent_handler(update, ctx)
-        return
-        
-    elif text == "🔙 Về menu chính":
-        await start(update, ctx)
         return
     
     # XỬ LÝ CÁC LỆNH TẮT CHI TIÊU
@@ -2877,7 +3072,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif data == "expense_categories":
             uid = query.from_user.id
             categories = get_expense_categories(uid)
-        
+            
             if not categories:
                 msg = "📋 *DANH MỤC CHI TIÊU*\n━━━━━━━━━━━━━━━━\n\nBạn chưa có danh mục nào!\n\n👉 Nhấn '➕ THÊM DANH MỤC' để tạo mới."
                 keyboard = [[InlineKeyboardButton("➕ THÊM DANH MỤC", callback_data="expense_add_category")],
@@ -2889,7 +3084,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     budget_str = format_currency_simple(budget, 'VND') if budget > 0 else "Chưa có"
                     msg += f"• *{cat_id}. {name}*\n  💰 Budget: {budget_str}\n\n"
                 msg += "👇 Chọn danh mục để xem chi tiết hoặc chọn chức năng bên dưới:"
-        
+            
             await query.edit_message_text(
                 msg,
                 parse_mode=ParseMode.MARKDOWN,
@@ -2903,27 +3098,34 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 reply_markup=get_report_menu_keyboard()
             )
 
+        elif data == "expense_today":
+            await expense_today_handler(update, ctx)
+            await query.message.delete()
+
+        elif data == "expense_month":
+            await expense_month_handler(update, ctx)
+            await query.message.delete()
+
         elif data == "expense_week":
             uid = query.from_user.id
             await query.edit_message_text("🔄 Đang tổng hợp báo cáo tuần...")
-        
+            
             expenses = get_expenses_by_period(uid, 'week')
             incomes = get_income_by_period(uid, 'week')
-        
+            
             if not expenses and not incomes:
                 await query.edit_message_text(
                     "📭 Chưa có giao dịch nào trong tuần này!",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 VỀ MENU", callback_data="back_to_expense")]])
                 )
                 return
-        
-            # Tính ngày đầu tuần và cuối tuần
+            
             now = get_vn_time()
             start_of_week = (now - timedelta(days=now.weekday())).strftime('%d/%m')
             end_of_week = (now + timedelta(days=6-now.weekday())).strftime('%d/%m')
-        
+            
             msg = f"📊 *BÁO CÁO TUẦN ({start_of_week} - {end_of_week})*\n━━━━━━━━━━━━━━━━\n\n"
-        
+            
             if incomes:
                 total_income = 0
                 msg += "*💰 THU NHẬP:*\n"
@@ -2932,7 +3134,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     total_income += amount
                     msg += f"• {source}: {format_currency_simple(amount, currency)} ({count} lần)\n"
                 msg += f"\n• *Tổng thu:* {format_currency_simple(total_income, 'VND')}\n\n"
-        
+            
             if expenses:
                 total_expense = 0
                 msg += "*💸 CHI TIÊU:*\n"
@@ -2941,15 +3143,15 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     total_expense += amount
                     msg += f"• {cat_name}: {format_currency_simple(amount, currency)} ({count} lần)\n"
                 msg += f"\n• *Tổng chi:* {format_currency_simple(total_expense, 'VND')}\n"
-            
+                
                 if total_income > 0:
                     saving = total_income - total_expense
                     saving_percent = (saving / total_income) * 100
                     msg += f"\n• *Tiết kiệm:* {format_currency_simple(saving, 'VND')} ({saving_percent:.1f}%)"
-        
+            
             keyboard = [[InlineKeyboardButton("🔄 LÀM MỚI", callback_data="expense_week"),
                          InlineKeyboardButton("🔙 VỀ MENU", callback_data="back_to_expense")]]
-        
+            
             await query.edit_message_text(
                 msg,
                 parse_mode=ParseMode.MARKDOWN,
@@ -2959,13 +3161,13 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif data == "expense_year":
             uid = query.from_user.id
             await query.edit_message_text("🔄 Đang tổng hợp báo cáo năm...")
-        
+            
             expenses = get_expenses_by_period(uid, 'year')
             incomes = get_income_by_period(uid, 'year')
-        
+            
             now = get_vn_time()
             msg = f"📊 *BÁO CÁO NĂM {now.strftime('%Y')}*\n━━━━━━━━━━━━━━━━\n\n"
-        
+            
             if incomes:
                 total_income = 0
                 msg += "*💰 THU NHẬP:*\n"
@@ -2974,7 +3176,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     total_income += amount
                     msg += f"• {source}: {format_currency_simple(amount, currency)} ({count} lần)\n"
                 msg += f"\n• *Tổng thu:* {format_currency_simple(total_income, 'VND')}\n\n"
-        
+            
             if expenses:
                 total_expense = 0
                 msg += "*💸 CHI TIÊU:*\n"
@@ -2983,15 +3185,19 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     total_expense += amount
                     msg += f"• {cat_name}: {format_currency_simple(amount, currency)} ({count} lần)\n"
                 msg += f"\n• *Tổng chi:* {format_currency_simple(total_expense, 'VND')}\n"
-        
+            
             keyboard = [[InlineKeyboardButton("🔄 LÀM MỚI", callback_data="expense_year"),
                          InlineKeyboardButton("🔙 VỀ MENU", callback_data="back_to_expense")]]
-        
+            
             await query.edit_message_text(
                 msg,
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
+
+        elif data == "expense_recent":
+            await expense_recent_handler(update, ctx)
+            await query.message.delete()
 
         elif data == "expense_export":
             await query.edit_message_text(
@@ -3010,61 +3216,52 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 "• `ct 1 50000 VND Ăn sáng` - Chi tiêu\n"
                 "• `ds` - Xem gần đây\n"
                 "• `bc` - Báo cáo tháng\n\n"
-            
                 "*💡 MẸO NHỎ:*\n"
                 "• Tạo danh mục trước khi chi tiêu\n"
                 "• Đặt budget để kiểm soát chi phí\n"
                 "• Xem báo cáo cuối tháng để tổng kết\n\n"
-            
                 "*🌍 HỖ TRỢ ĐA TIỀN TỆ:*\n"
                 "VND, USD, KHR, LKR, HKD, SGD, JPY..."
             )
-        
+            
             await query.edit_message_text(
                 help_text,
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 VỀ MENU", callback_data="back_to_expense")]])
             )
 
-        elif data == "expense_income_month":
-            uid = query.from_user.id
-            await expense_report_handler(update, ctx)
-            await query.message.delete()
-
-        elif data == "expense_income_summary":
-            uid = query.from_user.id
-            msg = "📈 *TỔNG HỢP THU NHẬP*\n━━━━━━━━━━━━━━━━\n\n"
-        
-            # Lấy thu nhập 12 tháng gần nhất
-            now = get_vn_time()
-            total_year = 0
-        
-            for i in range(12):
-                month = now.month - i
-                year = now.year
-                if month <= 0:
-                    month += 12
-                    year -= 1
-            
-                conn = sqlite3.connect(DB_PATH)
-                c = conn.cursor()
-                month_str = f"{year:04d}-{month:02d}"
-                c.execute('''SELECT SUM(amount), currency FROM incomes 
-                             WHERE user_id = ? AND strftime('%Y-%m', income_date) = ?
-                             GROUP BY currency''', (uid, month_str))
-                results = c.fetchall()
-                conn.close()
-            
-                if results:
-                    total = sum(r[0] for r in results)
-                    total_year += total
-                    msg += f"• *{month:02d}/{year}*: {format_currency_simple(total, 'VND')}\n"
-        
-            msg += f"\n*Tổng 12 tháng:* {format_currency_simple(total_year, 'VND')}"
-        
+        elif data == "expense_add_income":
             await query.edit_message_text(
-                msg,
+                "💰 *THÊM THU NHẬP*\n━━━━━━━━━━━━━━━━\n\n"
+                "Gõ: `tn [số tiền] [mã tiền tệ] [nguồn] [ghi chú]`\n\n"
+                "*Ví dụ:*\n"
+                "• `tn 500000`\n"
+                "• `tn 100 USD Lương`\n"
+                "• `tn 5000 KHR Bán hàng`",
                 parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 VỀ MENU", callback_data="back_to_expense")]])
+            )
+
+        elif data == "expense_add_expense":
+            uid = query.from_user.id
+            categories = get_expense_categories(uid)
+            
+            if not categories:
+                await query.edit_message_text(
+                    "❌ Bạn chưa có danh mục chi tiêu!\nTạo: `dm [tên] [budget]`",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 VỀ MENU", callback_data="back_to_expense")]])
+                )
+                return
+            
+            msg = "💸 *THÊM CHI TIÊU*\n━━━━━━━━━━━━━━━━\n\n"
+            msg += "Gõ: `ct [mã] [số tiền] [mã tiền tệ] [ghi chú]`\n\n"
+            msg += "*Danh mục:*\n"
+            for cat in categories:
+                msg += f"• `{cat[0]}`: {cat[1]}\n"
+            
+            await query.edit_message_text(
+                msg, parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 VỀ MENU", callback_data="back_to_expense")]])
             )
 
@@ -3083,19 +3280,19 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif data.startswith("cat_view_"):
             cat_id = int(data.replace("cat_view_", ""))
             uid = query.from_user.id
-        
+            
             categories = get_expense_categories(uid)
             category = next((c for c in categories if c[0] == cat_id), None)
-        
+            
             if not category:
                 await query.edit_message_text("❌ Không tìm thấy danh mục!")
                 return
-        
+            
             cat_id, name, budget, created = category
-        
+            
             now = get_vn_time()
             month_filter = now.strftime("%Y-%m")
-        
+            
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
             c.execute('''SELECT SUM(amount), COUNT(id), currency FROM expenses 
@@ -3103,19 +3300,19 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                          GROUP BY currency''', (uid, cat_id, month_filter))
             expenses = c.fetchall()
             conn.close()
-        
+            
             msg = f"📋 *CHI TIẾT DANH MỤC*\n━━━━━━━━━━━━━━━━\n\n"
             msg += f"*{name}*\n"
             msg += f"💰 Budget: {format_currency_simple(budget, 'VND')}\n"
             msg += f"📅 Tạo: {created.split()[0]}\n\n"
-        
+            
             if expenses:
                 total_spent = sum(e[0] for e in expenses)
                 msg += f"*💸 Chi tiêu tháng {now.month}:*\n"
                 for exp in expenses:
                     amount, count, currency = exp
                     msg += f"• {format_currency_simple(amount, currency)} ({count} lần)\n"
-            
+                
                 if budget > 0:
                     remaining = budget - total_spent
                     percent = (total_spent / budget) * 100
@@ -3126,25 +3323,18 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         msg += f"⚠️ *Đã vượt budget!*"
             else:
                 msg += f"📭 Chưa có chi tiêu trong tháng {now.month}"
-        
+            
             keyboard = [
                 [InlineKeyboardButton("✏️ SỬA BUDGET", callback_data=f"cat_edit_budget_{cat_id}"),
                  InlineKeyboardButton("🗑 XÓA", callback_data=f"cat_delete_{cat_id}")],
                 [InlineKeyboardButton("🔙 VỀ DANH MỤC", callback_data="expense_categories")]
             ]
-        
+            
             await query.edit_message_text(
                 msg,
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
-
-    except Exception as e:
-        logger.error(f"Lỗi trong handle_callback: {e}", exc_info=True)
-        await query.edit_message_text(
-            "❌ Có lỗi xảy ra. Vui lòng thử lại sau.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_main")]])
-        )
 
 # ==================== MAIN ====================
 
