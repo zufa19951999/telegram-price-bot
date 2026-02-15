@@ -1,4 +1,5 @@
 import os
+import sys
 import threading
 import time
 import requests
@@ -14,218 +15,250 @@ from dotenv import load_dotenv
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.constants import ParseMode
+from telegram.error import TelegramError
 
-# THIẾT LẬP MÚI GIỜ VIỆT NAM (UTC+7)
-def get_vn_time():
-    """Lấy thời gian Việt Nam hiện tại (UTC+7)"""
-    return datetime.utcnow() + timedelta(hours=7)
-
-def format_vn_time(format_str="%H:%M:%S %d/%m/%Y"):
-    """Format thời gian Việt Nam"""
-    return get_vn_time().strftime(format_str)
-    
-# Cấu hình logging
+# THIẾT LẬP LOGGING CHI TIẾT
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    handlers=[
+        logging.FileHandler('bot.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
 )
 logger = logging.getLogger(__name__)
 
-load_dotenv()
+# BẮT LỖI KHỞI ĐỘNG
+try:
+    # THIẾT LẬP MÚI GIỜ VIỆT NAM (UTC+7)
+    def get_vn_time():
+        """Lấy thời gian Việt Nam hiện tại (UTC+7)"""
+        return datetime.utcnow() + timedelta(hours=7)
 
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-CMC_API_KEY = os.getenv('CMC_API_KEY')
-CMC_API_URL = "https://pro-api.coinmarketcap.com/v1"
+    def format_vn_time(format_str="%H:%M:%S %d/%m/%Y"):
+        """Format thời gian Việt Nam"""
+        return get_vn_time().strftime(format_str)
 
-# ==================== CẤU HÌNH DATABASE TRÊN RENDER DISK ====================
+    load_dotenv()
 
-DATA_DIR = '/data' if os.path.exists('/data') else os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(DATA_DIR, 'crypto_bot.db')
-BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
-EXPORT_DIR = os.path.join(DATA_DIR, 'exports')
+    TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+    CMC_API_KEY = os.getenv('CMC_API_KEY')
+    CMC_API_URL = "https://pro-api.coinmarketcap.com/v1"
 
-os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(BACKUP_DIR, exist_ok=True)
-os.makedirs(EXPORT_DIR, exist_ok=True)
-
-logger.info(f"📁 Dữ liệu sẽ được lưu tại: {DB_PATH}")
-
-# Cache
-price_cache = {}
-usdt_cache = {'rate': None, 'time': None}
-
-# Biến toàn cục cho bot
-app = None
-
-# ==================== HEALTH CHECK SERVER CHO RENDER ====================
-
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain')
-        self.end_headers()
-        
-        current_time = get_vn_time().strftime('%Y-%m-%d %H:%M:%S')
-        response = f"Crypto Bot Running - {current_time}"
-        self.wfile.write(response.encode('utf-8'))
+    # KIỂM TRA TOKEN
+    if not TELEGRAM_TOKEN:
+        logger.error("❌ THIẾU TELEGRAM_TOKEN")
+        raise ValueError("TELEGRAM_TOKEN không được để trống")
     
-    def log_message(self, format, *args):
-        return
+    if not CMC_API_KEY:
+        logger.warning("⚠️ THIẾU CMC_API_KEY - Một số chức năng sẽ không hoạt động")
 
-def run_health_server():
-    """Chạy HTTP server cho Render health check"""
-    port = int(os.environ.get('PORT', 10000))
-    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    logger.info(f"✅ Health server running on port {port}")
-    server.serve_forever()
+    # ==================== CẤU HÌNH DATABASE TRÊN RENDER DISK ====================
+    DATA_DIR = '/data' if os.path.exists('/data') else os.path.dirname(os.path.abspath(__file__))
+    DB_PATH = os.path.join(DATA_DIR, 'crypto_bot.db')
+    BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
+    EXPORT_DIR = os.path.join(DATA_DIR, 'exports')
 
-# ==================== DATABASE SETUP ====================
+    # TẠO THƯ MỤC NẾU CHƯA CÓ
+    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    os.makedirs(EXPORT_DIR, exist_ok=True)
 
-def init_database():
-    """Khởi tạo database và các bảng"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    # Bảng portfolio (ĐẦU TƯ COIN)
-    c.execute('''CREATE TABLE IF NOT EXISTS portfolio
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER,
-                  symbol TEXT,
-                  amount REAL,
-                  buy_price REAL,
-                  buy_date TEXT,
-                  total_cost REAL)''')
-    
-    # Bảng cảnh báo giá (ĐẦU TƯ COIN)
-    c.execute('''CREATE TABLE IF NOT EXISTS alerts
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER,
-                  symbol TEXT,
-                  target_price REAL,
-                  condition TEXT,
-                  is_active INTEGER DEFAULT 1,
-                  created_at TEXT,
-                  triggered_at TEXT)''')
-    
-    # Bảng danh mục chi tiêu (QUẢN LÝ CHI TIÊU)
-    c.execute('''CREATE TABLE IF NOT EXISTS expense_categories
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER,
-                  name TEXT,
-                  budget REAL,
-                  created_at TEXT)''')
-    
-    # Bảng ghi chép chi tiêu (QUẢN LÝ CHI TIÊU)
-    c.execute('''CREATE TABLE IF NOT EXISTS expenses
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER,
-                  category_id INTEGER,
-                  amount REAL,
-                  currency TEXT DEFAULT 'VND',
-                  note TEXT,
-                  expense_date TEXT,
-                  created_at TEXT,
-                  FOREIGN KEY (category_id) REFERENCES expense_categories(id))''')
-    
-    # Bảng thu nhập (QUẢN LÝ CHI TIÊU)
-    c.execute('''CREATE TABLE IF NOT EXISTS incomes
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER,
-                  amount REAL,
-                  currency TEXT DEFAULT 'VND',
-                  source TEXT,
-                  income_date TEXT,
-                  note TEXT,
-                  created_at TEXT)''')
-    
-    conn.commit()
-    conn.close()
-    logger.info(f"✅ Database initialized at {DB_PATH}")
+    logger.info(f"📁 Dữ liệu sẽ được lưu tại: {DB_PATH}")
 
-def migrate_database():
-    """Cập nhật cấu trúc database nếu cần"""
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        # Kiểm tra xem bảng incomes có cột currency chưa
-        c.execute("PRAGMA table_info(incomes)")
-        columns = [column[1] for column in c.fetchall()]
-        
-        if 'currency' not in columns:
-            logger.info("🔄 Đang cập nhật database: thêm cột currency vào bảng incomes")
-            c.execute("ALTER TABLE incomes ADD COLUMN currency TEXT DEFAULT 'VND'")
-            conn.commit()
-            logger.info("✅ Đã cập nhật database thành công")
-        
-        # Kiểm tra bảng expenses có cột currency chưa
-        c.execute("PRAGMA table_info(expenses)")
-        columns = [column[1] for column in c.fetchall()]
-        
-        if 'currency' not in columns:
-            logger.info("🔄 Đang cập nhật database: thêm cột currency vào bảng expenses")
-            c.execute("ALTER TABLE expenses ADD COLUMN currency TEXT DEFAULT 'VND'")
-            conn.commit()
-            logger.info("✅ Đã cập nhật database thành công")
+    # Cache
+    price_cache = {}
+    usdt_cache = {'rate': None, 'time': None}
+
+    # Biến toàn cục cho bot
+    app = None
+
+    # ==================== HEALTH CHECK SERVER CHO RENDER ====================
+    class HealthCheckHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
             
-    except Exception as e:
-        logger.error(f"❌ Lỗi khi migrate database: {e}")
-    finally:
-        if conn:
-            conn.close()
+            current_time = get_vn_time().strftime('%Y-%m-%d %H:%M:%S')
+            response = f"Crypto Bot Running - {current_time}"
+            self.wfile.write(response.encode('utf-8'))
+        
+        def log_message(self, format, *args):
+            return
+
+    def run_health_server():
+        """Chạy HTTP server cho Render health check"""
+        try:
+            port = int(os.environ.get('PORT', 10000))
+            server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+            logger.info(f"✅ Health server running on port {port}")
+            server.serve_forever()
+        except Exception as e:
+            logger.error(f"❌ Health server error: {e}")
+            # Không exit, chỉ log lỗi
+            time.sleep(10)
+
+    # ==================== DATABASE SETUP ====================
+    def init_database():
+        """Khởi tạo database và các bảng"""
+        conn = None
+        try:
+            conn = sqlite3.connect(DB_PATH, timeout=10)
+            c = conn.cursor()
             
-def backup_database():
-    """Tự động backup database"""
-    try:
-        if os.path.exists(DB_PATH):
-            timestamp = get_vn_time().strftime('%Y%m%d_%H%M%S')
-            backup_path = os.path.join(BACKUP_DIR, f'backup_{timestamp}.db')
-            shutil.copy2(DB_PATH, backup_path)
-            logger.info(f"✅ Đã backup: {backup_path}")
-            clean_old_backups()
-    except Exception as e:
-        logger.error(f"❌ Lỗi backup: {e}")
-
-def clean_old_backups(days=7):
-    """Xóa backup cũ"""
-    now = time.time()
-    for f in os.listdir(BACKUP_DIR):
-        if f.startswith('backup_') and f.endswith('.db'):
-            filepath = os.path.join(BACKUP_DIR, f)
-            if os.path.getmtime(filepath) < now - days * 86400:
-                os.remove(filepath)
-                logger.info(f"🗑 Đã xóa backup cũ: {f}")
-
-def clean_old_exports(hours=24):
-    """Xóa file export cũ hơn 24 giờ"""
-    now = time.time()
-    for f in os.listdir(EXPORT_DIR):
-        if f.startswith('portfolio_') and f.endswith('.csv'):
-            filepath = os.path.join(EXPORT_DIR, f)
-            if os.path.getmtime(filepath) < now - hours * 3600:
-                os.remove(filepath)
-                logger.info(f"🗑 Đã xóa file export cũ: {f}")
-
-def schedule_cleanup():
-    """Chạy dọn dẹp mỗi 6 giờ"""
-    while True:
-        try:
-            clean_old_exports()
-            time.sleep(21600)
+            # Bảng portfolio (ĐẦU TƯ COIN)
+            c.execute('''CREATE TABLE IF NOT EXISTS portfolio
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          user_id INTEGER,
+                          symbol TEXT,
+                          amount REAL,
+                          buy_price REAL,
+                          buy_date TEXT,
+                          total_cost REAL)''')
+            
+            # Bảng cảnh báo giá (ĐẦU TƯ COIN)
+            c.execute('''CREATE TABLE IF NOT EXISTS alerts
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          user_id INTEGER,
+                          symbol TEXT,
+                          target_price REAL,
+                          condition TEXT,
+                          is_active INTEGER DEFAULT 1,
+                          created_at TEXT,
+                          triggered_at TEXT)''')
+            
+            # Bảng danh mục chi tiêu (QUẢN LÝ CHI TIÊU)
+            c.execute('''CREATE TABLE IF NOT EXISTS expense_categories
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          user_id INTEGER,
+                          name TEXT,
+                          budget REAL,
+                          created_at TEXT)''')
+            
+            # Bảng ghi chép chi tiêu (QUẢN LÝ CHI TIÊU)
+            c.execute('''CREATE TABLE IF NOT EXISTS expenses
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          user_id INTEGER,
+                          category_id INTEGER,
+                          amount REAL,
+                          currency TEXT DEFAULT 'VND',
+                          note TEXT,
+                          expense_date TEXT,
+                          created_at TEXT,
+                          FOREIGN KEY (category_id) REFERENCES expense_categories(id))''')
+            
+            # Bảng thu nhập (QUẢN LÝ CHI TIÊU)
+            c.execute('''CREATE TABLE IF NOT EXISTS incomes
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          user_id INTEGER,
+                          amount REAL,
+                          currency TEXT DEFAULT 'VND',
+                          source TEXT,
+                          income_date TEXT,
+                          note TEXT,
+                          created_at TEXT)''')
+            
+            conn.commit()
+            logger.info(f"✅ Database initialized at {DB_PATH}")
+            return True
         except Exception as e:
-            logger.error(f"Lỗi trong schedule_cleanup: {e}")
-            time.sleep(3600)
+            logger.error(f"❌ Lỗi khởi tạo database: {e}")
+            return False
+        finally:
+            if conn:
+                conn.close()
 
-def schedule_backup():
-    """Chạy backup mỗi ngày"""
-    while True:
+    def migrate_database():
+        """Cập nhật cấu trúc database nếu cần"""
+        conn = None
         try:
-            backup_database()
-            time.sleep(86400)
+            conn = sqlite3.connect(DB_PATH, timeout=10)
+            c = conn.cursor()
+            
+            # Kiểm tra xem bảng incomes có cột currency chưa
+            c.execute("PRAGMA table_info(incomes)")
+            columns = [column[1] for column in c.fetchall()]
+            
+            if 'currency' not in columns:
+                logger.info("🔄 Đang cập nhật database: thêm cột currency vào bảng incomes")
+                c.execute("ALTER TABLE incomes ADD COLUMN currency TEXT DEFAULT 'VND'")
+                conn.commit()
+                logger.info("✅ Đã cập nhật database thành công")
+            
+            # Kiểm tra bảng expenses có cột currency chưa
+            c.execute("PRAGMA table_info(expenses)")
+            columns = [column[1] for column in c.fetchall()]
+            
+            if 'currency' not in columns:
+                logger.info("🔄 Đang cập nhật database: thêm cột currency vào bảng expenses")
+                c.execute("ALTER TABLE expenses ADD COLUMN currency TEXT DEFAULT 'VND'")
+                conn.commit()
+                logger.info("✅ Đã cập nhật database thành công")
+                
         except Exception as e:
-            logger.error(f"Lỗi trong schedule_backup: {e}")
-            time.sleep(3600)
+            logger.error(f"❌ Lỗi khi migrate database: {e}")
+        finally:
+            if conn:
+                conn.close()
+                
+    def backup_database():
+        """Tự động backup database"""
+        try:
+            if os.path.exists(DB_PATH):
+                timestamp = get_vn_time().strftime('%Y%m%d_%H%M%S')
+                backup_path = os.path.join(BACKUP_DIR, f'backup_{timestamp}.db')
+                shutil.copy2(DB_PATH, backup_path)
+                logger.info(f"✅ Đã backup: {backup_path}")
+                clean_old_backups()
+        except Exception as e:
+            logger.error(f"❌ Lỗi backup: {e}")
+
+    def clean_old_backups(days=7):
+        """Xóa backup cũ"""
+        try:
+            now = time.time()
+            for f in os.listdir(BACKUP_DIR):
+                if f.startswith('backup_') and f.endswith('.db'):
+                    filepath = os.path.join(BACKUP_DIR, f)
+                    if os.path.getmtime(filepath) < now - days * 86400:
+                        os.remove(filepath)
+                        logger.info(f"🗑 Đã xóa backup cũ: {f}")
+        except Exception as e:
+            logger.error(f"Lỗi clean old backups: {e}")
+
+    def clean_old_exports(hours=24):
+        """Xóa file export cũ hơn 24 giờ"""
+        try:
+            now = time.time()
+            for f in os.listdir(EXPORT_DIR):
+                if f.startswith('portfolio_') and f.endswith('.csv'):
+                    filepath = os.path.join(EXPORT_DIR, f)
+                    if os.path.getmtime(filepath) < now - hours * 3600:
+                        os.remove(filepath)
+                        logger.info(f"🗑 Đã xóa file export cũ: {f}")
+        except Exception as e:
+            logger.error(f"Lỗi clean old exports: {e}")
+
+    def schedule_cleanup():
+        """Chạy dọn dẹp mỗi 6 giờ"""
+        while True:
+            try:
+                clean_old_exports()
+                time.sleep(21600)
+            except Exception as e:
+                logger.error(f"Lỗi trong schedule_cleanup: {e}")
+                time.sleep(3600)
+
+    def schedule_backup():
+        """Chạy backup mỗi ngày"""
+        while True:
+            try:
+                backup_database()
+                time.sleep(86400)
+            except Exception as e:
+                logger.error(f"Lỗi trong schedule_backup: {e}")
+                time.sleep(3600)
 
 # ==================== PORTFOLIO DATABASE FUNCTIONS ====================
 
@@ -3554,67 +3587,120 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ==================== MAIN ====================
 
 if __name__ == '__main__':
-    if not TELEGRAM_TOKEN:
-        logger.error("❌ Thiếu TELEGRAM_TOKEN")
-        exit(1)
-    
-    if not CMC_API_KEY:
-        logger.warning("⚠️ Thiếu CMC_API_KEY")
-    
-    try:
-        init_database()
-        migrate_database()
-        test_file = os.path.join(DATA_DIR, 'test.txt')
-        with open(test_file, 'w') as f:
-            f.write('test')
-        os.remove(test_file)
-        logger.info("✅ Disk có quyền ghi")
-    except Exception as e:
-        logger.error(f"❌ Lỗi database: {e}")
-        exit(1)
-    
-    logger.info("🚀 Khởi động bot...")
-    logger.info(f"💾 Database: {DB_PATH}")
-    
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    
-    # Command handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("usdt", usdt_command))
-    app.add_handler(CommandHandler("s", s_command))
-    app.add_handler(CommandHandler("buy", buy_command))
-    app.add_handler(CommandHandler("sell", sell_command))
-    app.add_handler(CommandHandler("edit", edit_command))
-    app.add_handler(CommandHandler("del", delete_tx_command))
-    app.add_handler(CommandHandler("delete", delete_tx_command))
-    app.add_handler(CommandHandler("xoa", delete_tx_command))
-    
-    # Alert commands
-    app.add_handler(CommandHandler("alert", alert_command))
-    app.add_handler(CommandHandler("alerts", alerts_command))
-    app.add_handler(CommandHandler("alert_del", alert_del_command))
-    
-    # Stats command
-    app.add_handler(CommandHandler("stats", stats_command))
-    
-    # Export command
-    app.add_handler(CommandHandler("export", export_command))
-    
-    # Expense commands
-    app.add_handler(CommandHandler("thongke", expense_by_category_handler))
-    
-    # Message handler
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    # Callback handler
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    
-    # Threads
-    threading.Thread(target=schedule_backup, daemon=True).start()
-    threading.Thread(target=schedule_cleanup, daemon=True).start()
-    threading.Thread(target=check_alerts, daemon=True).start()
-    threading.Thread(target=run_health_server, daemon=True).start()
-    
-    logger.info("✅ Bot sẵn sàng!")
-    app.run_polling()
+        try:
+            logger.info("🚀 BẮT ĐẦU KHỞI ĐỘNG BOT...")
+            
+            # Khởi tạo database
+            if not init_database():
+                logger.error("❌ KHÔNG THỂ KHỞI TẠO DATABASE")
+                # Không exit, thử lại sau
+                time.sleep(5)
+            
+            # Migrate database
+            try:
+                migrate_database()
+            except Exception as e:
+                logger.error(f"❌ Lỗi migrate database: {e}")
+            
+            # Kiểm tra quyền ghi
+            try:
+                test_file = os.path.join(DATA_DIR, 'test.txt')
+                with open(test_file, 'w') as f:
+                    f.write('test')
+                os.remove(test_file)
+                logger.info("✅ Disk có quyền ghi")
+            except Exception as e:
+                logger.error(f"❌ Không có quyền ghi disk: {e}")
+            
+            # Tạo application
+            try:
+                app = Application.builder().token(TELEGRAM_TOKEN).build()
+                logger.info("✅ Đã tạo Telegram Application")
+            except Exception as e:
+                logger.error(f"❌ Lỗi tạo Application: {e}")
+                raise
+            
+            # ===== ĐĂNG KÝ HANDLERS =====
+            # Command handlers
+            app.add_handler(CommandHandler("start", start))
+            app.add_handler(CommandHandler("help", help_command))
+            app.add_handler(CommandHandler("usdt", usdt_command))
+            app.add_handler(CommandHandler("s", s_command))
+            app.add_handler(CommandHandler("buy", buy_command))
+            app.add_handler(CommandHandler("sell", sell_command))
+            app.add_handler(CommandHandler("edit", edit_command))
+            app.add_handler(CommandHandler("del", delete_tx_command))
+            app.add_handler(CommandHandler("delete", delete_tx_command))
+            app.add_handler(CommandHandler("xoa", delete_tx_command))
+            
+            # Alert commands
+            app.add_handler(CommandHandler("alert", alert_command))
+            app.add_handler(CommandHandler("alerts", alerts_command))
+            app.add_handler(CommandHandler("alert_del", alert_del_command))
+            
+            # Stats command
+            app.add_handler(CommandHandler("stats", stats_command))
+            
+            # Export command
+            app.add_handler(CommandHandler("export", export_command))
+            
+            # Expense commands
+            app.add_handler(CommandHandler("thongke", expense_by_category_handler))
+            
+            # Message handler
+            app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+            
+            # Callback handler
+            app.add_handler(CallbackQueryHandler(handle_callback))
+            
+            logger.info("✅ Đã đăng ký tất cả handlers")
+            
+            # ===== CHẠY CÁC THREAD =====
+            # Thread backup
+            backup_thread = threading.Thread(target=schedule_backup, daemon=True)
+            backup_thread.start()
+            logger.info("✅ Đã khởi động thread backup")
+            
+            # Thread cleanup
+            cleanup_thread = threading.Thread(target=schedule_cleanup, daemon=True)
+            cleanup_thread.start()
+            logger.info("✅ Đã khởi động thread cleanup")
+            
+            # Thread check alerts
+            alerts_thread = threading.Thread(target=check_alerts, daemon=True)
+            alerts_thread.start()
+            logger.info("✅ Đã khởi động thread check alerts")
+            
+            # Thread health server
+            health_thread = threading.Thread(target=run_health_server, daemon=True)
+            health_thread.start()
+            logger.info("✅ Đã khởi động thread health server")
+            
+            logger.info("🎉 BOT ĐÃ SẴN SÀNG! Bắt đầu polling...")
+            
+            # Chạy bot với error handling
+            app.run_polling(
+                timeout=30,
+                drop_pending_updates=True,
+                allowed_updates=['message', 'callback_query']
+            )
+            
+        except TelegramError as e:
+            logger.error(f"❌ LỖI TELEGRAM: {e}")
+            time.sleep(5)
+            # Thử lại sau 5 giây
+            logger.info("🔄 Thử khởi động lại...")
+            os.execv(sys.executable, ['python'] + sys.argv)
+            
+        except Exception as e:
+            logger.error(f"❌ LỖI KHÔNG XÁC ĐỊNH: {e}", exc_info=True)
+            time.sleep(5)
+            # Thử lại sau 5 giây
+            logger.info("🔄 Thử khởi động lại...")
+            os.execv(sys.executable, ['python'] + sys.argv)
+
+except Exception as e:
+    logger.critical(f"💥 LỖI NGHIÊM TRỌNG KHI KHỞI ĐỘNG: {e}", exc_info=True)
+    # Không exit, đợi và thử lại
+    time.sleep(10)
+    os.execv(sys.executable, ['python'] + sys.argv)
