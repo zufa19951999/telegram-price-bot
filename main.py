@@ -3335,8 +3335,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
-            
-            except Exception as e:
+
+    except Exception as e:
         logger.error(f"Lỗi trong handle_callback: {e}", exc_info=True)
         await query.edit_message_text(
             "❌ Có lỗi xảy ra. Vui lòng thử lại sau.",
