@@ -831,20 +831,22 @@ try:
         return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
     def get_invest_menu_keyboard():
-        keyboard = [
-            [InlineKeyboardButton("₿ BTC", callback_data="price_BTC"),
-             InlineKeyboardButton("Ξ ETH", callback_data="price_ETH"),
-             InlineKeyboardButton("💵 USDT", callback_data="price_USDT")],
-            [InlineKeyboardButton("📊 Top 10", callback_data="show_top10"),
-             InlineKeyboardButton("💼 Danh mục", callback_data="show_portfolio")],
-            [InlineKeyboardButton("📈 Lợi nhuận", callback_data="show_profit"),
-             InlineKeyboardButton("📊 Thống kê", callback_data="show_stats")],
-            [InlineKeyboardButton("🔔 Cảnh báo giá", callback_data="show_alerts"),
-             InlineKeyboardButton("📥 Xuất CSV", callback_data="export_csv")],
-            [InlineKeyboardButton("➕ Mua coin", callback_data="show_buy"),
-             InlineKeyboardButton("➖ Bán coin", callback_data="show_sell")]
-        ]
-        return InlineKeyboardMarkup(keyboard)
+    keyboard = [
+        [InlineKeyboardButton("₿ BTC", callback_data="price_BTC"),
+         InlineKeyboardButton("Ξ ETH", callback_data="price_ETH"),
+         InlineKeyboardButton("Ξ SOL", callback_data="price_SOL"),
+         InlineKeyboardButton("💵 USDT", callback_data="price_USDT")],
+        [InlineKeyboardButton("📊 Top 10", callback_data="show_top10"),
+         InlineKeyboardButton("💼 Danh mục", callback_data="show_portfolio")],
+        [InlineKeyboardButton("📈 Lợi nhuận", callback_data="show_profit"),
+         InlineKeyboardButton("✏️ Sửa/Xóa", callback_data="edit_transactions")],
+        [InlineKeyboardButton("🔔 Cảnh báo giá", callback_data="show_alerts"),
+         InlineKeyboardButton("📊 Thống kê", callback_data="show_stats")],
+        [InlineKeyboardButton("📥 Xuất CSV", callback_data="export_csv"),
+         InlineKeyboardButton("➖ Bán coin", callback_data="show_sell")],
+        [InlineKeyboardButton("➕ Mua coin", callback_data="show_buy")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
     def get_expense_menu_keyboard():
         keyboard = [
@@ -1070,138 +1072,138 @@ try:
         await update.message.reply_text(msg, parse_mode='Markdown')
 
     @rate_limit(30)
-    async def edit_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        uid = update.effective_user.id
-        
-        if not ctx.args:
-            transactions = get_transaction_detail(uid)
-            if not transactions:
-                await update.message.reply_text("📭 Danh mục trống!")
-                return
-            
-            msg = "📝 *CHỌN GIAO DỊCH*\n━━━━━━━━━━━━\n\n"
-            for tx in transactions:
-                tx_id, symbol, amount, price, date, total = tx
-                short_date = date.split()[0]
-                msg += f"• #{tx_id}: {symbol} {amount:.4f} @ {fmt_price(price)} ({short_date})\n"
-            msg += f"\n🕐 {format_vn_time_short()}"
-            
-            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+async def edit_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    
+    if not ctx.args:
+        transactions = get_transaction_detail(uid)
+        if not transactions:
+            await update.message.reply_text("📭 Danh mục trống!")
             return
         
+        msg = "📝 *CHỌN GIAO DỊCH*\n━━━━━━━━━━━━\n\n"
+        keyboard = []
+        row = []
+        
+        for i, tx in enumerate(transactions, 1):
+            tx_id, symbol, amount, price, date, total = tx
+            short_date = date.split()[0]
+            msg += f"*{i}.* {symbol} - {amount:.4f} @ {fmt_price(price)} - {short_date}\n"
+            
+            row.append(InlineKeyboardButton(f"✏️ #{tx_id}", callback_data=f"edit_{tx_id}"))
+            if len(row) == 3:
+                keyboard.append(row)
+                row = []
+        
+        if row:
+            keyboard.append(row)
+        keyboard.append([InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")])
+        
+        msg += f"\n🕐 {format_vn_time_short()}"
+        
+        await update.message.reply_text(
+            msg, parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+    
+    if len(ctx.args) == 1:
         try:
             tx_id = int(ctx.args[0])
-            if delete_transaction(tx_id, uid):
-                await update.message.reply_text(f"✅ Đã xóa giao dịch #{tx_id}\n\n🕐 {format_vn_time()}")
+            transactions = get_transaction_detail(uid)
+            
+            tx = next((t for t in transactions if t[0] == tx_id), None)
+            if not tx:
+                await update.message.reply_text(f"❌ Không tìm thấy giao dịch #{tx_id}")
+                return
+            
+            tx_id, symbol, amount, price, date, total = tx
+            price_data = get_price(symbol)
+            current_price = price_data['p'] if price_data else 0
+            profit = (current_price - price) * amount if current_price else 0
+            profit_percent = ((current_price - price) / price) * 100 if price and current_price else 0
+            
+            msg = (
+                f"📝 *GIAO DỊCH #{tx_id}*\n━━━━━━━━━━━━━━━━\n\n"
+                f"*{symbol}*\n📅 {date}\n📊 SL: `{amount:.4f}`\n"
+                f"💰 Giá mua: `{fmt_price(price)}`\n💵 Vốn: `{fmt_price(total)}`\n"
+                f"📈 Giá hiện: `{fmt_price(current_price)}`\n"
+                f"{'✅' if profit>=0 else '❌'} LN: `{fmt_price(profit)}` ({profit_percent:+.2f}%)\n\n"
+                f"*Sửa:* `/edit {tx_id} [sl] [giá]`\n*Xóa:* `/del {tx_id}`\n\n"
+                f"🕐 {format_vn_time()}"
+            )
+            
+            keyboard = [[
+                InlineKeyboardButton("✏️ Sửa", callback_data=f"edit_{tx_id}"),
+                InlineKeyboardButton("🗑 Xóa", callback_data=f"del_{tx_id}")
+            ],[
+                InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")
+            ]]
+            
+            await update.message.reply_text(
+                msg, parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except ValueError:
+            await update.message.reply_text("❌ ID không hợp lệ")
+    
+    elif len(ctx.args) == 3:
+        try:
+            tx_id = int(ctx.args[0])
+            new_amount = float(ctx.args[1])
+            new_price = float(ctx.args[2])
+            
+            if new_amount <= 0 or new_price <= 0:
+                await update.message.reply_text("❌ SL và giá phải > 0")
+                return
+            
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            new_total = new_amount * new_price
+            c.execute('''UPDATE portfolio SET amount = ?, buy_price = ?, total_cost = ?
+                         WHERE id = ? AND user_id = ?''',
+                      (new_amount, new_price, new_total, tx_id, uid))
+            conn.commit()
+            affected = c.rowcount
+            conn.close()
+            
+            if affected > 0:
+                await update.message.reply_text(
+                    f"✅ Đã cập nhật giao dịch #{tx_id}\n"
+                    f"📊 SL mới: `{new_amount:.4f}`\n"
+                    f"💰 Giá mới: `{fmt_price(new_price)}`\n\n"
+                    f"🕐 {format_vn_time()}",
+                    parse_mode='Markdown'
+                )
             else:
                 await update.message.reply_text(f"❌ Không tìm thấy giao dịch #{tx_id}")
         except ValueError:
-            await update.message.reply_text("❌ /del [id]")
+            await update.message.reply_text("❌ /edit [id] [sl] [giá]")
+    else:
+        await update.message.reply_text("❌ /edit - Xem DS\n/edit [id] - Xem chi tiết\n/edit [id] [sl] [giá] - Sửa")
 
-    @rate_limit(30)
-    async def alert_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        if len(ctx.args) < 3:
-            await update.message.reply_text("❌ /alert BTC above 50000", parse_mode='Markdown')
-            return
+async def delete_tx_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    
+    if not ctx.args:
+        await update.message.reply_text("❌ /del [id]")
+        return
+    
+    try:
+        tx_id = int(ctx.args[0])
         
-        symbol = ctx.args[0].upper()
-        condition = ctx.args[1].lower()
-        try:
-            target_price = float(ctx.args[2])
-        except ValueError:
-            return await update.message.reply_text("❌ Giá không hợp lệ!")
+        keyboard = [[
+            InlineKeyboardButton("✅ Có", callback_data=f"confirm_del_{tx_id}"),
+            InlineKeyboardButton("❌ Không", callback_data="show_portfolio")
+        ]]
         
-        if condition not in ['above', 'below']:
-            return await update.message.reply_text("❌ Điều kiện phải là 'above' hoặc 'below'")
-        
-        uid = update.effective_user.id
-        
-        price_data = get_price(symbol)
-        if not price_data:
-            return await update.message.reply_text(f"❌ Không tìm thấy coin *{symbol}*", parse_mode='Markdown')
-        
-        if add_alert(uid, symbol, target_price, condition):
-            msg = (
-                f"✅ *ĐÃ TẠO CẢNH BÁO*\n━━━━━━━━━━━━━━━━\n\n"
-                f"• Coin: *{symbol}*\n"
-                f"• Mốc giá: `{fmt_price(target_price)}`\n"
-                f"• Giá hiện tại: `{fmt_price(price_data['p'])}`\n"
-                f"• Điều kiện: {'📈 Lên trên' if condition == 'above' else '📉 Xuống dưới'}\n\n"
-                f"🕐 {format_vn_time()}"
-            )
-            await update.message.reply_text(msg, parse_mode='Markdown')
-        else:
-            await update.message.reply_text("❌ Lỗi khi tạo cảnh báo!")
-
-    @rate_limit(30)
-    async def alerts_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        uid = update.effective_user.id
-        alerts = get_user_alerts(uid)
-        
-        if not alerts:
-            await update.message.reply_text("📭 Bạn chưa có cảnh báo nào!")
-            return
-        
-        msg = "🔔 *DANH SÁCH CẢNH BÁO*\n━━━━━━━━━━━━━━━━\n\n"
-        for alert in alerts:
-            alert_id, symbol, target, condition, created = alert
-            created_date = created.split()[0]
-            price_data = get_price(symbol)
-            current_price = price_data['p'] if price_data else 0
-            status = "🟢" if (condition == 'above' and current_price < target) or (condition == 'below' and current_price > target) else "🔴"
-            msg += f"{status} *#{alert_id}*: {symbol} {condition} `{fmt_price(target)}`\n"
-            msg += f"   Giá hiện: `{fmt_price(current_price)}` (tạo {created_date})\n\n"
-        
-        msg += f"🕐 {format_vn_time_short()}"
-        await update.message.reply_text(msg, parse_mode='Markdown')
-
-    @rate_limit(30)
-    async def stats_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        uid = update.effective_user.id
-        msg = await update.message.reply_text("🔄 Đang tính toán thống kê...")
-        
-        stats = get_portfolio_stats(uid)
-        
-        if not stats:
-            await msg.edit_text("📭 Danh mục trống!")
-            return
-        
-        stats_msg = (
-            f"📊 *THỐNG KÊ DANH MỤC*\n━━━━━━━━━━━━━━━━\n\n"
-            f"*TỔNG QUAN*\n"
-            f"• Vốn: `{fmt_price(stats['total_invest'])}`\n"
-            f"• Giá trị: `{fmt_price(stats['total_value'])}`\n"
-            f"• Lợi nhuận: `{fmt_price(stats['total_profit'])}`\n"
-            f"• Tỷ suất: `{stats['total_profit_percent']:+.2f}%`\n\n"
-            f"*📈 TOP COIN LỜI NHẤT*\n"
+        await update.message.reply_text(
+            f"⚠️ *Xác nhận xóa giao dịch #{tx_id}?*\n\n🕐 {format_vn_time_short()}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
-        
-        count = 0
-        for symbol, profit, profit_pct, value, cost in stats['coin_profits']:
-            if profit > 0:
-                count += 1
-                stats_msg += f"{count}. *{symbol}*: `{fmt_price(profit)}` ({profit_pct:+.2f}%)\n"
-            if count >= 3:
-                break
-        
-        if count == 0:
-            stats_msg += "Không có coin lời\n"
-        
-        stats_msg += f"\n*📉 TOP COIN LỖ NHẤT*\n"
-        count = 0
-        for symbol, profit, profit_pct, value, cost in reversed(stats['coin_profits']):
-            if profit < 0:
-                count += 1
-                stats_msg += f"{count}. *{symbol}*: `{fmt_price(profit)}` ({profit_pct:+.2f}%)\n"
-            if count >= 3:
-                break
-        
-        if count == 0:
-            stats_msg += "Không có coin lỗ\n"
-        
-        stats_msg += f"\n🕐 {format_vn_time()}"
-        
-        await msg.edit_text(stats_msg, parse_mode=ParseMode.MARKDOWN)
+    except ValueError:
+        await update.message.reply_text("❌ ID không hợp lệ")
 
     # ==================== EXPENSE SHORTCUT HANDLERS ====================
     async def expense_shortcut_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1664,6 +1666,111 @@ try:
                 
                 keyboard = [[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]]
                 await query.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+
+            elif data.startswith("edit_"):
+                tx_id = data.replace("edit_", "")
+                uid = query.from_user.id
+                
+                transactions = get_transaction_detail(uid)
+                tx = next((t for t in transactions if str(t[0]) == tx_id), None)
+                
+                if not tx:
+                    await query.edit_message_text(f"❌ Không tìm thấy giao dịch #{tx_id}")
+                    return
+                
+                tx_id, symbol, amount, price, date, total = tx
+                
+                msg = (
+                    f"✏️ *SỬA GIAO DỊCH #{tx_id}*\n━━━━━━━━━━━━━━━━\n\n"
+                    f"*{symbol}*\n📅 {date}\n"
+                    f"📊 SL: `{amount:.4f}`\n"
+                    f"💰 Giá: `{fmt_price(price)}`\n\n"
+                    f"*Nhập lệnh:*\n`/edit {tx_id} [sl] [giá]`\n\n"
+                    f"🕐 {format_vn_time()}"
+                )
+                
+                keyboard = [[
+                    InlineKeyboardButton("🗑 Xóa", callback_data=f"del_{tx_id}"),
+                    InlineKeyboardButton("🔙 Quay lại", callback_data="edit_transactions")
+                ]]
+                
+                await query.edit_message_text(
+                    msg, parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            
+            elif data.startswith("del_"):
+                tx_id = data.replace("del_", "")
+                
+                msg = f"⚠️ *Xác nhận xóa giao dịch #{tx_id}?*\n\n🕐 {format_vn_time_short()}"
+                keyboard = [[
+                    InlineKeyboardButton("✅ Có", callback_data=f"confirm_del_{tx_id}"),
+                    InlineKeyboardButton("❌ Không", callback_data="edit_transactions")
+                ]]
+                
+                await query.edit_message_text(
+                    msg, parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            
+            elif data.startswith("confirm_del_"):
+                tx_id = data.replace("confirm_del_", "")
+                uid = query.from_user.id
+                
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute('''DELETE FROM portfolio WHERE id = ? AND user_id = ?''', (tx_id, uid))
+                conn.commit()
+                affected = c.rowcount
+                conn.close()
+                
+                if affected > 0:
+                    msg = f"✅ Đã xóa giao dịch #{tx_id}\n\n🕐 {format_vn_time()}"
+                else:
+                    msg = f"❌ Không thể xóa giao dịch #{tx_id}\n\n🕐 {format_vn_time()}"
+                
+                keyboard = [[InlineKeyboardButton("🔙 Về danh mục", callback_data="show_portfolio")]]
+                
+                await query.edit_message_text(
+                    msg, parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            
+            elif data == "edit_transactions":
+                uid = query.from_user.id
+                transactions = get_transaction_detail(uid)
+                
+                if not transactions:
+                    await query.edit_message_text(
+                        f"📭 Không có giao dịch!\n\n🕐 {format_vn_time()}",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]])
+                    )
+                    return
+                
+                msg = "✏️ *CHỌN GIAO DỊCH*\n━━━━━━━━━━━━\n\n"
+                keyboard = []
+                row = []
+                
+                for tx in transactions:
+                    tx_id, symbol, amount, price, date, total = tx
+                    short_date = date.split()[0]
+                    msg += f"• #{tx_id}: {symbol} {amount:.4f} @ {fmt_price(price)} ({short_date})\n"
+                    
+                    row.append(InlineKeyboardButton(f"#{tx_id}", callback_data=f"edit_{tx_id}"))
+                    if len(row) == 4:
+                        keyboard.append(row)
+                        row = []
+                
+                if row:
+                    keyboard.append(row)
+                keyboard.append([InlineKeyboardButton("🔙 Về danh mục", callback_data="show_portfolio")])
+                
+                msg += f"\n🕐 {format_vn_time_short()}"
+                
+                await query.edit_message_text(
+                    msg, parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
             
             elif data == "show_top10":
                 await query.edit_message_text("🔄 Đang tải...")
@@ -2059,6 +2166,9 @@ try:
             app.add_handler(CommandHandler("buy", buy_command))
             app.add_handler(CommandHandler("sell", sell_command))
             app.add_handler(CommandHandler("edit", edit_command))
+            app.add_handler(CommandHandler("del", delete_tx_command))
+            app.add_handler(CommandHandler("delete", delete_tx_command))
+            app.add_handler(CommandHandler("xoa", delete_tx_command))
             app.add_handler(CommandHandler("del", edit_command))
             app.add_handler(CommandHandler("alert", alert_command))
             app.add_handler(CommandHandler("alerts", alerts_command))
