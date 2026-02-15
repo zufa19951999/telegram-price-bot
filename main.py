@@ -1183,27 +1183,27 @@ try:
         await update.message.reply_text("❌ /edit - Xem DS\n/edit [id] - Xem chi tiết\n/edit [id] [sl] [giá] - Sửa")
 
     async def delete_tx_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
+        uid = update.effective_user.id
     
-    if not ctx.args:
-        await update.message.reply_text("❌ /del [id]")
-        return
+        if not ctx.args:
+            await update.message.reply_text("❌ /del [id]")
+            return
     
-    try:
-        tx_id = int(ctx.args[0])
+        try:
+            tx_id = int(ctx.args[0])
         
-        keyboard = [[
-            InlineKeyboardButton("✅ Có", callback_data=f"confirm_del_{tx_id}"),
-            InlineKeyboardButton("❌ Không", callback_data="show_portfolio")
-        ]]
+            keyboard = [[
+                InlineKeyboardButton("✅ Có", callback_data=f"confirm_del_{tx_id}"),
+                InlineKeyboardButton("❌ Không", callback_data="show_portfolio")
+            ]]
         
-        await update.message.reply_text(
-            f"⚠️ *Xác nhận xóa giao dịch #{tx_id}?*\n\n🕐 {format_vn_time_short()}",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    except ValueError:
-        await update.message.reply_text("❌ ID không hợp lệ")
+            await update.message.reply_text(
+                f"⚠️ *Xác nhận xóa giao dịch #{tx_id}?*\n\n🕐 {format_vn_time_short()}",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except ValueError:
+            await update.message.reply_text("❌ ID không hợp lệ")
 
     # ==================== EXPENSE SHORTCUT HANDLERS ====================
     async def expense_shortcut_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
