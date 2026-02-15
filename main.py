@@ -881,10 +881,10 @@ try:
             "• Báo cáo theo ngày/tháng/năm\n\n"
             f"🕐 *Hiện tại:* `{format_vn_time()}`\n\n"
             "👇 *Chọn chức năng bên dưới*"
-            )
+        )
         await update.message.reply_text(welcome_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=get_main_keyboard())
-
-
+    
+    
     async def help_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         help_msg = (
             "📘 *HƯỚNG DẪN*\n\n"
@@ -909,14 +909,14 @@ try:
             f"🕐 {format_vn_time()}"
         )
         await update.message.reply_text(help_msg, parse_mode=ParseMode.MARKDOWN)
-
-
+    
+    
     @rate_limit(30)
     async def usdt_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         msg = await update.message.reply_text("🔄 Đang tra cứu...")
         rate_data = get_usdt_vnd_rate()
         vnd = rate_data['vnd']
-    
+        
         text = (
             "💱 *TỶ GIÁ USDT/VND*\n━━━━━━━━━━━━━━━━\n\n"
             f"🇺🇸 *1 USDT* = `{fmt_vnd(vnd)}`\n"
@@ -924,26 +924,26 @@ try:
             f"⏱ *Cập nhật:* `{rate_data['update_time']}`\n"
             f"📊 *Nguồn:* `{rate_data['source']}`"
         )
-    
+        
         keyboard = [[InlineKeyboardButton("🔄 Làm mới", callback_data="refresh_usdt")],
                     [InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]]
-    
+        
         await msg.delete()
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
-
-
+    
+    
     @rate_limit(30)
     async def s_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not ctx.args:
             return await update.message.reply_text("❌ /s btc eth doge")
-    
+        
         msg = await update.message.reply_text("🔄 Đang tra cứu...")
         results = []
-    
+        
         for arg in ctx.args:
             symbol = arg.upper()
             d = get_price(symbol)
-        
+            
             if d:
                 if symbol == 'USDT':
                     rate_data = get_usdt_vnd_rate()
@@ -953,37 +953,37 @@ try:
                     results.append(f"*{d['n']}* #{d['r']}\n💰 Giá: `{fmt_price(d['p'])}`\n📈 24h: `{d['c']:.2f}%`")
             else:
                 results.append(f"❌ *{symbol}*: Không có dữ liệu")
-    
+        
         await msg.delete()
         await update.message.reply_text("\n━━━━━━━━━━━━\n".join(results) + f"\n\n🕐 {format_vn_time_short()}", parse_mode='Markdown')
-
-
+    
+    
     @rate_limit(30)
     async def buy_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         uid = update.effective_user.id
         if len(ctx.args) < 3:
             return await update.message.reply_text("❌ /buy btc 0.5 40000")
-    
+        
         symbol = ctx.args[0].upper()
-    
+        
         try:
             amount = float(ctx.args[1])
             buy_price = float(ctx.args[2])
         except ValueError:
             return await update.message.reply_text("❌ Số lượng/giá không hợp lệ!")
-    
+        
         if amount <= 0 or buy_price <= 0:
             return await update.message.reply_text("❌ Số lượng và giá phải > 0")
-    
+        
         price_data = get_price(symbol)
         if not price_data:
             return await update.message.reply_text(f"❌ Không thể lấy giá *{symbol}*", parse_mode='Markdown')
-    
+        
         if add_transaction(uid, symbol, amount, buy_price):
             current_price = price_data['p']
             profit = (current_price - buy_price) * amount
             profit_percent = ((current_price - buy_price) / buy_price) * 100
-        
+            
             msg = (
                 f"✅ *ĐÃ MUA {symbol}*\n━━━━━━━━━━━━━━━━\n\n"
                 f"📊 SL: `{amount:.4f}`\n"
@@ -992,40 +992,40 @@ try:
                 f"📈 Giá hiện: `{fmt_price(current_price)}`\n"
                 f"{'✅' if profit>=0 else '❌'} LN: `{fmt_price(profit)}` ({profit_percent:+.2f}%)\n\n"
                 f"🕐 {format_vn_time()}"
-             )
+            )
             await update.message.reply_text(msg, parse_mode='Markdown')
-           else:
+        else:
             await update.message.reply_text(f"❌ Lỗi khi thêm giao dịch *{symbol}*", parse_mode='Markdown')
-
-
+    
+    
     @rate_limit(30)
     async def sell_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         uid = update.effective_user.id
         if len(ctx.args) < 2:
             return await update.message.reply_text("❌ /sell btc 0.2")
-    
+        
         symbol = ctx.args[0].upper()
-    
+        
         try:
             sell_amount = float(ctx.args[1])
         except ValueError:
             return await update.message.reply_text("❌ Số lượng không hợp lệ!")
-    
+        
         if sell_amount <= 0:
             return await update.message.reply_text("❌ Số lượng phải > 0")
-    
+        
         portfolio_data = get_portfolio(uid)
         if not portfolio_data:
             return await update.message.reply_text("📭 Danh mục trống!")
-    
+        
         portfolio = []
         for row in portfolio_data:
             portfolio.append({'symbol': row[0], 'amount': row[1], 'buy_price': row[2], 'buy_date': row[3], 'total_cost': row[4]})
-    
+        
         symbol_txs = [tx for tx in portfolio if tx['symbol'] == symbol]
         if not symbol_txs:
             return await update.message.reply_text(f"❌ Không có *{symbol}*", parse_mode='Markdown')
-    
+        
         total_amount = sum(tx['amount'] for tx in symbol_txs)
         if sell_amount > total_amount:
             return await update.message.reply_text(f"❌ Chỉ có {total_amount:.4f} {symbol}")
@@ -1033,14 +1033,14 @@ try:
         price_data = get_price(symbol)
         if not price_data:
             return await update.message.reply_text(f"❌ Không thể lấy giá *{symbol}*", parse_mode='Markdown')
-    
+        
         current_price = price_data['p']
         
         remaining_sell = sell_amount
         new_portfolio = []
         sold_value = 0
         sold_cost = 0
-    
+        
         for tx in portfolio:
             if tx['symbol'] == symbol and remaining_sell > 0:
                 if tx['amount'] <= remaining_sell:
@@ -1057,7 +1057,7 @@ try:
                     remaining_sell = 0
             else:
                 new_portfolio.append(tx)
-    
+        
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("DELETE FROM portfolio WHERE user_id = ?", (uid,))
@@ -1067,10 +1067,10 @@ try:
                       (uid, tx['symbol'], tx['amount'], tx['buy_price'], tx['buy_date'], tx['total_cost']))
         conn.commit()
         conn.close()
-    
+        
         profit = sold_value - sold_cost
         profit_percent = (profit / sold_cost) * 100 if sold_cost > 0 else 0
-    
+        
         msg = (
             f"✅ *ĐÃ BÁN {sell_amount:.4f} {symbol}*\n━━━━━━━━━━━━━━━━\n\n"
             f"💰 Giá bán: `{fmt_price(current_price)}`\n"
