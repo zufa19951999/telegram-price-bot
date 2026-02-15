@@ -1072,40 +1072,40 @@ try:
         await update.message.reply_text(msg, parse_mode='Markdown')
 
     @rate_limit(30)
-async def edit_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
+    async def edit_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        uid = update.effective_user.id
     
-    if not ctx.args:
-        transactions = get_transaction_detail(uid)
-        if not transactions:
-            await update.message.reply_text("📭 Danh mục trống!")
-            return
+        if not ctx.args:
+            transactions = get_transaction_detail(uid)
+            if not transactions:
+                await update.message.reply_text("📭 Danh mục trống!")
+                return
         
-        msg = "📝 *CHỌN GIAO DỊCH*\n━━━━━━━━━━━━\n\n"
-        keyboard = []
-        row = []
+            msg = "📝 *CHỌN GIAO DỊCH*\n━━━━━━━━━━━━\n\n"
+            keyboard = []  # <-- Dòng 834, phải thụt vào trong hàm
+            row = []
         
-        for i, tx in enumerate(transactions, 1):
-            tx_id, symbol, amount, price, date, total = tx
-            short_date = date.split()[0]
-            msg += f"*{i}.* {symbol} - {amount:.4f} @ {fmt_price(price)} - {short_date}\n"
+            for i, tx in enumerate(transactions, 1):
+                tx_id, symbol, amount, price, date, total = tx
+                short_date = date.split()[0]
+                msg += f"*{i}.* {symbol} - {amount:.4f} @ {fmt_price(price)} - {short_date}\n"
             
-            row.append(InlineKeyboardButton(f"✏️ #{tx_id}", callback_data=f"edit_{tx_id}"))
-            if len(row) == 3:
+                row.append(InlineKeyboardButton(f"✏️ #{tx_id}", callback_data=f"edit_{tx_id}"))
+                if len(row) == 3:
+                    keyboard.append(row)
+                    row = []
+            
+            if row:
                 keyboard.append(row)
-                row = []
+            keyboard.append([InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")])
         
-        if row:
-            keyboard.append(row)
-        keyboard.append([InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")])
+            msg += f"\n🕐 {format_vn_time_short()}"
         
-        msg += f"\n🕐 {format_vn_time_short()}"
-        
-        await update.message.reply_text(
-            msg, parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return
+            await update.message.reply_text(
+                msg, parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return
     
     if len(ctx.args) == 1:
         try:
