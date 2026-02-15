@@ -1182,7 +1182,7 @@ try:
     else:
         await update.message.reply_text("❌ /edit - Xem DS\n/edit [id] - Xem chi tiết\n/edit [id] [sl] [giá] - Sửa")
 
-async def delete_tx_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    async def delete_tx_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     
     if not ctx.args:
