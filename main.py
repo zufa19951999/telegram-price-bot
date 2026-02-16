@@ -2207,98 +2207,98 @@ try:
                     )
                 except Exception as e:
                     logger.error(f"Lỗi expense_today: {e}")
-                        await query.edit_message_text(
-                            "❌ Có lỗi xảy ra khi xem hôm nay!",
-                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]])
-                        )
-                
-                elif data == "expense_month":
-                    uid = query.from_user.id
-                    try:
-                        incomes_data = get_income_by_period(uid, 'month')
-                        expenses_data = get_expenses_by_period(uid, 'month')
+                    await query.edit_message_text(
+                        "❌ Có lỗi xảy ra khi xem hôm nay!",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]])
+                    )
+            
+            elif data == "expense_month":
+                uid = query.from_user.id
+                try:
+                    incomes_data = get_income_by_period(uid, 'month')
+                    expenses_data = get_expenses_by_period(uid, 'month')
+                    
+                    msg = f"📅 *THÁNG {get_vn_time().strftime('%m/%Y')}*\n━━━━━━━━━━━━━━━━\n\n"
+                    
+                    # HIỂN THỊ THU NHẬP
+                    if incomes_data['transactions']:
+                        msg += "*💰 THU NHẬP:*\n"
+                        # Hiển thị 10 khoản thu gần nhất
+                        for inc in incomes_data['transactions'][:10]:
+                            id, amount, source, note, currency, date = inc
+                            msg += f"• #{id} {date}: {format_currency_simple(amount, currency)} - {source}\n"
+                            if note:
+                                msg += f"  📝 {note}\n"
                         
-                        msg = f"📅 *THÁNG {get_vn_time().strftime('%m/%Y')}*\n━━━━━━━━━━━━━━━━\n\n"
+                        msg += f"\n📊 *Tổng thu theo loại tiền:*\n"
+                        for currency, total in incomes_data['summary'].items():
+                            msg += f"  {format_currency_simple(total, currency)}\n"
+                        msg += f"  *Tổng số:* {incomes_data['total_count']} giao dịch\n\n"
+                    else:
+                        msg += "📭 Không có thu nhập trong tháng này.\n\n"
+                    
+                    # HIỂN THỊ CHI TIÊU
+                    if expenses_data['transactions']:
+                        msg += "*💸 CHI TIÊU:*\n"
+                        # Hiển thị 10 khoản chi gần nhất
+                        for exp in expenses_data['transactions'][:10]:
+                            id, cat_name, amount, note, currency, date, budget = exp
+                            msg += f"• #{id} {date}: {format_currency_simple(amount, currency)} - {cat_name}\n"
+                            if note:
+                                msg += f"  📝 {note}\n"
                         
-                        # HIỂN THỊ THU NHẬP
-                        if incomes_data['transactions']:
-                            msg += "*💰 THU NHẬP:*\n"
-                            # Hiển thị 10 khoản thu gần nhất
-                            for inc in incomes_data['transactions'][:10]:
-                                id, amount, source, note, currency, date = inc
-                                msg += f"• #{id} {date}: {format_currency_simple(amount, currency)} - {source}\n"
-                                if note:
-                                    msg += f"  📝 {note}\n"
-                            
-                            msg += f"\n📊 *Tổng thu theo loại tiền:*\n"
-                            for currency, total in incomes_data['summary'].items():
-                                msg += f"  {format_currency_simple(total, currency)}\n"
-                            msg += f"  *Tổng số:* {incomes_data['total_count']} giao dịch\n\n"
-                        else:
-                            msg += "📭 Không có thu nhập trong tháng này.\n\n"
+                        msg += f"\n📊 *Tổng chi theo loại tiền:*\n"
+                        for currency, total in expenses_data['summary'].items():
+                            msg += f"  {format_currency_simple(total, currency)}\n"
                         
-                        # HIỂN THỊ CHI TIÊU
-                        if expenses_data['transactions']:
-                            msg += "*💸 CHI TIÊU:*\n"
-                            # Hiển thị 10 khoản chi gần nhất
-                            for exp in expenses_data['transactions'][:10]:
-                                id, cat_name, amount, note, currency, date, budget = exp
-                                msg += f"• #{id} {date}: {format_currency_simple(amount, currency)} - {cat_name}\n"
-                                if note:
-                                    msg += f"  📝 {note}\n"
-                            
-                            msg += f"\n📊 *Tổng chi theo loại tiền:*\n"
-                            for currency, total in expenses_data['summary'].items():
-                                msg += f"  {format_currency_simple(total, currency)}\n"
-                            
-                            # Hiển thị chi tiêu theo danh mục
-                            msg += f"\n📋 *Chi tiêu theo danh mục:*\n"
-                            for key, data in expenses_data['category_summary'].items():
-                                budget_status = ""
-                                if data['budget'] > 0:
-                                    percent = (data['total'] / data['budget']) * 100
-                                    if percent > 100:
-                                        budget_status = " ⚠️ Vượt budget!"
-                                    elif percent > 80:
-                                        budget_status = " ⚠️ Gần hết budget"
-                                    msg += f"  • {data['category']} ({data['currency']}): {format_currency_simple(data['total'], data['currency'])} ({data['count']} lần) - Budget: {format_currency_simple(data['budget'], 'VND')}{budget_status}\n"
-                                else:
-                                    msg += f"  • {data['category']} ({data['currency']}): {format_currency_simple(data['total'], data['currency'])} ({data['count']} lần)\n"
-                            
-                            msg += f"\n  *Tổng số:* {expenses_data['total_count']} giao dịch\n"
-                        else:
-                            msg += "📭 Không có chi tiêu trong tháng này."
-                        
-                        # CÂN ĐỐI THU CHI
-                        msg += f"\n\n*⚖️ CÂN ĐỐI THU CHI:*\n"
-                        all_currencies = set(list(incomes_data['summary'].keys()) + list(expenses_data['summary'].keys()))
-                        
-                        for currency in all_currencies:
-                            income = incomes_data['summary'].get(currency, 0)
-                            expense = expenses_data['summary'].get(currency, 0)
-                            balance = income - expense
-                            if balance > 0:
-                                emoji = "✅"
-                            elif balance < 0:
-                                emoji = "❌"
+                        # Hiển thị chi tiêu theo danh mục
+                        msg += f"\n📋 *Chi tiêu theo danh mục:*\n"
+                        for key, data in expenses_data['category_summary'].items():
+                            budget_status = ""
+                            if data['budget'] > 0:
+                                percent = (data['total'] / data['budget']) * 100
+                                if percent > 100:
+                                    budget_status = " ⚠️ Vượt budget!"
+                                elif percent > 80:
+                                    budget_status = " ⚠️ Gần hết budget"
+                                msg += f"  • {data['category']} ({data['currency']}): {format_currency_simple(data['total'], data['currency'])} ({data['count']} lần) - Budget: {format_currency_simple(data['budget'], 'VND')}{budget_status}\n"
                             else:
-                                emoji = "➖"
-                            
-                            msg += f"  {emoji} {currency}: {format_currency_simple(balance, currency)}\n"
+                                msg += f"  • {data['category']} ({data['currency']}): {format_currency_simple(data['total'], data['currency'])} ({data['count']} lần)\n"
                         
-                        msg += f"\n🕐 {format_vn_time()}"
+                        msg += f"\n  *Tổng số:* {expenses_data['total_count']} giao dịch\n"
+                    else:
+                        msg += "📭 Không có chi tiêu trong tháng này."
+                    
+                    # CÂN ĐỐI THU CHI
+                    msg += f"\n\n*⚖️ CÂN ĐỐI THU CHI:*\n"
+                    all_currencies = set(list(incomes_data['summary'].keys()) + list(expenses_data['summary'].keys()))
+                    
+                    for currency in all_currencies:
+                        income = incomes_data['summary'].get(currency, 0)
+                        expense = expenses_data['summary'].get(currency, 0)
+                        balance = income - expense
+                        if balance > 0:
+                            emoji = "✅"
+                        elif balance < 0:
+                            emoji = "❌"
+                        else:
+                            emoji = "➖"
                         
-                        await query.edit_message_text(
-                            msg, 
-                            parse_mode=ParseMode.MARKDOWN,
-                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]])
-                        )
-                    except Exception as e:
-                        logger.error(f"Lỗi expense_month: {e}")
-                        await query.edit_message_text(
-                            "❌ Có lỗi xảy ra khi xem tháng này!",
-                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]])
-                        )
+                        msg += f"  {emoji} {currency}: {format_currency_simple(balance, currency)}\n"
+                    
+                    msg += f"\n🕐 {format_vn_time()}"
+                    
+                    await query.edit_message_text(
+                        msg, 
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]])
+                    )
+                except Exception as e:
+                    logger.error(f"Lỗi expense_month: {e}")
+                    await query.edit_message_text(
+                        "❌ Có lỗi xảy ra khi xem tháng này!",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]])
+                    )
             
             elif data == "expense_recent":
                 uid = query.from_user.id
