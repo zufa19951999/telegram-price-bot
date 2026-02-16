@@ -926,10 +926,10 @@ try:
                 "• `/buy btc 0.5 40000` - Mua coin\n"
                 "• `/sell btc 0.2` - Bán coin\n"
                 "• Và nhiều lệnh khác...\n\n"
-                "📱 *Để hiển thị keyboard, vui lòng chat riêng với bot*\n"
                 f"🕐 {format_vn_time()}"
             )
-            await update.message.reply_text(welcome_msg, parse_mode=ParseMode.MARKDOWN)
+            # VẪN HIỂN THỊ KEYBOARD TRONG NHÓM
+            await update.message.reply_text(welcome_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=get_main_keyboard())
         else:
             # Code cũ cho chat riêng
             welcome_msg = (
