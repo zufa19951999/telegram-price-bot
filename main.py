@@ -721,55 +721,55 @@ try:
                 conn.close()
 
     def get_income_by_period(user_id, period='month'):
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        now = get_vn_time()
-        
-        if period == 'day':
-            date_filter = now.strftime("%Y-%m-%d")
-            query = '''SELECT id, amount, source, note, currency, income_date
-                      FROM incomes 
-                      WHERE user_id = ? AND income_date = ?
-                      ORDER BY income_date DESC, created_at DESC'''
-            c.execute(query, (user_id, date_filter))
-        elif period == 'month':
-            month_filter = now.strftime("%Y-%m")
-            query = '''SELECT id, amount, source, note, currency, income_date
-                      FROM incomes 
-                      WHERE user_id = ? AND strftime('%Y-%m', income_date) = ?
-                      ORDER BY income_date DESC, created_at DESC'''
-            c.execute(query, (user_id, month_filter))
-        else:  # year
-            year_filter = now.strftime("%Y")
-            query = '''SELECT id, amount, source, note, currency, income_date
-                      FROM incomes 
-                      WHERE user_id = ? AND strftime('%Y', income_date) = ?
-                      ORDER BY income_date DESC, created_at DESC'''
-            c.execute(query, (user_id, year_filter))
-        
-        rows = c.fetchall()
-        
-        # Tính tổng theo từng loại tiền
-        summary = {}
-        for row in rows:
-            id, amount, source, note, currency, date = row
-            if currency not in summary:
-                summary[currency] = 0
-            summary[currency] += amount
-        
-        return {
-            'transactions': rows,
-            'summary': summary,
-            'total_count': len(rows)
-        }
-    except Exception as e:
-        logger.error(f"❌ Lỗi income summary: {e}")
-        return {'transactions': [], 'summary': {}, 'total_count': 0}
-    finally:
-        if conn:
-            conn.close()
+        conn = None
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            now = get_vn_time()
+            
+            if period == 'day':
+                date_filter = now.strftime("%Y-%m-%d")
+                query = '''SELECT id, amount, source, note, currency, income_date
+                          FROM incomes 
+                          WHERE user_id = ? AND income_date = ?
+                          ORDER BY income_date DESC, created_at DESC'''
+                c.execute(query, (user_id, date_filter))
+            elif period == 'month':
+                month_filter = now.strftime("%Y-%m")
+                query = '''SELECT id, amount, source, note, currency, income_date
+                          FROM incomes 
+                          WHERE user_id = ? AND strftime('%Y-%m', income_date) = ?
+                          ORDER BY income_date DESC, created_at DESC'''
+                c.execute(query, (user_id, month_filter))
+            else:  # year
+                year_filter = now.strftime("%Y")
+                query = '''SELECT id, amount, source, note, currency, income_date
+                          FROM incomes 
+                          WHERE user_id = ? AND strftime('%Y', income_date) = ?
+                          ORDER BY income_date DESC, created_at DESC'''
+                c.execute(query, (user_id, year_filter))
+            
+            rows = c.fetchall()
+            
+            # Tính tổng theo từng loại tiền
+            summary = {}
+            for row in rows:
+                id, amount, source, note, currency, date = row
+                if currency not in summary:
+                    summary[currency] = 0
+                summary[currency] += amount
+            
+            return {
+                'transactions': rows,
+                'summary': summary,
+                'total_count': len(rows)
+            }
+        except Exception as e:
+            logger.error(f"❌ Lỗi income summary: {e}")
+            return {'transactions': [], 'summary': {}, 'total_count': 0}
+        finally:
+            if conn:
+                conn.close()
 
     def get_expenses_by_period(user_id, period='month'):
     conn = None
