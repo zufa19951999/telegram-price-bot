@@ -1668,7 +1668,7 @@ try:
         chat_type = update.effective_chat.type
         
         # KIỂM TRA NẾU LÀ PHÉP TÍNH (chỉ hoạt động trong chat riêng)
-        if chat_type == 'private' and re.search(r'[\+\-\*\/]', text) and re.match(r'^[\d\s\+\-\*\/\.\(\)]+$', text):
+        if re.search(r'[\+\-\*\/]', text) and re.match(r'^[\d\s\+\-\*\/\.\(\)]+$', text):
             try:
                 result = eval(text, {"__builtins__": {}}, {})
                 if isinstance(result, float):
