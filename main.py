@@ -915,24 +915,41 @@ try:
     # ==================== COMMAND HANDLERS ====================
         
     async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        welcome_msg = (
-            "🚀 *ĐẦU TƯ COIN & QUẢN LÝ CHI TIÊU*\n\n"
-            "🤖 Bot hỗ trợ:\n\n"
-            "*💎 ĐẦU TƯ COIN:*\n"
-            "• Xem giá bất kỳ coin nào\n"
-            "• Top 10 coin\n"
-            "• Quản lý danh mục đầu tư\n"
-            "• Tính lợi nhuận chi tiết\n"
-            "• Cảnh báo giá\n\n"
-            "*💰 QUẢN LÝ CHI TIÊU:*\n"
-            "• Ghi chép thu nhập/chi tiêu\n"
-            "• Hỗ trợ đa tiền tệ\n"
-            "• Quản lý ngân sách theo danh mục\n"
-            "• Báo cáo theo ngày/tháng/năm\n\n"
-            f"🕐 *Hiện tại:* `{format_vn_time()}`\n\n"
-            "👇 *Chọn chức năng bên dưới*"
-        )
-        await update.message.reply_text(welcome_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=get_main_keyboard())
+        # Kiểm tra nếu là trong nhóm
+        if update.effective_chat.type in ['group', 'supergroup']:
+            welcome_msg = (
+                "🚀 *ĐẦU TƯ COIN & QUẢN LÝ CHI TIÊU*\n\n"
+                "🤖 Bot đã sẵn sàng!\n\n"
+                "*Các lệnh trong nhóm:*\n"
+                "• `/s btc eth` - Xem giá coin\n"
+                "• `/usdt` - Tỷ giá USDT/VND\n"
+                "• `/buy btc 0.5 40000` - Mua coin\n"
+                "• `/sell btc 0.2` - Bán coin\n"
+                "• Và nhiều lệnh khác...\n\n"
+                "📱 *Để hiển thị keyboard, vui lòng chat riêng với bot*\n"
+                f"🕐 {format_vn_time()}"
+            )
+            await update.message.reply_text(welcome_msg, parse_mode=ParseMode.MARKDOWN)
+        else:
+            # Code cũ cho chat riêng
+            welcome_msg = (
+                "🚀 *ĐẦU TƯ COIN & QUẢN LÝ CHI TIÊU*\n\n"
+                "🤖 Bot hỗ trợ:\n\n"
+                "*💎 ĐẦU TƯ COIN:*\n"
+                "• Xem giá bất kỳ coin nào\n"
+                "• Top 10 coin\n"
+                "• Quản lý danh mục đầu tư\n"
+                "• Tính lợi nhuận chi tiết\n"
+                "• Cảnh báo giá\n\n"
+                "*💰 QUẢN LÝ CHI TIÊU:*\n"
+                "• Ghi chép thu nhập/chi tiêu\n"
+                "• Hỗ trợ đa tiền tệ\n"
+                "• Quản lý ngân sách theo danh mục\n"
+                "• Báo cáo theo ngày/tháng/năm\n\n"
+                f"🕐 *Hiện tại:* `{format_vn_time()}`\n\n"
+                "👇 *Chọn chức năng bên dưới*"
+            )
+            await update.message.reply_text(welcome_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=get_main_keyboard())
     
     
     async def help_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1643,52 +1660,49 @@ try:
     # ==================== HANDLE MESSAGE ====================
     async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text = update.message.text.strip()
+        chat_type = update.effective_chat.type
         
-        # KIỂM TRA NẾU LÀ PHÉP TÍNH (có chứa dấu + - * /)
-        if re.search(r'[\+\-\*\/]', text) and re.match(r'^[\d\s\+\-\*\/\.\(\)]+$', text):
+        # KIỂM TRA NẾU LÀ PHÉP TÍNH (chỉ hoạt động trong chat riêng)
+        if chat_type == 'private' and re.search(r'[\+\-\*\/]', text) and re.match(r'^[\d\s\+\-\*\/\.\(\)]+$', text):
             try:
-                # Tính toán
                 result = eval(text, {"__builtins__": {}}, {})
-                
-                # Format kết quả
                 if isinstance(result, float):
                     if result.is_integer():
                         result = int(result)
                     else:
                         result = round(result, 6)
-                
                 await update.message.reply_text(f"`{result}`", parse_mode=ParseMode.MARKDOWN)
                 return
-                
-            except ZeroDivisionError:
-                await update.message.reply_text("`Lỗi`", parse_mode=ParseMode.MARKDOWN)
+            except:
                 return
-            except Exception:
-                return  # ❌ QUAN TRỌNG: Im lặng nếu lỗi tính toán
         
-        # Xử lý các lệnh tắt chi tiêu
-        if text.startswith(('tn ', 'dm ', 'ct ', 'ds', 'bc', 'xoa chi ', 'xoa thu ')):
+        # Xử lý các lệnh tắt chi tiêu (chỉ trong chat riêng)
+        if chat_type == 'private' and text.startswith(('tn ', 'dm ', 'ct ', 'ds', 'bc', 'xoa chi ', 'xoa thu ')):
             await expense_shortcut_handler(update, ctx)
             return
         
-        # CHỈ XỬ LÝ CÁC MENU CHÍNH - còn lại IM LẶNG
-        if text == "💰 ĐẦU TƯ COIN":
-            await update.message.reply_text(
-                f"💰 *MENU ĐẦU TƯ COIN*\n━━━━━━━━━━━━━━━━\n\n🕐 {format_vn_time()}",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=get_invest_menu_keyboard()
-            )
-        elif text == "💸 QUẢN LÝ CHI TIÊU":
-            await update.message.reply_text(
-                f"💰 *QUẢN LÝ CHI TIÊU*\n━━━━━━━━━━━━━━━━\n\n🕐 {format_vn_time()}",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=get_expense_menu_keyboard()
-            )
-        elif text == "❓ HƯỚNG DẪN":
-            await help_command(update, ctx)
+        # CHỈ HIỂN THỊ KEYBOARD TRONG CHAT RIÊNG
+        if chat_type == 'private':
+            if text == "💰 ĐẦU TƯ COIN":
+                await update.message.reply_text(
+                    f"💰 *MENU ĐẦU TƯ COIN*\n━━━━━━━━━━━━━━━━\n\n🕐 {format_vn_time()}",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=get_invest_menu_keyboard()
+                )
+            elif text == "💸 QUẢN LÝ CHI TIÊU":
+                await update.message.reply_text(
+                    f"💰 *QUẢN LÝ CHI TIÊU*\n━━━━━━━━━━━━━━━━\n\n🕐 {format_vn_time()}",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=get_expense_menu_keyboard()
+                )
+            elif text == "❓ HƯỚNG DẪN":
+                await help_command(update, ctx)
         else:
-            # ❌ QUAN TRỌNG: KHÔNG làm gì cả - im lặng tuyệt đối
-            return
+            # TRONG NHÓM - chỉ xử lý các lệnh có dấu /
+            if text.startswith('/'):
+                # Các lệnh sẽ được xử lý bởi CommandHandler riêng
+                pass
+            # Còn lại im lặng trong nhóm
 
     # ==================== CALLBACK HANDLER ====================
     async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
