@@ -12,6 +12,9 @@ import csv
 from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, CallbackContext
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.constants import ParseMode
@@ -1708,6 +1711,7 @@ try:
     async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
+        logger.info(f"Callback từ user {update.effective_user.id} trong chat {update.effective_chat.type}: {query.data}")
         
         data = query.data
         
@@ -2503,6 +2507,7 @@ try:
             
             try:
                 app = Application.builder().token(TELEGRAM_TOKEN).build()
+                app.bot_data = {}
                 logger.info("✅ Đã tạo Telegram Application")
             except Exception as e:
                 logger.error(f"❌ Lỗi tạo Application: {e}")
