@@ -1645,7 +1645,6 @@ try:
         text = update.message.text.strip()
         
         # KIỂM TRA NẾU LÀ PHÉP TÍNH (có chứa dấu + - * /)
-        # Chỉ tính khi có ít nhất 1 dấu phép tính
         if re.search(r'[\+\-\*\/]', text) and re.match(r'^[\d\s\+\-\*\/\.\(\)]+$', text):
             try:
                 # Tính toán
@@ -1658,7 +1657,6 @@ try:
                     else:
                         result = round(result, 6)
                 
-                # CHỈ HIỆN KẾT QUẢ - dễ copy
                 await update.message.reply_text(f"`{result}`", parse_mode=ParseMode.MARKDOWN)
                 return
                 
@@ -1666,14 +1664,14 @@ try:
                 await update.message.reply_text("`Lỗi`", parse_mode=ParseMode.MARKDOWN)
                 return
             except Exception:
-                pass  # Nếu lỗi thì bỏ qua và xử lý các lệnh khác
+                return  # ❌ QUAN TRỌNG: Im lặng nếu lỗi tính toán
         
         # Xử lý các lệnh tắt chi tiêu
         if text.startswith(('tn ', 'dm ', 'ct ', 'ds', 'bc', 'xoa chi ', 'xoa thu ')):
             await expense_shortcut_handler(update, ctx)
             return
         
-        # Menu chính
+        # CHỈ XỬ LÝ CÁC MENU CHÍNH - còn lại IM LẶNG
         if text == "💰 ĐẦU TƯ COIN":
             await update.message.reply_text(
                 f"💰 *MENU ĐẦU TƯ COIN*\n━━━━━━━━━━━━━━━━\n\n🕐 {format_vn_time()}",
@@ -1689,9 +1687,8 @@ try:
         elif text == "❓ HƯỚNG DẪN":
             await help_command(update, ctx)
         else:
-            await update.message.reply_text(
-                f"❌ Không hiểu lệnh. Gõ /help để xem hướng dẫn.\n\n🕐 {format_vn_time_short()}"
-            )
+            # ❌ QUAN TRỌNG: KHÔNG làm gì cả - im lặng tuyệt đối
+            return
 
     # ==================== CALLBACK HANDLER ====================
     async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
