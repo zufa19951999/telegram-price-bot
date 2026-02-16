@@ -1663,7 +1663,7 @@ try:
     # ==================== HANDLE MESSAGE ====================
     async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Nhận tin nhắn từ user {update.effective_user.id} trong chat {update.effective_chat.type}: {update.message.text}")
-
+    
         text = update.message.text.strip()
         chat_type = update.effective_chat.type
         
@@ -1686,28 +1686,22 @@ try:
             await expense_shortcut_handler(update, ctx)
             return
         
-        # CHỈ HIỂN THỊ KEYBOARD TRONG CHAT RIÊNG
-        if chat_type == 'private':
-            if text == "💰 ĐẦU TƯ COIN":
-                await update.message.reply_text(
-                    f"💰 *MENU ĐẦU TƯ COIN*\n━━━━━━━━━━━━━━━━\n\n🕐 {format_vn_time()}",
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=get_invest_menu_keyboard()
-                )
-            elif text == "💸 QUẢN LÝ CHI TIÊU":
-                await update.message.reply_text(
-                    f"💰 *QUẢN LÝ CHI TIÊU*\n━━━━━━━━━━━━━━━━\n\n🕐 {format_vn_time()}",
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=get_expense_menu_keyboard()
-                )
-            elif text == "❓ HƯỚNG DẪN":
-                await help_command(update, ctx)
-        else:
-            # TRONG NHÓM - chỉ xử lý các lệnh có dấu /
-            if text.startswith('/'):
-                # Các lệnh sẽ được xử lý bởi CommandHandler riêng
-                pass
-            # Còn lại im lặng trong nhóm
+        # XỬ LÝ MENU CHO CẢ NHÓM VÀ CHAT RIÊNG - BỎ ĐIỀU KIỆN
+        if text == "💰 ĐẦU TƯ COIN":
+            await update.message.reply_text(
+                f"💰 *MENU ĐẦU TƯ COIN*\n━━━━━━━━━━━━━━━━\n\n🕐 {format_vn_time()}",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=get_invest_menu_keyboard()
+            )
+        elif text == "💸 QUẢN LÝ CHI TIÊU":
+            await update.message.reply_text(
+                f"💰 *QUẢN LÝ CHI TIÊU*\n━━━━━━━━━━━━━━━━\n\n🕐 {format_vn_time()}",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=get_expense_menu_keyboard()
+            )
+        elif text == "❓ HƯỚNG DẪN":
+            await help_command(update, ctx)
+        # KHÔNG CÓ ELSE - im lặng với tin nhắn khác
 
     # ==================== CALLBACK HANDLER ====================
     async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
