@@ -1662,6 +1662,8 @@ try:
 
     # ==================== HANDLE MESSAGE ====================
     async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        logger.info(f"Nhận tin nhắn từ user {update.effective_user.id} trong chat {update.effective_chat.type}: {update.message.text}")
+
         text = update.message.text.strip()
         chat_type = update.effective_chat.type
         
