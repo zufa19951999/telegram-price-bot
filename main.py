@@ -721,76 +721,126 @@ try:
                 conn.close()
 
     def get_income_by_period(user_id, period='month'):
-        conn = None
-        try:
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            now = get_vn_time()
-            
-            if period == 'day':
-                date_filter = now.strftime("%Y-%m-%d")
-                query = '''SELECT source, SUM(amount), COUNT(id), currency
-                          FROM incomes WHERE user_id = ? AND income_date = ?
-                          GROUP BY source, currency'''
-                c.execute(query, (user_id, date_filter))
-            elif period == 'month':
-                month_filter = now.strftime("%Y-%m")
-                query = '''SELECT source, SUM(amount), COUNT(id), currency
-                          FROM incomes WHERE user_id = ? AND strftime('%Y-%m', income_date) = ?
-                          GROUP BY source, currency'''
-                c.execute(query, (user_id, month_filter))
-            else:
-                year_filter = now.strftime("%Y")
-                query = '''SELECT source, SUM(amount), COUNT(id), currency
-                          FROM incomes WHERE user_id = ? AND strftime('%Y', income_date) = ?
-                          GROUP BY source, currency'''
-                c.execute(query, (user_id, year_filter))
-            return c.fetchall()
-        except Exception as e:
-            logger.error(f"❌ Lỗi income summary: {e}")
-            return []
-        finally:
-            if conn:
-                conn.close()
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        now = get_vn_time()
+        
+        if period == 'day':
+            date_filter = now.strftime("%Y-%m-%d")
+            query = '''SELECT id, amount, source, note, currency, income_date
+                      FROM incomes 
+                      WHERE user_id = ? AND income_date = ?
+                      ORDER BY income_date DESC, created_at DESC'''
+            c.execute(query, (user_id, date_filter))
+        elif period == 'month':
+            month_filter = now.strftime("%Y-%m")
+            query = '''SELECT id, amount, source, note, currency, income_date
+                      FROM incomes 
+                      WHERE user_id = ? AND strftime('%Y-%m', income_date) = ?
+                      ORDER BY income_date DESC, created_at DESC'''
+            c.execute(query, (user_id, month_filter))
+        else:  # year
+            year_filter = now.strftime("%Y")
+            query = '''SELECT id, amount, source, note, currency, income_date
+                      FROM incomes 
+                      WHERE user_id = ? AND strftime('%Y', income_date) = ?
+                      ORDER BY income_date DESC, created_at DESC'''
+            c.execute(query, (user_id, year_filter))
+        
+        rows = c.fetchall()
+        
+        # Tính tổng theo từng loại tiền
+        summary = {}
+        for row in rows:
+            id, amount, source, note, currency, date = row
+            if currency not in summary:
+                summary[currency] = 0
+            summary[currency] += amount
+        
+        return {
+            'transactions': rows,
+            'summary': summary,
+            'total_count': len(rows)
+        }
+    except Exception as e:
+        logger.error(f"❌ Lỗi income summary: {e}")
+        return {'transactions': [], 'summary': {}, 'total_count': 0}
+    finally:
+        if conn:
+            conn.close()
 
     def get_expenses_by_period(user_id, period='month'):
-        conn = None
-        try:
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            now = get_vn_time()
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        now = get_vn_time()
+        
+        if period == 'day':
+            date_filter = now.strftime("%Y-%m-%d")
+            query = '''SELECT e.id, ec.name, e.amount, e.note, e.currency, e.expense_date, ec.budget
+                      FROM expenses e
+                      JOIN expense_categories ec ON e.category_id = ec.id
+                      WHERE e.user_id = ? AND e.expense_date = ?
+                      ORDER BY e.expense_date DESC, e.created_at DESC'''
+            c.execute(query, (user_id, date_filter))
+        elif period == 'month':
+            month_filter = now.strftime("%Y-%m")
+            query = '''SELECT e.id, ec.name, e.amount, e.note, e.currency, e.expense_date, ec.budget
+                      FROM expenses e
+                      JOIN expense_categories ec ON e.category_id = ec.id
+                      WHERE e.user_id = ? AND strftime('%Y-%m', e.expense_date) = ?
+                      ORDER BY e.expense_date DESC, e.created_at DESC'''
+            c.execute(query, (user_id, month_filter))
+        else:  # year
+            year_filter = now.strftime("%Y")
+            query = '''SELECT e.id, ec.name, e.amount, e.note, e.currency, e.expense_date, ec.budget
+                      FROM expenses e
+                      JOIN expense_categories ec ON e.category_id = ec.id
+                      WHERE e.user_id = ? AND strftime('%Y', e.expense_date) = ?
+                      ORDER BY e.expense_date DESC, e.created_at DESC'''
+            c.execute(query, (user_id, year_filter))
+        
+        rows = c.fetchall()
+        
+        # Tính tổng theo từng loại tiền
+        summary = {}
+        category_summary = {}
+        
+        for row in rows:
+            id, cat_name, amount, note, currency, date, budget = row
+            # Tổng theo loại tiền
+            if currency not in summary:
+                summary[currency] = 0
+            summary[currency] += amount
             
-            if period == 'day':
-                date_filter = now.strftime("%Y-%m-%d")
-                query = '''SELECT ec.name, SUM(e.amount), COUNT(e.id), ec.budget, e.currency
-                          FROM expenses e
-                          JOIN expense_categories ec ON e.category_id = ec.id
-                          WHERE e.user_id = ? AND e.expense_date = ?
-                          GROUP BY ec.name, ec.budget, e.currency'''
-                c.execute(query, (user_id, date_filter))
-            elif period == 'month':
-                month_filter = now.strftime("%Y-%m")
-                query = '''SELECT ec.name, SUM(e.amount), COUNT(e.id), ec.budget, e.currency
-                          FROM expenses e
-                          JOIN expense_categories ec ON e.category_id = ec.id
-                          WHERE e.user_id = ? AND strftime('%Y-%m', e.expense_date) = ?
-                          GROUP BY ec.name, ec.budget, e.currency'''
-                c.execute(query, (user_id, month_filter))
-            else:
-                year_filter = now.strftime("%Y")
-                query = '''SELECT ec.name, SUM(e.amount), COUNT(e.id), ec.budget, e.currency
-                          FROM expenses e
-                          JOIN expense_categories ec ON e.category_id = ec.id
-                          WHERE e.user_id = ? AND strftime('%Y', e.expense_date) = ?
-                          GROUP BY ec.name, ec.budget, e.currency'''
-                c.execute(query, (user_id, year_filter))
-            return c.fetchall()
-        except Exception as e:
-            logger.error(f"❌ Lỗi expenses summary: {e}")
-            return []
-        finally:
-            if conn:
-                conn.close()
+            # Tổng theo danh mục
+            key = f"{cat_name}_{currency}"
+            if key not in category_summary:
+                category_summary[key] = {
+                    'category': cat_name,
+                    'currency': currency,
+                    'total': 0,
+                    'count': 0,
+                    'budget': budget
+                }
+            category_summary[key]['total'] += amount
+            category_summary[key]['count'] += 1
+        
+        return {
+            'transactions': rows,
+            'summary': summary,
+            'category_summary': category_summary,
+            'total_count': len(rows)
+        }
+    except Exception as e:
+        logger.error(f"❌ Lỗi expenses summary: {e}")
+        return {'transactions': [], 'summary': {}, 'category_summary': {}, 'total_count': 0}
+    finally:
+        if conn:
+            conn.close()
 
     def delete_expense(expense_id, user_id):
         conn = None
@@ -1480,34 +1530,82 @@ try:
         
         # BÁO CÁO NHANH
         elif text == 'bc':
-            expenses = get_expenses_by_period(user_id, 'month')
-            incomes = get_income_by_period(user_id, 'month')
+            incomes_data = get_income_by_period(user_id, 'month')
+            expenses_data = get_expenses_by_period(user_id, 'month')
             
             msg = f"📊 *BÁO CÁO THÁNG {get_vn_time().strftime('%m/%Y')}*\n━━━━━━━━━━━━━━━━\n\n"
             
-            if incomes:
-                total_income = 0
+            # HIỂN THỊ THU NHẬP
+            if incomes_data['transactions']:
                 msg += "*💰 THU NHẬP:*\n"
-                for inc in incomes:
-                    source, amount, count, currency = inc
-                    total_income += amount
-                    msg += f"• {source}: {format_currency_simple(amount, currency)} ({count} lần)\n"
-                msg += f"\n• *Tổng thu:* {format_currency_simple(total_income, 'VND')}\n\n"
+                # Hiển thị 5 khoản thu gần nhất
+                for inc in incomes_data['transactions'][:5]:
+                    id, amount, source, note, currency, date = inc
+                    msg += f"• #{id} {date}: {format_currency_simple(amount, currency)} - {source}\n"
+                    if note:
+                        msg += f"  📝 {note}\n"
+                
+                # Hiển thị tổng theo loại tiền
+                msg += f"\n📊 *Tổng thu theo loại tiền:*\n"
+                for currency, total in incomes_data['summary'].items():
+                    msg += f"  {format_currency_simple(total, currency)}\n"
+                
+                # Tổng số giao dịch
+                msg += f"  *Tổng số:* {incomes_data['total_count']} giao dịch\n\n"
             else:
-                msg += "📭 Chưa có thu nhập.\n\n"
+                msg += "📭 Chưa có thu nhập trong tháng này.\n\n"
             
-            if expenses:
-                total_expense = 0
+            # HIỂN THỊ CHI TIÊU
+            if expenses_data['transactions']:
                 msg += "*💸 CHI TIÊU:*\n"
-                for exp in expenses:
-                    cat_name, amount, count, budget, currency = exp
-                    total_expense += amount
-                    msg += f"• {cat_name}: {format_currency_simple(amount, currency)} ({count} lần)\n"
-                msg += f"\n• *Tổng chi:* {format_currency_simple(total_expense, 'VND')}\n"
+                # Hiển thị 5 khoản chi gần nhất
+                for exp in expenses_data['transactions'][:5]:
+                    id, cat_name, amount, note, currency, date, budget = exp
+                    msg += f"• #{id} {date}: {format_currency_simple(amount, currency)} - {cat_name}\n"
+                    if note:
+                        msg += f"  📝 {note}\n"
+                
+                # Hiển thị tổng theo loại tiền
+                msg += f"\n📊 *Tổng chi theo loại tiền:*\n"
+                for currency, total in expenses_data['summary'].items():
+                    msg += f"  {format_currency_simple(total, currency)}\n"
+                
+                # Hiển thị chi tiêu theo danh mục
+                msg += f"\n📋 *Chi tiêu theo danh mục:*\n"
+                for key, data in expenses_data['category_summary'].items():
+                    budget_status = ""
+                    if data['budget'] > 0:
+                        percent = (data['total'] / data['budget']) * 100
+                        if percent > 100:
+                            budget_status = " ⚠️ Vượt budget!"
+                        elif percent > 80:
+                            budget_status = " ⚠️ Gần hết budget"
+                        msg += f"  • {data['category']} ({data['currency']}): {format_currency_simple(data['total'], data['currency'])} ({data['count']} lần) - Budget: {format_currency_simple(data['budget'], 'VND')}{budget_status}\n"
+                    else:
+                        msg += f"  • {data['category']} ({data['currency']}): {format_currency_simple(data['total'], data['currency'])} ({data['count']} lần)\n"
+                
+                msg += f"\n  *Tổng số:* {expenses_data['total_count']} giao dịch\n"
             else:
-                msg += "📭 Chưa có chi tiêu."
+                msg += "📭 Chưa có chi tiêu trong tháng này."
             
-            msg += f"\n\n🕐 {format_vn_time()}"
+            # TÍNH TOÁN CÂN ĐỐI (nếu cùng loại tiền)
+            msg += f"\n\n*⚖️ CÂN ĐỐI THEO LOẠI TIỀN:*\n"
+            all_currencies = set(list(incomes_data['summary'].keys()) + list(expenses_data['summary'].keys()))
+            
+            for currency in all_currencies:
+                income = incomes_data['summary'].get(currency, 0)
+                expense = expenses_data['summary'].get(currency, 0)
+                balance = income - expense
+                if balance > 0:
+                    emoji = "✅"
+                elif balance < 0:
+                    emoji = "❌"
+                else:
+                    emoji = "➖"
+                
+                msg += f"  {emoji} {currency}: Thu {format_currency_simple(income, currency)} - Chi {format_currency_simple(expense, currency)} = {format_currency_simple(balance, currency)}\n"
+            
+            msg += f"\n🕐 {format_vn_time()}"
             await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
         
         # XÓA CHI TIÊU
@@ -2063,8 +2161,8 @@ try:
             
             elif data == "expense_today":
                 uid = query.from_user.id
-                expenses = get_expenses_by_period(uid, 'day')
-                incomes = get_income_by_period(uid, 'day')
+                incomes_data = get_income_by_period(uid, 'day')
+                expenses_data = get_expenses_by_period(uid, 'day')
                 
                 msg = f"📅 *HÔM NAY ({get_vn_time().strftime('%d/%m/%Y')})*\n━━━━━━━━━━━━━━━━\n\n"
                 
@@ -2096,8 +2194,8 @@ try:
             
             elif data == "expense_month":
                 uid = query.from_user.id
-                expenses = get_expenses_by_period(uid, 'month')
-                incomes = get_income_by_period(uid, 'month')
+                incomes_data = get_income_by_period(uid, 'month')
+                expenses_data = get_expenses_by_period(uid, 'month')
                 
                 msg = f"📅 *THÁNG {get_vn_time().strftime('%m/%Y')}*\n━━━━━━━━━━━━━━━━\n\n"
                 
@@ -2129,31 +2227,38 @@ try:
             
             elif data == "expense_recent":
                 uid = query.from_user.id
-                recent_incomes = get_recent_incomes(uid, 5)
-                recent_expenses = get_recent_expenses(uid, 5)
+                recent_incomes = get_recent_incomes(uid, 10)  # Lấy 10 giao dịch gần nhất
+                recent_expenses = get_recent_expenses(uid, 10)
                 
                 if not recent_incomes and not recent_expenses:
                     await query.edit_message_text(f"📭 Không có giao dịch nào!\n\n🕐 {format_vn_time_short()}")
                     return
                 
-                msg = "🔄 *GIAO DỊCH GẦN ĐÂY*\n━━━━━━━━━━━━━━━━\n\n"
+                msg = "🔄 *20 GIAO DỊCH GẦN ĐÂY*\n━━━━━━━━━━━━━━━━\n\n"
                 
-                if recent_incomes:
-                    msg += "*💰 THU NHẬP:*\n"
-                    for inc in recent_incomes:
-                        inc_id, amount, source, note, date, currency = inc
-                        msg += f"• #{inc_id} {date}: {format_currency_simple(amount, currency)} - {source}\n"
-                    msg += "\n"
+                # Kết hợp và sắp xếp theo thời gian
+                all_transactions = []
                 
-                if recent_expenses:
-                    msg += "*💸 CHI TIÊU:*\n"
-                    for exp in recent_expenses:
-                        exp_id, cat_name, amount, note, date, currency = exp
-                        msg += f"• #{exp_id} {date}: {format_currency_simple(amount, currency)} - {cat_name}\n"
+                for inc in recent_incomes:
+                    id, amount, source, note, date, currency = inc
+                    all_transactions.append(('💰', id, date, f"{format_currency_simple(amount, currency)} - {source}", note))
+                
+                for exp in recent_expenses:
+                    id, cat_name, amount, note, date, currency = exp
+                    all_transactions.append(('💸', id, date, f"{format_currency_simple(amount, currency)} - {cat_name}", note))
+                
+                # Sắp xếp theo ngày giảm dần
+                all_transactions.sort(key=lambda x: x[2], reverse=True)
+                
+                for emoji, id, date, desc, note in all_transactions[:20]:
+                    msg += f"{emoji} #{id} {date}: {desc}\n"
+                    if note:
+                        msg += f"   📝 {note}\n"
                 
                 msg += f"\n🕐 {format_vn_time_short()}"
                 
-                await query.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]]))
+                await query.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN, 
+                                              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]]))
             
             elif data == "expense_export":
                 uid = query.from_user.id
