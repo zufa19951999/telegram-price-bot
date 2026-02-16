@@ -913,7 +913,7 @@ try:
         return InlineKeyboardMarkup(keyboard)
 
     # ==================== COMMAND HANDLERS ====================
-
+        
     async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         welcome_msg = (
             "🚀 *ĐẦU TƯ COIN & QUẢN LÝ CHI TIÊU*\n\n"
@@ -1643,6 +1643,32 @@ try:
     # ==================== HANDLE MESSAGE ====================
     async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text = update.message.text.strip()
+        
+        # KIỂM TRA NẾU LÀ PHÉP TÍNH (chỉ gồm số và + - * / . và khoảng trắng)
+        if re.match(r'^[\d\s\+\-\*\/\.]+$', text):
+            try:
+                # Tính toán an toàn
+                result = eval(text, {"__builtins__": {}}, {})
+                
+                # Format kết quả
+                if isinstance(result, float):
+                    if result.is_integer():
+                        result = int(result)
+                    else:
+                        result = round(result, 6)
+                
+                await update.message.reply_text(
+                    f"📝 `{text}`\n✅ `{result:,}`",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                return  # Kết thúc xử lý sau khi tính toán
+                
+            except ZeroDivisionError:
+                await update.message.reply_text("❌ Lỗi: Chia cho 0!")
+                return
+            except Exception:
+                # Nếu không phải phép tính hợp lệ, tiếp tục xử lý các lệnh khác
+                pass
         
         # Xử lý các lệnh tắt chi tiêu
         if text.startswith(('tn ', 'dm ', 'ct ', 'ds', 'bc', 'xoa chi ', 'xoa thu ')):
