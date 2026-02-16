@@ -1644,8 +1644,9 @@ try:
     async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text = update.message.text.strip()
         
-        # KIỂM TRA NẾU LÀ PHÉP TÍNH (chỉ gồm số và + - * / . ( ))
-        if re.match(r'^[\d\s\+\-\*\/\.\(\)]+$', text):
+        # KIỂM TRA NẾU LÀ PHÉP TÍNH (có chứa dấu + - * /)
+        # Chỉ tính khi có ít nhất 1 dấu phép tính
+        if re.search(r'[\+\-\*\/]', text) and re.match(r'^[\d\s\+\-\*\/\.\(\)]+$', text):
             try:
                 # Tính toán
                 result = eval(text, {"__builtins__": {}}, {})
