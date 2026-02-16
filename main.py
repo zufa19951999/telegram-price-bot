@@ -772,75 +772,75 @@ try:
                 conn.close()
 
     def get_expenses_by_period(user_id, period='month'):
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        now = get_vn_time()
-        
-        if period == 'day':
-            date_filter = now.strftime("%Y-%m-%d")
-            query = '''SELECT e.id, ec.name, e.amount, e.note, e.currency, e.expense_date, ec.budget
-                      FROM expenses e
-                      JOIN expense_categories ec ON e.category_id = ec.id
-                      WHERE e.user_id = ? AND e.expense_date = ?
-                      ORDER BY e.expense_date DESC, e.created_at DESC'''
-            c.execute(query, (user_id, date_filter))
-        elif period == 'month':
-            month_filter = now.strftime("%Y-%m")
-            query = '''SELECT e.id, ec.name, e.amount, e.note, e.currency, e.expense_date, ec.budget
-                      FROM expenses e
-                      JOIN expense_categories ec ON e.category_id = ec.id
-                      WHERE e.user_id = ? AND strftime('%Y-%m', e.expense_date) = ?
-                      ORDER BY e.expense_date DESC, e.created_at DESC'''
-            c.execute(query, (user_id, month_filter))
-        else:  # year
-            year_filter = now.strftime("%Y")
-            query = '''SELECT e.id, ec.name, e.amount, e.note, e.currency, e.expense_date, ec.budget
-                      FROM expenses e
-                      JOIN expense_categories ec ON e.category_id = ec.id
-                      WHERE e.user_id = ? AND strftime('%Y', e.expense_date) = ?
-                      ORDER BY e.expense_date DESC, e.created_at DESC'''
-            c.execute(query, (user_id, year_filter))
-        
-        rows = c.fetchall()
-        
-        # Tính tổng theo từng loại tiền
-        summary = {}
-        category_summary = {}
-        
-        for row in rows:
-            id, cat_name, amount, note, currency, date, budget = row
-            # Tổng theo loại tiền
-            if currency not in summary:
-                summary[currency] = 0
-            summary[currency] += amount
+        conn = None
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            now = get_vn_time()
             
-            # Tổng theo danh mục
-            key = f"{cat_name}_{currency}"
-            if key not in category_summary:
-                category_summary[key] = {
-                    'category': cat_name,
-                    'currency': currency,
-                    'total': 0,
-                    'count': 0,
-                    'budget': budget
-                }
-            category_summary[key]['total'] += amount
-            category_summary[key]['count'] += 1
-        
-        return {
-            'transactions': rows,
-            'summary': summary,
-            'category_summary': category_summary,
-            'total_count': len(rows)
-        }
-    except Exception as e:
-        logger.error(f"❌ Lỗi expenses summary: {e}")
-        return {'transactions': [], 'summary': {}, 'category_summary': {}, 'total_count': 0}
-    finally:
-        if conn:
-            conn.close()
+            if period == 'day':
+                date_filter = now.strftime("%Y-%m-%d")
+                query = '''SELECT e.id, ec.name, e.amount, e.note, e.currency, e.expense_date, ec.budget
+                          FROM expenses e
+                          JOIN expense_categories ec ON e.category_id = ec.id
+                          WHERE e.user_id = ? AND e.expense_date = ?
+                          ORDER BY e.expense_date DESC, e.created_at DESC'''
+                c.execute(query, (user_id, date_filter))
+            elif period == 'month':
+                month_filter = now.strftime("%Y-%m")
+                query = '''SELECT e.id, ec.name, e.amount, e.note, e.currency, e.expense_date, ec.budget
+                          FROM expenses e
+                          JOIN expense_categories ec ON e.category_id = ec.id
+                          WHERE e.user_id = ? AND strftime('%Y-%m', e.expense_date) = ?
+                          ORDER BY e.expense_date DESC, e.created_at DESC'''
+                c.execute(query, (user_id, month_filter))
+            else:  # year
+                year_filter = now.strftime("%Y")
+                query = '''SELECT e.id, ec.name, e.amount, e.note, e.currency, e.expense_date, ec.budget
+                          FROM expenses e
+                          JOIN expense_categories ec ON e.category_id = ec.id
+                          WHERE e.user_id = ? AND strftime('%Y', e.expense_date) = ?
+                          ORDER BY e.expense_date DESC, e.created_at DESC'''
+                c.execute(query, (user_id, year_filter))
+            
+            rows = c.fetchall()
+            
+            # Tính tổng theo từng loại tiền
+            summary = {}
+            category_summary = {}
+            
+            for row in rows:
+                id, cat_name, amount, note, currency, date, budget = row
+                # Tổng theo loại tiền
+                if currency not in summary:
+                    summary[currency] = 0
+                summary[currency] += amount
+                
+                # Tổng theo danh mục
+                key = f"{cat_name}_{currency}"
+                if key not in category_summary:
+                    category_summary[key] = {
+                        'category': cat_name,
+                        'currency': currency,
+                        'total': 0,
+                        'count': 0,
+                        'budget': budget
+                    }
+                category_summary[key]['total'] += amount
+                category_summary[key]['count'] += 1
+            
+            return {
+                'transactions': rows,
+                'summary': summary,
+                'category_summary': category_summary,
+                'total_count': len(rows)
+            }
+        except Exception as e:
+            logger.error(f"❌ Lỗi expenses summary: {e}")
+            return {'transactions': [], 'summary': {}, 'category_summary': {}, 'total_count': 0}
+        finally:
+            if conn:
+                conn.close()
 
     def delete_expense(expense_id, user_id):
         conn = None
