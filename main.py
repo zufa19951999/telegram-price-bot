@@ -1644,10 +1644,10 @@ try:
     async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text = update.message.text.strip()
         
-        # KIỂM TRA NẾU LÀ PHÉP TÍNH (chỉ gồm số và + - * / . và khoảng trắng)
-        if re.match(r'^[\d\s\+\-\*\/\.]+$', text):
+        # KIỂM TRA NẾU LÀ PHÉP TÍNH (chỉ gồm số và + - * / . ( ))
+        if re.match(r'^[\d\s\+\-\*\/\.\(\)]+$', text):
             try:
-                # Tính toán an toàn
+                # Tính toán
                 result = eval(text, {"__builtins__": {}}, {})
                 
                 # Format kết quả
@@ -1657,18 +1657,15 @@ try:
                     else:
                         result = round(result, 6)
                 
-                await update.message.reply_text(
-                    f"📝 `{text}`\n✅ `{result:,}`",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-                return  # Kết thúc xử lý sau khi tính toán
+                # CHỈ HIỆN KẾT QUẢ - dễ copy
+                await update.message.reply_text(f"`{result}`", parse_mode=ParseMode.MARKDOWN)
+                return
                 
             except ZeroDivisionError:
-                await update.message.reply_text("❌ Lỗi: Chia cho 0!")
+                await update.message.reply_text("`Lỗi`", parse_mode=ParseMode.MARKDOWN)
                 return
             except Exception:
-                # Nếu không phải phép tính hợp lệ, tiếp tục xử lý các lệnh khác
-                pass
+                pass  # Nếu lỗi thì bỏ qua và xử lý các lệnh khác
         
         # Xử lý các lệnh tắt chi tiêu
         if text.startswith(('tn ', 'dm ', 'ct ', 'ds', 'bc', 'xoa chi ', 'xoa thu ')):
