@@ -33,6 +33,25 @@ OWNER_USERNAME = "adm"  # Username của ADM
 def is_owner(user_id):
     """Kiểm tra có phải là chủ sở hữu không"""
     return user_id == OWNER_ID
+
+def get_effective_user_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Xác định user_id thực tế dựa vào ngữ cảnh:
+    - Private chat: dùng user_id của người đang chat
+    - Group chat: dùng owner_id của group đó
+    """
+    chat_type = update.effective_chat.type
+    user_id = update.effective_user.id
+    
+    if chat_type in ['group', 'supergroup']:
+        group_id = update.effective_chat.id
+        owner_id = get_group_owner(group_id)
+        logger.info(f"🏢 Group {group_id}: user {user_id} đang thao tác trên data của owner {owner_id}")
+        return owner_id
+    
+    logger.info(f"💬 Private: user {user_id} đang thao tác trên data của chính mình")
+    return user_id
+    
 # ==================== USERNAME CACHE ====================
 class UsernameCache:
     def __init__(self):
@@ -342,6 +361,11 @@ try:
                           action TEXT,
                           old_role TEXT,
                           new_role TEXT,
+                          created_at TEXT)''')
+            
+            c.execute('''CREATE TABLE IF NOT EXISTS group_owners
+                         (group_id INTEGER PRIMARY KEY,
+                          owner_id INTEGER,
                           created_at TEXT)''')
             
             conn.commit()
@@ -835,45 +859,26 @@ try:
             c = conn.cursor()
             created_at = get_vn_time().strftime("%Y-%m-%d %H:%M:%S")
             
-            # Kiểm tra cấu trúc bảng hiện tại
-            c.execute("PRAGMA table_info(permissions)")
-            columns = [col[1] for col in c.fetchall()]
+            # Xóa quyền cũ
+            c.execute("DELETE FROM permissions WHERE group_id = ? AND user_id = ?", 
+                      (group_id, user_id))
             
-            # Nếu là cấu trúc cũ (có cột admin_id)
-            if 'admin_id' in columns:
-                # Dùng cấu trúc cũ
-                c.execute("DELETE FROM permissions WHERE group_id = ? AND user_id = ?", 
-                          (group_id, user_id))
-                
-                c.execute('''INSERT INTO permissions 
-                             (group_id, admin_id, granted_by, can_view_all, can_edit_all, 
-                              can_delete_all, can_manage_perms, created_at)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                          (group_id, user_id, granted_by,
-                           permissions.get('view', 1),
-                           permissions.get('edit', 0),
-                           permissions.get('delete', 0),
-                           permissions.get('manage', 0),
-                           created_at))
-            else:
-                # Dùng cấu trúc mới
-                c.execute("DELETE FROM permissions WHERE group_id = ? AND user_id = ?", 
-                          (group_id, user_id))
-                
-                c.execute('''INSERT INTO permissions 
-                             (group_id, user_id, granted_by, is_approved, role,
-                              can_view_all, can_edit_all, can_delete_all, can_manage_perms,
-                              created_at, approved_at)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                          (group_id, user_id, granted_by,
-                           1, 'staff',
-                           permissions.get('view', 0),
-                           permissions.get('edit', 0),
-                           permissions.get('delete', 0),
-                           permissions.get('manage', 0),
-                           created_at, created_at))
+            # Thêm quyền mới với role là 'staff' cho admin
+            c.execute('''INSERT INTO permissions 
+                         (group_id, user_id, granted_by, is_approved, role,
+                          can_view_all, can_edit_all, can_delete_all, can_manage_perms,
+                          created_at, approved_at)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                      (group_id, user_id, granted_by,
+                       1, 'staff',
+                       permissions.get('view', 0),
+                       permissions.get('edit', 0),
+                       permissions.get('delete', 0),
+                       permissions.get('manage', 0),
+                       created_at, created_at))
             
             conn.commit()
+            logger.info(f"✅ Granted permissions to user {user_id} in group {group_id}")
             return True
         except Exception as e:
             logger.error(f"❌ Lỗi cấp quyền: {e}")
@@ -1127,6 +1132,49 @@ try:
         finally:
             if conn:
                 conn.close()
+
+    # ==================== GROUP OWNER MANAGEMENT ====================
+    GROUP_OWNERS = {}
+    
+    def load_group_owners():
+        """Load group owners từ database"""
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT group_id, owner_id FROM group_owners")
+            rows = c.fetchall()
+            for group_id, owner_id in rows:
+                GROUP_OWNERS[group_id] = owner_id
+            conn.close()
+            logger.info(f"✅ Loaded {len(GROUP_OWNERS)} group owners")
+        except Exception as e:
+            logger.error(f"❌ Lỗi load group owners: {e}")
+    
+    def set_group_owner(group_id, owner_id):
+        """Thiết lập chủ sở hữu cho group"""
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            created_at = get_vn_time().strftime("%Y-%m-%d %H:%M:%S")
+            c.execute('''INSERT OR REPLACE INTO group_owners (group_id, owner_id, created_at)
+                         VALUES (?, ?, ?)''', (group_id, owner_id, created_at))
+            conn.commit()
+            conn.close()
+            GROUP_OWNERS[group_id] = owner_id
+            logger.info(f"✅ Set owner {owner_id} for group {group_id}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Lỗi set group owner: {e}")
+            return False
+    
+    def get_group_owner(group_id):
+        """Lấy chủ sở hữu của group"""
+        return GROUP_OWNERS.get(group_id, OWNER_ID)
+    
+    def is_group_owner(group_id, user_id):
+        """Kiểm tra có phải chủ sở hữu của group không"""
+        return user_id == get_group_owner(group_id)
+    
     # ==================== USER FUNCTIONS WITH AUTO-UPDATE ====================
     async def update_user_info_async(user):
         """Cập nhật thông tin user bất đồng bộ - gọi mỗi khi có tương tác"""
@@ -1203,16 +1251,22 @@ try:
             
     # ==================== AUTO UPDATE USER DECORATOR ====================
     def auto_update_user(func):
-        """Decorator tự động cập nhật user info trước khi xử lý command"""
+        """Decorator tự động cập nhật user info và xác định effective user"""
         @wraps(func)
         async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-            # Cập nhật user info nếu có user
             if update.effective_user:
                 await update_user_info_async(update.effective_user)
             
-            # Gọi hàm gốc
+            # Lưu effective user_id vào context
+            effective_user_id = get_effective_user_id(update, context)
+            context.bot_data['effective_user_id'] = effective_user_id
+            context.bot_data['original_user_id'] = update.effective_user.id
+            
+            logger.info(f"🆔 Original: {update.effective_user.id}, Effective: {effective_user_id}")
+            
             return await func(update, context, *args, **kwargs)
         return wrapper
+        
     # ==================== USERNAME CACHE & LOOKUP ====================
     def get_user_id_by_username(username):
         """Tìm user ID từ username - hỗ trợ cache"""
@@ -2053,7 +2107,7 @@ try:
     @auto_update_user
     @require_permission('user')
     async def buy_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        uid = update.effective_user.id
+        uid = ctx.bot_data.get('effective_user_id', update.effective_user.id)
         if len(ctx.args) < 3:
             return await update.message.reply_text("❌ /buy btc 0.5 40000")
         
@@ -2093,7 +2147,7 @@ try:
     @auto_update_user
     @require_permission('user')
     async def sell_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        uid = update.effective_user.id
+        uid = ctx.bot_data.get('effective_user_id', update.effective_user.id)
         if len(ctx.args) < 2:
             return await update.message.reply_text("❌ /sell btc 0.2")
         
@@ -2177,7 +2231,7 @@ try:
     @auto_update_user
     @require_permission('staff')
     async def edit_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        uid = update.effective_user.id
+        uid = ctx.bot_data.get('effective_user_id', update.effective_user.id)
     
         if not ctx.args:
             transactions = get_transaction_detail(uid)
@@ -2289,7 +2343,7 @@ try:
     @auto_update_user
     @require_permission('staff')
     async def delete_tx_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        uid = update.effective_user.id
+        uid = ctx.bot_data.get('effective_user_id', update.effective_user.id)
     
         if not ctx.args:
             await update.message.reply_text("❌ /del [id]")
@@ -2314,6 +2368,8 @@ try:
     @auto_update_user
     @rate_limit(30)
     async def alert_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        uid = ctx.bot_data.get('effective_user_id', update.effective_user.id)
+        
         if len(ctx.args) < 3:
             await update.message.reply_text("❌ /alert BTC above 50000", parse_mode='Markdown')
             return
@@ -2350,7 +2406,7 @@ try:
     @auto_update_user
     @rate_limit(30)
     async def alerts_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        uid = update.effective_user.id
+        uid = ctx.bot_data.get('effective_user_id', update.effective_user.id)
         alerts = get_user_alerts(uid)
         
         if not alerts:
@@ -2373,7 +2429,7 @@ try:
     @auto_update_user
     @rate_limit(30)
     async def stats_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        uid = update.effective_user.id
+        uid = ctx.bot_data.get('effective_user_id', update.effective_user.id)
         msg = await update.message.reply_text("🔄 Đang tính toán thống kê...")
         
         stats = get_portfolio_stats(uid)
@@ -2422,7 +2478,7 @@ try:
     @auto_update_user
     async def view_portfolio_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         """Xem portfolio của user khác (dành cho admin)"""
-        user_id = update.effective_user.id
+        user_id = ctx.bot_data.get('effective_user_id', update.effective_user.id)
         chat_id = update.effective_chat.id
         chat_type = update.effective_chat.type
         
@@ -2880,6 +2936,123 @@ try:
                 
         except Exception as e:
             await update.message.reply_text(f"❌ Lỗi: {str(e)}")
+
+    @auto_update_user
+    async def setup_group_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Thiết lập group này thuộc về chủ sở hữu"""
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        chat_type = update.effective_chat.type
+        
+        # Chỉ owner mới có thể setup
+        if user_id != OWNER_ID:
+            await update.message.reply_text("❌ Chỉ chủ sở hữu bot mới có thể setup group!")
+            return
+        
+        if chat_type not in ['group', 'supergroup']:
+            await update.message.reply_text("❌ Lệnh này chỉ dùng trong group!")
+            return
+        
+        # Set owner cho group
+        if set_group_owner(chat_id, OWNER_ID):
+            await update.message.reply_text(
+                f"✅ *THIẾT LẬP GROUP THÀNH CÔNG*\n━━━━━━━━━━━━━━━━\n\n"
+                f"• Group này đã được đặt dưới quyền sở hữu của bạn\n"
+                f"• Tất cả dữ liệu trong group sẽ là của bạn\n"
+                f"• Bạn có thể thêm admin để cùng quản lý\n\n"
+                f"🕐 {format_vn_time()}",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            await update.message.reply_text("❌ Lỗi khi thiết lập group!")
+
+    @auto_update_user
+    async def group_info_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Xem thông tin group"""
+        chat_id = update.effective_chat.id
+        chat_type = update.effective_chat.type
+        
+        if chat_type not in ['group', 'supergroup']:
+            await update.message.reply_text("❌ Lệnh này chỉ dùng trong group!")
+            return
+        
+        owner_id = get_group_owner(chat_id)
+        
+        # Lấy thông tin owner
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT username, first_name FROM users WHERE user_id = ?", (owner_id,))
+        owner_info = c.fetchone()
+        conn.close()
+        
+        owner_display = f"@{owner_info[0]}" if owner_info and owner_info[0] else (owner_info[1] if owner_info else f"User {owner_id}")
+        
+        msg = (
+            f"ℹ️ *THÔNG TIN GROUP*\n━━━━━━━━━━━━━━━━\n\n"
+            f"• Group ID: `{chat_id}`\n"
+            f"• Chủ sở hữu: {owner_display} (`{owner_id}`)\n"
+            f"• Bạn: {update.effective_user.first_name} (`{update.effective_user.id}`)\n\n"
+            f"🕐 {format_vn_time()}"
+        )
+        
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+    @auto_update_user
+    async def add_group_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Thêm admin cho group (chỉ chủ sở hữu mới được dùng)"""
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        chat_type = update.effective_chat.type
+        
+        if chat_type not in ['group', 'supergroup']:
+            await update.message.reply_text("❌ Lệnh này chỉ dùng trong nhóm!")
+            return
+        
+        # Chỉ chủ sở hữu group mới được thêm admin
+        if not is_group_owner(chat_id, user_id):
+            await update.message.reply_text("❌ Chỉ chủ sở hữu group mới có thể thêm admin!")
+            return
+        
+        if not ctx.args:
+            await update.message.reply_text("❌ /addadmin @username [view/edit/delete/manage]")
+            return
+        
+        target = ctx.args[0]
+        perm_type = ctx.args[1] if len(ctx.args) > 1 else 'view'
+        
+        target_id = await resolve_user_id(target, ctx)
+        if not target_id:
+            await update.message.reply_text(f"❌ Không tìm thấy user {target}")
+            return
+        
+        # Xác định quyền
+        permissions = {'view': 0, 'edit': 0, 'delete': 0, 'manage': 0}
+        
+        if perm_type == 'view':
+            permissions['view'] = 1
+        elif perm_type == 'edit':
+            permissions['view'] = 1
+            permissions['edit'] = 1
+        elif perm_type == 'delete':
+            permissions['view'] = 1
+            permissions['delete'] = 1
+        elif perm_type == 'manage':
+            permissions['manage'] = 1
+        elif perm_type == 'full':
+            permissions['view'] = 1
+            permissions['edit'] = 1
+            permissions['delete'] = 1
+            permissions['manage'] = 1
+        else:
+            await update.message.reply_text("❌ Loại quyền không hợp lệ!")
+            return
+        
+        if grant_permission(chat_id, target_id, user_id, permissions):
+            await update.message.reply_text(
+                f"✅ Đã thêm @{target} làm admin với quyền {perm_type}!"
+            )
+        else:
+            await update.message.reply_text("❌ Lỗi khi thêm admin!")
 
     # ==================== PERMISSION COMMAND ====================
     async def perm_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -4609,6 +4782,9 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         auto_migrate_permissions()
         migrate_permissions_table()
 
+        # Sau khi init_database
+        load_group_owners()
+
         # Migrate database
         try:
             migrate_database()
@@ -4678,6 +4854,9 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             app.add_handler(CommandHandler("syncdata", sync_data_command))
             app.add_handler(CommandHandler("owner", owner_panel))
             app.add_handler(CommandHandler("debugperm", debug_perm_command))
+            app.add_handler(CommandHandler("setupgroup", setup_group_command))
+            app.add_handler(CommandHandler("groupinfo", group_info_command))
+            app.add_handler(CommandHandler("addadmin", add_group_admin))
             app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_chat_members))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
             app.add_handler(CallbackQueryHandler(handle_callback))
