@@ -882,20 +882,27 @@ try:
             if conn:
                 conn.close()
 
-    def revoke_permission(group_id, admin_id):
+    def revoke_permission(group_id, user_id):
         conn = None
         try:
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
-            c.execute("DELETE FROM permissions WHERE group_id = ? AND admin_id = ?", (group_id, admin_id))
+            # ĐÃ SỬA: dùng user_id thay vì admin_id
+            c.execute("DELETE FROM permissions WHERE group_id = ? AND user_id = ?", 
+                      (group_id, user_id))
             conn.commit()
-            return c.rowcount > 0
+            affected = c.rowcount
+            conn.close()
+            
+            if affected > 0:
+                logger.info(f"✅ Đã thu hồi quyền của user {user_id} trong group {group_id}")
+                return True
+            else:
+                logger.info(f"ℹ️ Không tìm thấy quyền của user {user_id} trong group {group_id}")
+                return False
         except Exception as e:
             logger.error(f"❌ Lỗi thu hồi quyền: {e}")
             return False
-        finally:
-            if conn:
-                conn.close()
 
     def check_user_access(group_id, user_id, required_role='user'):
         try:
