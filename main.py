@@ -4434,46 +4434,46 @@ try:
                 
                 recent_incomes = get_recent_incomes(effective_user_id, 20)
                 recent_expenses = get_recent_expenses(effective_user_id, 20)
-                    
-                    if not recent_incomes and not recent_expenses:
-                        await query.edit_message_text(
-                            f"📭 Không có giao dịch nào!\n\n🕐 {format_vn_time_short()}",
-                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]])
-                        )
-                        return
-                    
-                    msg = "🔄 *20 GIAO DỊCH GẦN ĐÂY*\n━━━━━━━━━━━━━━━━\n\n"
-                    
-                    all_transactions = []
-                    
-                    for inc in recent_incomes:
-                        id, amount, source, note, date, currency = inc
-                        all_transactions.append(('💰', id, date, f"{format_currency_simple(amount, currency)} - {source}", note))
-                    
-                    for exp in recent_expenses:
-                        id, cat_name, amount, note, date, currency = exp
-                        all_transactions.append(('💸', id, date, f"{format_currency_simple(amount, currency)} - {cat_name}", note))
-                    
-                    all_transactions.sort(key=lambda x: x[2], reverse=True)
-                    
-                    for emoji, id, date, desc, note in all_transactions[:20]:
-                        msg += f"{emoji} #{id} {date}: {desc}\n"
-                        if note:
-                            msg += f"   📝 {note}\n"
-                    
-                    msg += f"\n🕐 {format_vn_time_short()}"
-                    
+                
+                if not recent_incomes and not recent_expenses:
                     await query.edit_message_text(
-                        msg, 
-                        parse_mode=ParseMode.MARKDOWN,
+                        f"📭 Không có giao dịch nào!\n\n🕐 {format_vn_time_short()}",
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]])
                     )
-                except Exception as e:
-                    logger.error(f"Lỗi expense_recent: {e}")
-                    await query.edit_message_text(
-                        "❌ Có lỗi xảy ra!",
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]])
-                    )
+                    return
+                
+                msg = "🔄 *20 GIAO DỊCH GẦN ĐÂY*\n━━━━━━━━━━━━━━━━\n\n"
+                
+                all_transactions = []
+                
+                for inc in recent_incomes:
+                    id, amount, source, note, date, currency = inc
+                    all_transactions.append(('💰', id, date, f"{format_currency_simple(amount, currency)} - {source}", note))
+                
+                for exp in recent_expenses:
+                    id, cat_name, amount, note, date, currency = exp
+                    all_transactions.append(('💸', id, date, f"{format_currency_simple(amount, currency)} - {cat_name}", note))
+                
+                all_transactions.sort(key=lambda x: x[2], reverse=True)
+                
+                for emoji, id, date, desc, note in all_transactions[:20]:
+                    msg += f"{emoji} #{id} {date}: {desc}\n"
+                    if note:
+                        msg += f"   📝 {note}\n"
+                
+                msg += f"\n🕐 {format_vn_time_short()}"
+                
+                await query.edit_message_text(
+                    msg, 
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]])
+                )
+            except Exception as e:
+                logger.error(f"Lỗi expense_recent: {e}")
+                await query.edit_message_text(
+                    "❌ Có lỗi xảy ra!",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]])
+                )
             
             elif data == "expense_export":
                 uid = query.from_user.id
