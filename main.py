@@ -2128,6 +2128,14 @@ try:
         )
 
     @auto_update_user
+    async def hide_keyboard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Ẩn bàn phím"""
+        await update.message.reply_text(
+            "✅ Đã ẩn bàn phím. Gõ /menu để hiện lại.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+
+    @auto_update_user
     async def help_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
@@ -5022,6 +5030,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             app.add_handler(CommandHandler("setupgroup", setup_group_command))
             app.add_handler(CommandHandler("groupinfo", group_info_command))
             app.add_handler(CommandHandler("addadmin", add_group_admin))
+            app.add_handler(CommandHandler("hide", hide_keyboard))
             app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_chat_members))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
             app.add_handler(CallbackQueryHandler(handle_callback))
