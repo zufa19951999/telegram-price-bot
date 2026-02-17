@@ -4619,6 +4619,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             app.add_handler(CommandHandler("checkperm", check_perm_command))
             app.add_handler(CommandHandler("syncdata", sync_data_command))
             app.add_handler(CommandHandler("owner", owner_panel))
+            app.add_handler(CommandHandler("debugperm", debug_perm_command))
             app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_chat_members))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
             app.add_handler(CallbackQueryHandler(handle_callback))
