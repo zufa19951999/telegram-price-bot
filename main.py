@@ -27,6 +27,31 @@ from telegram.error import TelegramError
 from functools import wraps
 from flask import Flask, request
 import asyncio
+# ==================== USERNAME CACHE ====================
+class UsernameCache:
+    def __init__(self):
+        self.cache = {}
+        self.last_update = {}
+        self.ttl = 3600  # 1 giờ
+    
+    def get(self, username):
+        clean = username.lower().replace('@', '')
+        if clean in self.cache:
+            if time.time() - self.last_update.get(clean, 0) < self.ttl:
+                return self.cache[clean]
+        return None
+    
+    def set(self, username, user_id):
+        if username:
+            clean = username.lower().replace('@', '')
+            self.cache[clean] = user_id
+            self.last_update[clean] = time.time()
+    
+    def clear(self):
+        self.cache.clear()
+        self.last_update.clear()
+
+username_cache = UsernameCache()
 
 # ==================== RENDER CONFIGURATION ====================
 class RenderConfig:
@@ -768,32 +793,105 @@ try:
             if conn:
                 conn.close()
 
-    # ==================== USER FUNCTIONS ====================
-    def update_user_info(user):
-        conn = None
+    # ==================== USER FUNCTIONS WITH AUTO-UPDATE ====================
+    async def update_user_info_async(user):
+        """Cập nhật thông tin user bất đồng bộ - gọi mỗi khi có tương tác"""
         try:
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
+            
+            current_time = get_vn_time().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Kiểm tra user đã tồn tại chưa
+            c.execute("SELECT user_id FROM users WHERE user_id = ?", (user.id,))
+            exists = c.fetchone()
+            
+            if exists:
+                # Cập nhật thông tin
+                c.execute('''UPDATE users SET 
+                             username = ?, 
+                             first_name = ?, 
+                             last_name = ?, 
+                             last_seen = ?
+                             WHERE user_id = ?''',
+                          (user.username, 
+                           user.first_name, 
+                           user.last_name, 
+                           current_time, 
+                           user.id))
+            else:
+                # Thêm mới
+                c.execute('''INSERT INTO users 
+                             (user_id, username, first_name, last_name, last_seen)
+                             VALUES (?, ?, ?, ?, ?)''',
+                          (user.id, 
+                           user.username, 
+                           user.first_name, 
+                           user.last_name, 
+                           current_time))
+            
+            conn.commit()
+            conn.close()
+            
+            # Update cache nếu có username
+            if user.username:
+                username_cache.set(user.username, user.id)
+            
+            logger.info(f"✅ Updated user {user.id} (@{user.username})")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Lỗi cập nhật user {user.id}: {e}")
+            return False
+    
+    def update_user_info_sync(user):
+        """Phiên bản đồng bộ cho các thread không async"""
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            
+            current_time = get_vn_time().strftime("%Y-%m-%d %H:%M:%S")
+            
             c.execute('''INSERT OR REPLACE INTO users 
                          (user_id, username, first_name, last_name, last_seen)
                          VALUES (?, ?, ?, ?, ?)''',
-                      (user.id, user.username, user.first_name, user.last_name,
-                       get_vn_time().strftime("%Y-%m-%d %H:%M:%S")))
+                      (user.id, 
+                       user.username, 
+                       user.first_name, 
+                       user.last_name, 
+                       current_time))
+            
             conn.commit()
+            conn.close()
             return True
         except Exception as e:
-            logger.error(f"❌ Lỗi cập nhật user: {e}")
+            logger.error(f"❌ Lỗi update_user_info_sync: {e}")
             return False
-        finally:
-            if conn:
-                conn.close()
-
+            
+    # ==================== AUTO UPDATE USER DECORATOR ====================
+    def auto_update_user(func):
+        """Decorator tự động cập nhật user info trước khi xử lý command"""
+        @wraps(func)
+        async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+            # Cập nhật user info nếu có user
+            if update.effective_user:
+                await update_user_info_async(update.effective_user)
+            
+            # Gọi hàm gốc
+            return await func(update, context, *args, **kwargs)
+        return wrapper
+    # ==================== USERNAME CACHE & LOOKUP ====================
     def get_user_id_by_username(username):
-        """Tìm user ID từ username - hỗ trợ cả có và không có @"""
+        """Tìm user ID từ username - hỗ trợ cache"""
         conn = None
         try:
             # Xử lý username
             clean_username = username.lower().replace('@', '').strip()
+            
+            # Kiểm tra cache trước
+            cached_id = username_cache.get(clean_username)
+            if cached_id:
+                logger.info(f"Cache hit for @{clean_username}: {cached_id}")
+                return cached_id
             
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
@@ -803,7 +901,9 @@ try:
             result = c.fetchone()
             
             if result:
-                return result[0]
+                user_id = result[0]
+                username_cache.set(clean_username, user_id)
+                return user_id
             
             # Tìm gần đúng (nếu không tìm thấy chính xác)
             c.execute("SELECT user_id, username FROM users WHERE username LIKE ?", 
@@ -812,8 +912,10 @@ try:
             
             if results:
                 # Nếu có nhiều kết quả, chọn cái đầu tiên
-                logger.info(f"Found {len(results)} users matching '{username}'")
-                return results[0][0]
+                user_id = results[0][0]
+                username_cache.set(clean_username, user_id)
+                logger.info(f"Found {len(results)} users matching '{username}', using first: {user_id}")
+                return user_id
             
             return None
         except Exception as e:
@@ -822,7 +924,7 @@ try:
         finally:
             if conn:
                 conn.close()
-
+            
     # ==================== HÀM ĐỊNH DẠNG ====================
     def fmt_price(p):
         try:
@@ -1201,6 +1303,155 @@ try:
         return InlineKeyboardMarkup(keyboard)
 
     # ==================== COMMAND HANDLERS ====================
+    @auto_update_user
+    async def whoami_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Kiểm tra thông tin user đã được lưu trong database"""
+        user = update.effective_user
+        
+        # Lấy thông tin từ database
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''SELECT user_id, username, first_name, last_name, last_seen 
+                     FROM users WHERE user_id = ?''', (user.id,))
+        db_user = c.fetchone()
+        conn.close()
+        
+        msg = f"👤 *THÔNG TIN CỦA BẠN*\n━━━━━━━━━━━━━━━━\n\n"
+        msg += f"• ID: `{user.id}`\n"
+        msg += f"• Username: @{user.username if user.username else 'None'}\n"
+        msg += f"• First Name: {user.first_name}\n"
+        msg += f"• Last Name: {user.last_name}\n\n"
+        
+        if db_user:
+            msg += f"*📦 DATABASE:*\n"
+            msg += f"• Username: @{db_user[1] if db_user[1] else 'None'}\n"
+            msg += f"• Last Seen: {db_user[4]}\n"
+            msg += f"• Status: ✅ Đã được lưu"
+        else:
+            msg += f"• Status: ❌ Chưa được lưu trong database"
+        
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+    
+    @auto_update_user
+    async def quick_grant_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Grant quyền nhanh bằng cách reply tin nhắn"""
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        chat_type = update.effective_chat.type
+        
+        if chat_type not in ['group', 'supergroup']:
+            await update.message.reply_text("❌ Lệnh này chỉ dùng trong nhóm!")
+            return
+        
+        # Kiểm tra quyền
+        if not check_permission(chat_id, user_id, 'manage'):
+            await update.message.reply_text("❌ Bạn không có quyền quản lý phân quyền!")
+            return
+        
+        # Kiểm tra có reply không
+        if not update.message.reply_to_message:
+            await update.message.reply_text("❌ Hãy reply tin nhắn của người cần grant!")
+            return
+        
+        if not ctx.args:
+            await update.message.reply_text("❌ Thiếu loại quyền! VD: `/permgrant view`", parse_mode=ParseMode.MARKDOWN)
+            return
+        
+        target_user = update.message.reply_to_message.from_user
+        perm_type = ctx.args[0].lower()
+        
+        # Cập nhật user info
+        await update_user_info_async(target_user)
+        
+        # Xử lý quyền
+        permissions = {'view': 0, 'edit': 0, 'delete': 0, 'manage': 0}
+        
+        if perm_type == 'view':
+            permissions['view'] = 1
+        elif perm_type == 'edit':
+            permissions['view'] = 1
+            permissions['edit'] = 1
+        elif perm_type == 'delete':
+            permissions['view'] = 1
+            permissions['delete'] = 1
+        elif perm_type == 'manage':
+            permissions['manage'] = 1
+        elif perm_type == 'full':
+            permissions['view'] = 1
+            permissions['edit'] = 1
+            permissions['delete'] = 1
+            permissions['manage'] = 1
+        else:
+            await update.message.reply_text("❌ Loại quyền không hợp lệ!")
+            return
+        
+        if grant_permission(chat_id, target_user.id, user_id, permissions):
+            await update.message.reply_text(
+                f"✅ Đã cấp quyền {perm_type} cho @{target_user.username or target_user.id}"
+            )
+        else:
+            await update.message.reply_text("❌ Lỗi khi cấp quyền!")
+    
+    @auto_update_user
+    async def getid_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Lấy ID của user"""
+        user = update.effective_user
+        chat = update.effective_chat
+        
+        msg = f"🔑 *THÔNG TIN ID*\n━━━━━━━━━━━━━━━━\n\n"
+        msg += f"👤 *Bạn:*\n"
+        msg += f"• ID: `{user.id}`\n"
+        msg += f"• Username: @{user.username if user.username else 'None'}\n\n"
+        
+        if update.message.reply_to_message and update.message.reply_to_message.from_user:
+            replied = update.message.reply_to_message.from_user
+            msg += f"👥 *Người được reply:*\n"
+            msg += f"• ID: `{replied.id}`\n"
+            msg += f"• Username: @{replied.username if replied.username else 'None'}\n"
+        
+        msg += f"\n💡 Dùng ID để grant: `/perm grant {user.id} view`"
+        
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+    
+    @auto_update_user
+    async def sync_users_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Đồng bộ danh sách user trong group"""
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        chat_type = update.effective_chat.type
+        
+        if chat_type not in ['group', 'supergroup']:
+            await update.message.reply_text("❌ Lệnh này chỉ dùng trong nhóm!")
+            return
+        
+        # Kiểm tra quyền
+        if not check_permission(chat_id, user_id, 'manage'):
+            await update.message.reply_text("❌ Bạn không có quyền!")
+            return
+        
+        msg = await update.message.reply_text("🔄 Đang đồng bộ danh sách thành viên...")
+        
+        try:
+            # Lấy danh sách admin group
+            admins = await ctx.bot.get_chat_administrators(chat_id)
+            count = 0
+            
+            for admin in admins:
+                if admin.user:
+                    await update_user_info_async(admin.user)
+                    count += 1
+            
+            await msg.edit_text(
+                f"✅ *ĐỒNG BỘ THÀNH CÔNG*\n━━━━━━━━━━━━━━━━\n\n"
+                f"📊 Đã cập nhật: {count} admin\n"
+                f"👥 Tổng số: {len(admins)} thành viên\n\n"
+                f"🕐 {format_vn_time()}",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception as e:
+            await msg.edit_text(f"❌ Lỗi: {e}")
+
+    @auto_update_user
     async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if update.effective_chat.type in ['group', 'supergroup']:
             welcome_msg = (
@@ -1228,6 +1479,7 @@ try:
             )
             await update.message.reply_text(welcome_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=get_main_keyboard())
 
+    @auto_update_user
     async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "👇 *Chọn chức năng bên dưới*",
@@ -1235,6 +1487,7 @@ try:
             reply_markup=get_main_keyboard()
         )
 
+    @auto_update_user
     async def help_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
@@ -1274,6 +1527,7 @@ try:
         help_msg += f"\n🕐 {format_vn_time()}"
         await update.message.reply_text(help_msg, parse_mode=ParseMode.MARKDOWN)
 
+    @auto_update_user
     @rate_limit(30)
     async def usdt_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         msg = await update.message.reply_text("🔄 Đang tra cứu...")
@@ -1294,6 +1548,7 @@ try:
         await msg.delete()
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
 
+    @auto_update_user
     @rate_limit(30)
     async def s_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not ctx.args:
@@ -1321,6 +1576,7 @@ try:
         await msg.delete()
         await update.message.reply_text("\n━━━━━━━━━━━━\n".join(results) + f"\n\n🕐 {format_vn_time_short()}", parse_mode='Markdown')
 
+    @auto_update_user
     @rate_limit(30)
     async def buy_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         uid = update.effective_user.id
@@ -1360,6 +1616,7 @@ try:
         else:
             await update.message.reply_text(f"❌ Lỗi khi thêm giao dịch *{symbol}*", parse_mode='Markdown')
 
+    @auto_update_user
     @rate_limit(30)
     async def sell_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         uid = update.effective_user.id
@@ -1443,6 +1700,7 @@ try:
         )
         await update.message.reply_text(msg, parse_mode='Markdown')
 
+    @auto_update_user
     @rate_limit(30)
     async def edit_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         uid = update.effective_user.id
@@ -1554,6 +1812,7 @@ try:
         else:
             await update.message.reply_text("❌ /edit - Xem DS\n/edit [id] - Xem chi tiết\n/edit [id] [sl] [giá] - Sửa")
 
+    @auto_update_user
     @rate_limit(30)
     async def delete_tx_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         uid = update.effective_user.id
@@ -1578,6 +1837,7 @@ try:
         except ValueError:
             await update.message.reply_text("❌ ID không hợp lệ")
 
+    @auto_update_user
     @rate_limit(30)
     async def alert_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if len(ctx.args) < 3:
@@ -1613,6 +1873,7 @@ try:
         else:
             await update.message.reply_text("❌ Lỗi khi tạo cảnh báo!")
 
+    @auto_update_user
     @rate_limit(30)
     async def alerts_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         uid = update.effective_user.id
@@ -1635,6 +1896,7 @@ try:
         msg += f"🕐 {format_vn_time_short()}"
         await update.message.reply_text(msg, parse_mode='Markdown')
 
+    @auto_update_user
     @rate_limit(30)
     async def stats_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         uid = update.effective_user.id
@@ -1760,15 +2022,47 @@ try:
             target = ctx.args[1]
             perm_type = ctx.args[2].lower()
             
+            target_id = None
+            
+            # Xử lý username
             if target.startswith('@'):
                 username = target[1:]
                 target_id = get_user_id_by_username(username)
+                
                 if not target_id:
-                    await update.message.reply_text(f"❌ Không tìm thấy user {target}")
-                    return
+                    # Thử tìm trong chat hiện tại
+                    try:
+                        chat = await ctx.bot.get_chat(username)
+                        if chat:
+                            target_id = chat.id
+                            # Cập nhật vào database ngay lập tức
+                            await update_user_info_async(chat)
+                    except Exception as e:
+                        logger.error(f"Lỗi get_chat: {e}")
+                    
+                    if not target_id:
+                        await update.message.reply_text(
+                            f"❌ Không tìm thấy user {target}\n\n"
+                            f"💡 *Cách khắc phục:*\n"
+                            f"1. Yêu cầu user @{username} nhắn tin cho bot\n"
+                            f"2. Hoặc dùng ID trực tiếp: `/perm grant [ID] {perm_type}`\n"
+                            f"3. Dùng `/whoami` để xem ID của bạn\n"
+                            f"4. Hoặc reply tin nhắn của họ và dùng: `/permgrant {perm_type}`",
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                        return
             else:
                 try:
                     target_id = int(target)
+                    # Kiểm tra xem user đã tồn tại trong database chưa
+                    if not get_user_id_by_username(str(target_id)):
+                        # Nếu chưa, thử lấy từ Telegram
+                        try:
+                            chat = await ctx.bot.get_chat(target_id)
+                            if chat:
+                                await update_user_info_async(chat)
+                        except:
+                            pass
                 except:
                     await update.message.reply_text("❌ ID không hợp lệ!")
                     return
@@ -2113,6 +2407,8 @@ try:
     async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
+        if query.from_user:
+            await update_user_info_async(query.from_user)
         logger.info(f"Callback: {query.data}")
         
         data = query.data
@@ -3174,6 +3470,10 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             app.add_handler(CommandHandler("alerts", alerts_command))
             app.add_handler(CommandHandler("stats", stats_command))
             app.add_handler(CommandHandler("perm", perm_command))
+            app.add_handler(CommandHandler("whoami", whoami_command))
+            app.add_handler(CommandHandler("permgrant", quick_grant_command))
+            app.add_handler(CommandHandler("getid", getid_command))
+            app.add_handler(CommandHandler("syncusers", sync_users_command))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
             app.add_handler(CallbackQueryHandler(handle_callback))
             
