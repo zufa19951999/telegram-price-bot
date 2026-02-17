@@ -352,6 +352,63 @@ try:
             if conn:
                 conn.close()
 
+    def migrate_permissions_table():
+        """Migrate bảng permissions từ cấu trúc cũ sang mới"""
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            
+            # Kiểm tra xem bảng permissions có tồn tại không
+            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='permissions'")
+            if not c.fetchone():
+                conn.close()
+                return
+            
+            # Kiểm tra cấu trúc hiện tại
+            c.execute("PRAGMA table_info(permissions)")
+            columns = [col[1] for col in c.fetchall()]
+            
+            # Nếu là cấu trúc cũ (có cột admin_id)
+            if 'admin_id' in columns and 'user_id' not in columns:
+                logger.info("🔄 Migrating old permissions table...")
+                
+                # Tạo bảng tạm
+                c.execute('''CREATE TABLE permissions_new
+                             (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                              group_id INTEGER, 
+                              user_id INTEGER, 
+                              granted_by INTEGER,
+                              is_approved INTEGER DEFAULT 1,
+                              role TEXT DEFAULT 'staff',
+                              can_view_all INTEGER DEFAULT 0,
+                              can_edit_all INTEGER DEFAULT 0,
+                              can_delete_all INTEGER DEFAULT 0,
+                              can_manage_perms INTEGER DEFAULT 0,
+                              created_at TEXT,
+                              approved_at TEXT,
+                              UNIQUE(group_id, user_id))''')
+                
+                # Copy dữ liệu từ bảng cũ
+                c.execute('''INSERT INTO permissions_new 
+                             (group_id, user_id, granted_by, can_view_all, can_edit_all, 
+                              can_delete_all, can_manage_perms, created_at, is_approved, role)
+                             SELECT group_id, admin_id, granted_by, can_view_all, can_edit_all,
+                                    can_delete_all, can_manage_perms, created_at, 1, 'staff'
+                             FROM permissions''')
+                
+                # Xóa bảng cũ
+                c.execute("DROP TABLE permissions")
+                
+                # Đổi tên bảng mới
+                c.execute("ALTER TABLE permissions_new RENAME TO permissions")
+                
+                conn.commit()
+                logger.info("✅ Permissions table migrated successfully")
+            
+            conn.close()
+        except Exception as e:
+            logger.error(f"❌ Lỗi migrate permissions: {e}")
+
     def migrate_database():
         conn = None
         try:
@@ -716,25 +773,29 @@ try:
                 time.sleep(10)
 
     # ==================== PERMISSIONS FUNCTIONS ====================
-    def grant_permission(group_id, admin_id, granted_by, permissions):
+    def grant_permission(group_id, user_id, granted_by, permissions):
         conn = None
         try:
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
             created_at = get_vn_time().strftime("%Y-%m-%d %H:%M:%S")
             
-            c.execute("DELETE FROM permissions WHERE group_id = ? AND admin_id = ?", (group_id, admin_id))
+            # SỬA: dùng user_id thay vì admin_id
+            c.execute("DELETE FROM permissions WHERE group_id = ? AND user_id = ?", 
+                      (group_id, user_id))
             
             c.execute('''INSERT INTO permissions 
-                         (group_id, admin_id, granted_by, can_view_all, can_edit_all, 
-                          can_delete_all, can_manage_perms, created_at)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                      (group_id, admin_id, granted_by,
+                         (group_id, user_id, granted_by, can_view_all, can_edit_all, 
+                          can_delete_all, can_manage_perms, created_at, is_approved, role)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                      (group_id, user_id, granted_by,
                        permissions.get('view', 1),
                        permissions.get('edit', 0),
                        permissions.get('delete', 0),
                        permissions.get('manage', 0),
-                       created_at))
+                       created_at,
+                       1,  # is_approved = 1
+                       'staff'))  # role = 'staff' cho admin
             conn.commit()
             return True
         except Exception as e:
@@ -942,8 +1003,9 @@ try:
         try:
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
+            # SỬA: dùng user_id thay vì admin_id
             c.execute('''SELECT can_view_all, can_edit_all, can_delete_all, can_manage_perms 
-                         FROM permissions WHERE group_id = ? AND admin_id = ?''',
+                         FROM permissions WHERE group_id = ? AND user_id = ?''',
                       (group_id, user_id))
             result = c.fetchone()
             
@@ -1776,57 +1838,6 @@ try:
                 f"🕐 {format_vn_time()}"
             )
             await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
-
-    @auto_update_user
-    async def new_chat_members(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        """Khi có thành viên mới vào group"""
-        for new_member in update.message.new_chat_members:
-            if new_member.is_bot:
-                continue
-            
-            chat_id = update.effective_chat.id
-            
-            # Tự động thêm vào danh sách chờ duyệt
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            
-            c.execute("SELECT * FROM permissions WHERE group_id = ? AND user_id = ?", 
-                      (chat_id, new_member.id))
-            exists = c.fetchone()
-            
-            if not exists:
-                created_at = get_vn_time().strftime("%Y-%m-%d %H:%M:%S")
-                c.execute('''INSERT INTO permissions 
-                             (group_id, user_id, granted_by, is_approved, role,
-                              can_view_all, created_at)
-                             VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                          (chat_id, new_member.id, new_member.id,
-                           0, 'user', 0, created_at))
-                conn.commit()
-                
-                # Gửi thông báo cho Owner
-                try:
-                    await ctx.bot.send_message(
-                        OWNER_ID,
-                        f"👤 *User mới vào group*\n\n"
-                        f"User: @{new_member.username or new_member.first_name}\n"
-                        f"ID: `{new_member.id}`\n"
-                        f"Group: {update.effective_chat.title}\n\n"
-                        f"Duyệt: `/owner approve {new_member.id}`",
-                        parse_mode=ParseMode.MARKDOWN
-                    )
-                except:
-                    pass
-            
-            conn.close()
-            
-            # Gửi welcome message
-            await update.message.reply_text(
-                f"👋 Chào mừng @{new_member.username or new_member.first_name}!\n\n"
-                f"Bạn cần được @{OWNER_USERNAME} duyệt mới có thể sử dụng bot.\n"
-                f"Vui lòng chờ trong giây lát...",
-                parse_mode=ParseMode.MARKDOWN
-            )
     
     async def resolve_user_id(target, ctx):
         """Helper để lấy user ID từ username hoặc reply"""
@@ -2495,7 +2506,7 @@ try:
             await update.message.reply_text("❌ Lệnh này chỉ dùng trong nhóm!")
             return
         
-        # Kiểm tra quyền manage (chỉ admin mới có thể đồng bộ)
+        # Kiểm tra quyền manage
         if not check_permission(chat_id, user_id, 'manage'):
             await update.message.reply_text("❌ Bạn không có quyền thực hiện lệnh này!")
             return
@@ -2509,10 +2520,6 @@ try:
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
             
-            # Đếm số admin hiện có trong database
-            c.execute("SELECT COUNT(*) FROM permissions WHERE group_id = ?", (chat_id,))
-            current_count = c.fetchone()[0]
-            
             granted_count = 0
             updated_count = 0
             
@@ -2522,29 +2529,36 @@ try:
                     await update_user_info_async(admin.user)
                     
                     # Kiểm tra xem đã có quyền chưa
-                    c.execute("SELECT * FROM permissions WHERE group_id = ? AND admin_id = ?", 
+                    c.execute("SELECT * FROM permissions WHERE group_id = ? AND user_id = ?", 
                               (chat_id, admin.user.id))
                     exists = c.fetchone()
                     
                     if not exists:
-                        # Nếu chưa có, cấp quyền cơ bản (view)
+                        # Nếu chưa có, cấp quyền
                         permissions = {'view': 1, 'edit': 0, 'delete': 0, 'manage': 0}
+                        role = 'user'
                         
-                        # Nếu là creator thì cấp full quyền
+                        # Nếu là creator hoặc admin thì cấp quyền cao hơn
                         if admin.status == 'creator':
                             permissions = {'view': 1, 'edit': 1, 'delete': 1, 'manage': 1}
+                            role = 'staff'
+                        elif admin.status == 'administrator':
+                            permissions = {'view': 1, 'edit': 1, 'delete': 1, 'manage': 0}
+                            role = 'staff'
                         
+                        created_at = get_vn_time().strftime("%Y-%m-%d %H:%M:%S")
                         c.execute('''INSERT INTO permissions 
-                                     (group_id, admin_id, granted_by, can_view_all, can_edit_all, 
-                                      can_delete_all, can_manage_perms, created_at)
-                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                                     (group_id, user_id, granted_by, is_approved, role,
+                                      can_view_all, can_edit_all, can_delete_all, can_manage_perms,
+                                      created_at, approved_at)
+                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                                   (chat_id, admin.user.id, user_id,
+                                   1, role,
                                    permissions['view'], permissions['edit'], 
                                    permissions['delete'], permissions['manage'],
-                                   get_vn_time().strftime("%Y-%m-%d %H:%M:%S")))
+                                   created_at, created_at))
                         granted_count += 1
                     else:
-                        # Nếu đã có, cập nhật thông tin (có thể nâng cấp quyền nếu cần)
                         updated_count += 1
             
             conn.commit()
@@ -2555,8 +2569,7 @@ try:
                 f"📊 Kết quả:\n"
                 f"• Tổng số admin trong group: {len(admins)}\n"
                 f"• Đã cấp quyền mới: {granted_count}\n"
-                f"• Đã cập nhật: {updated_count}\n"
-                f"• Tổng trong DB: {current_count + granted_count}\n\n"
+                f"• Đã cập nhật: {updated_count}\n\n"
                 f"🕐 {format_vn_time()}",
                 parse_mode=ParseMode.MARKDOWN
             )
@@ -4437,7 +4450,9 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         if not init_database():
             logger.error("❌ KHÔNG THỂ KHỞI TẠO DATABASE")
             time.sleep(5)
-        
+            
+        migrate_permissions_table()
+
         # Migrate database
         try:
             migrate_database()
