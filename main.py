@@ -4300,8 +4300,9 @@ try:
                     await query.edit_message_text("❌ Bạn không có quyền xem dữ liệu!")
                     return
                 
-                incomes_data = get_income_by_period(effective_user_id, 'day')
-                expenses_data = get_expenses_by_period(effective_user_id, 'day')
+                try:
+                    incomes_data = get_income_by_period(effective_user_id, 'day')
+                    expenses_data = get_expenses_by_period(effective_user_id, 'day')
                     
                     msg = f"📅 *HÔM NAY ({get_vn_time().strftime('%d/%m/%Y')})*\n━━━━━━━━━━━━━━━━\n\n"
                     
