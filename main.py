@@ -1081,23 +1081,12 @@ try:
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
             
-            # Kiểm tra cấu trúc bảng
-            c.execute("PRAGMA table_info(permissions)")
-            columns = [col[1] for col in c.fetchall()]
-            
-            result = None
-            if 'admin_id' in columns:
-                # Cấu trúc cũ
-                c.execute('''SELECT can_view_all, can_edit_all, can_delete_all, can_manage_perms 
-                             FROM permissions WHERE group_id = ? AND admin_id = ?''',
-                          (group_id, user_id))
-                result = c.fetchone()
-            else:
-                # Cấu trúc mới
-                c.execute('''SELECT can_view_all, can_edit_all, can_delete_all, can_manage_perms 
-                             FROM permissions WHERE group_id = ? AND user_id = ?''',
-                          (group_id, user_id))
-                result = c.fetchone()
+            # Dùng đúng tên cột theo cấu trúc mới
+            c.execute('''SELECT can_view_all, can_edit_all, can_delete_all, can_manage_perms 
+                         FROM permissions 
+                         WHERE group_id = ? AND user_id = ?''',
+                      (group_id, user_id))
+            result = c.fetchone()
             
             if not result:
                 logger.info(f"🔍 User {user_id} không có quyền trong group {group_id}")
@@ -1115,6 +1104,7 @@ try:
                 return can_manage == 1
             
             return False
+            
         except Exception as e:
             logger.error(f"❌ Lỗi check_permission: {e}")
             return False
@@ -1128,21 +1118,11 @@ try:
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
             
-            # Kiểm tra cấu trúc bảng
-            c.execute("PRAGMA table_info(permissions)")
-            columns = [col[1] for col in c.fetchall()]
-            
-            if 'admin_id' in columns:
-                # Cấu trúc cũ
-                c.execute('''SELECT admin_id, can_view_all, can_edit_all, can_delete_all, can_manage_perms 
-                             FROM permissions WHERE group_id = ?
-                             ORDER BY created_at''', (group_id,))
-            else:
-                # Cấu trúc mới
-                c.execute('''SELECT user_id, can_view_all, can_edit_all, can_delete_all, can_manage_perms 
-                             FROM permissions WHERE group_id = ?
-                             ORDER BY created_at''', (group_id,))
-            
+            # Dùng đúng tên cột
+            c.execute('''SELECT user_id, can_view_all, can_edit_all, can_delete_all, can_manage_perms 
+                         FROM permissions 
+                         WHERE group_id = ?
+                         ORDER BY created_at''', (group_id,))
             return c.fetchall()
         except Exception as e:
             logger.error(f"❌ Lỗi get_all_admins: {e}")
