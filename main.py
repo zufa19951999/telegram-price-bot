@@ -1120,11 +1120,13 @@ try:
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
             
-            # Dùng đúng tên cột
-            c.execute('''SELECT user_id, can_view_all, can_edit_all, can_delete_all, can_manage_perms 
-                         FROM permissions 
-                         WHERE group_id = ?
-                         ORDER BY created_at''', (group_id,))
+            # Lấy thông tin admin kèm username từ bảng users
+            c.execute('''SELECT p.user_id, p.can_view_all, p.can_edit_all, p.can_delete_all, p.can_manage_perms,
+                                u.username, u.first_name
+                         FROM permissions p
+                         LEFT JOIN users u ON p.user_id = u.user_id
+                         WHERE p.group_id = ?
+                         ORDER BY p.created_at''', (group_id,))
             return c.fetchall()
         except Exception as e:
             logger.error(f"❌ Lỗi get_all_admins: {e}")
@@ -3122,17 +3124,22 @@ try:
             
             msg = "👑 *DANH SÁCH ADMIN*\n━━━━━━━━━━━━━━━━\n\n"
             for admin in admins:
-                # admin gồm: user_id, view, edit, delete, manage, username, first_name
-                user_id = admin[0]
-                view, edit, delete, manage = admin[1:5]
-                username = admin[5]
-                first_name = admin[6]
+                # Kiểm tra độ dài của admin tuple
+                if len(admin) >= 7:
+                    user_id, view, edit, delete, manage, username, first_name = admin
+                else:
+                    # Nếu là cấu trúc cũ (chỉ 5 cột)
+                    user_id, view, edit, delete, manage = admin[:5]
+                    username = None
+                    first_name = None
                 
-                # Tạo tên hiển thị: ID + Username (nếu có)
+                # Tạo tên hiển thị
                 if username:
                     display = f"`{user_id}` @{username}"
+                elif first_name:
+                    display = f"`{user_id}` {first_name}"
                 else:
-                    display = f"`{user_id}` {first_name or ''}"
+                    display = f"`{user_id}`"
                 
                 permissions = []
                 if view: permissions.append("👁 Xem")
