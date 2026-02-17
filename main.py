@@ -346,8 +346,11 @@ try:
             
             conn.commit()
             logger.info(f"✅ Database initialized with enhanced permissions")
+            return True
+        
         except Exception as e:
             logger.error(f"❌ Lỗi database: {e}")
+            return False
         finally:
             if conn:
                 conn.close()
