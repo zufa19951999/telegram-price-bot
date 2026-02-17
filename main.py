@@ -1672,6 +1672,29 @@ try:
         if chat_type not in ['group', 'supergroup']:
             await update.message.reply_text("❌ Lệnh này chỉ dùng trong nhóm!")
             return
+        # TỰ ĐỘNG CẤP QUYỀN CHO USER ĐẦU TIÊN
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM permissions WHERE group_id = ?", (chat_id,))
+        count = c.fetchone()[0]
+        conn.close()
+        
+        if count == 0:
+            # User đầu tiên được auto grant full quyền
+            permissions = {'view': 1, 'edit': 1, 'delete': 1, 'manage': 1}
+            if grant_permission(chat_id, user_id, user_id, permissions):
+                await update.message.reply_text(
+                    "👑 *BẠN LÀ ADMIN ĐẦU TIÊN*\n\n"
+                    "✅ Đã tự động cấp toàn quyền!\n"
+                    "Dùng `/perm list` để xem danh sách.",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                return
+        
+        # Tiếp tục logic kiểm tra quyền bình thường
+        if not check_permission(chat_id, user_id, 'manage'):
+            await update.message.reply_text("❌ Bạn không có quyền quản lý phân quyền!")
+            return
         
         if not check_permission(chat_id, user_id, 'manage'):
             await update.message.reply_text("❌ Bạn không có quyền quản lý phân quyền!")
