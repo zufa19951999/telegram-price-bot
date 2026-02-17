@@ -352,6 +352,58 @@ try:
             if conn:
                 conn.close()
 
+    def auto_migrate_permissions():
+        """Tự động migrate permissions table nếu cần"""
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            
+            # Kiểm tra bảng permissions có tồn tại không
+            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='permissions'")
+            if not c.fetchone():
+                conn.close()
+                return
+            
+            # Kiểm tra cấu trúc hiện tại
+            c.execute("PRAGMA table_info(permissions)")
+            columns = [col[1] for col in c.fetchall()]
+            
+            # Nếu là cấu trúc cũ, thêm các cột mới nếu chưa có
+            if 'admin_id' in columns and 'user_id' not in columns:
+                logger.info("🔄 Đang migrate permissions table...")
+                
+                # Thêm cột user_id
+                try:
+                    c.execute("ALTER TABLE permissions ADD COLUMN user_id INTEGER")
+                except:
+                    pass
+                
+                # Copy dữ liệu từ admin_id sang user_id
+                c.execute("UPDATE permissions SET user_id = admin_id WHERE user_id IS NULL")
+                
+                # Thêm các cột mới
+                try:
+                    c.execute("ALTER TABLE permissions ADD COLUMN is_approved INTEGER DEFAULT 1")
+                except:
+                    pass
+                
+                try:
+                    c.execute("ALTER TABLE permissions ADD COLUMN role TEXT DEFAULT 'staff'")
+                except:
+                    pass
+                
+                try:
+                    c.execute("ALTER TABLE permissions ADD COLUMN approved_at TEXT")
+                except:
+                    pass
+                
+                conn.commit()
+                logger.info("✅ Migrate permissions thành công!")
+            
+            conn.close()
+        except Exception as e:
+            logger.error(f"❌ Lỗi migrate: {e}")
+
     def migrate_permissions_table():
         """Migrate bảng permissions từ cấu trúc cũ sang mới"""
         try:
@@ -780,22 +832,44 @@ try:
             c = conn.cursor()
             created_at = get_vn_time().strftime("%Y-%m-%d %H:%M:%S")
             
-            # SỬA: dùng user_id thay vì admin_id
-            c.execute("DELETE FROM permissions WHERE group_id = ? AND user_id = ?", 
-                      (group_id, user_id))
+            # Kiểm tra cấu trúc bảng hiện tại
+            c.execute("PRAGMA table_info(permissions)")
+            columns = [col[1] for col in c.fetchall()]
             
-            c.execute('''INSERT INTO permissions 
-                         (group_id, user_id, granted_by, can_view_all, can_edit_all, 
-                          can_delete_all, can_manage_perms, created_at, is_approved, role)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                      (group_id, user_id, granted_by,
-                       permissions.get('view', 1),
-                       permissions.get('edit', 0),
-                       permissions.get('delete', 0),
-                       permissions.get('manage', 0),
-                       created_at,
-                       1,  # is_approved = 1
-                       'staff'))  # role = 'staff' cho admin
+            # Nếu là cấu trúc cũ (có cột admin_id)
+            if 'admin_id' in columns:
+                # Dùng cấu trúc cũ
+                c.execute("DELETE FROM permissions WHERE group_id = ? AND admin_id = ?", 
+                          (group_id, user_id))
+                
+                c.execute('''INSERT INTO permissions 
+                             (group_id, admin_id, granted_by, can_view_all, can_edit_all, 
+                              can_delete_all, can_manage_perms, created_at)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                          (group_id, user_id, granted_by,
+                           permissions.get('view', 1),
+                           permissions.get('edit', 0),
+                           permissions.get('delete', 0),
+                           permissions.get('manage', 0),
+                           created_at))
+            else:
+                # Dùng cấu trúc mới
+                c.execute("DELETE FROM permissions WHERE group_id = ? AND user_id = ?", 
+                          (group_id, user_id))
+                
+                c.execute('''INSERT INTO permissions 
+                             (group_id, user_id, granted_by, is_approved, role,
+                              can_view_all, can_edit_all, can_delete_all, can_manage_perms,
+                              created_at, approved_at)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                          (group_id, user_id, granted_by,
+                           1, 'staff',
+                           permissions.get('view', 0),
+                           permissions.get('edit', 0),
+                           permissions.get('delete', 0),
+                           permissions.get('manage', 0),
+                           created_at, created_at))
+            
             conn.commit()
             return True
         except Exception as e:
@@ -1003,34 +1077,43 @@ try:
         try:
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
-            # SỬA: dùng user_id thay vì admin_id
-            c.execute('''SELECT can_view_all, can_edit_all, can_delete_all, can_manage_perms 
-                         FROM permissions WHERE group_id = ? AND user_id = ?''',
-                      (group_id, user_id))
-            result = c.fetchone()
+            
+            # Kiểm tra cấu trúc bảng
+            c.execute("PRAGMA table_info(permissions)")
+            columns = [col[1] for col in c.fetchall()]
+            
+            result = None
+            if 'admin_id' in columns:
+                # Cấu trúc cũ
+                c.execute('''SELECT can_view_all, can_edit_all, can_delete_all, can_manage_perms 
+                             FROM permissions WHERE group_id = ? AND admin_id = ?''',
+                          (group_id, user_id))
+                result = c.fetchone()
+            else:
+                # Cấu trúc mới
+                c.execute('''SELECT can_view_all, can_edit_all, can_delete_all, can_manage_perms 
+                             FROM permissions WHERE group_id = ? AND user_id = ?''',
+                          (group_id, user_id))
+                result = c.fetchone()
             
             if not result:
-                logger.info(f"🔍 Permission check: User {user_id} has NO permissions in group {group_id}")
+                logger.info(f"🔍 User {user_id} không có quyền trong group {group_id}")
                 return False
             
             can_view, can_edit, can_delete, can_manage = result
             
             if permission_type == 'view':
-                has_perm = can_view == 1
+                return can_view == 1
             elif permission_type == 'edit':
-                has_perm = can_edit == 1
+                return can_edit == 1
             elif permission_type == 'delete':
-                has_perm = can_delete == 1
+                return can_delete == 1
             elif permission_type == 'manage':
-                has_perm = can_manage == 1
-            else:
-                has_perm = False
+                return can_manage == 1
             
-            logger.info(f"🔍 Permission check: User {user_id} in group {group_id} - {permission_type}: {has_perm}")
-            return has_perm
-            
+            return False
         except Exception as e:
-            logger.error(f"❌ Lỗi kiểm tra quyền: {e}")
+            logger.error(f"❌ Lỗi check_permission: {e}")
             return False
         finally:
             if conn:
@@ -1041,14 +1124,25 @@ try:
         try:
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
-            c.execute('''SELECT p.admin_id, p.can_view_all, p.can_edit_all, p.can_delete_all, 
-                                p.can_manage_perms
-                         FROM permissions p
-                         WHERE p.group_id = ?
-                         ORDER BY p.created_at''', (group_id,))
+            
+            # Kiểm tra cấu trúc bảng
+            c.execute("PRAGMA table_info(permissions)")
+            columns = [col[1] for col in c.fetchall()]
+            
+            if 'admin_id' in columns:
+                # Cấu trúc cũ
+                c.execute('''SELECT admin_id, can_view_all, can_edit_all, can_delete_all, can_manage_perms 
+                             FROM permissions WHERE group_id = ?
+                             ORDER BY created_at''', (group_id,))
+            else:
+                # Cấu trúc mới
+                c.execute('''SELECT user_id, can_view_all, can_edit_all, can_delete_all, can_manage_perms 
+                             FROM permissions WHERE group_id = ?
+                             ORDER BY created_at''', (group_id,))
+            
             return c.fetchall()
         except Exception as e:
-            logger.error(f"❌ Lỗi lấy danh sách admin: {e}")
+            logger.error(f"❌ Lỗi get_all_admins: {e}")
             return []
         finally:
             if conn:
@@ -4451,6 +4545,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             logger.error("❌ KHÔNG THỂ KHỞI TẠO DATABASE")
             time.sleep(5)
             
+        auto_migrate_permissions()
         migrate_permissions_table()
 
         # Migrate database
