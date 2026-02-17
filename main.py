@@ -898,12 +898,7 @@ try:
                 conn.close()
 
     def check_user_access(group_id, user_id, required_role='user'):
-        """
-        Kiểm tra quyền truy cập của user
-        required_role: 'owner', 'staff', 'user'
-        """
         try:
-            # Owner có toàn quyền
             if is_owner(user_id):
                 return True
             
@@ -918,17 +913,13 @@ try:
             conn.close()
             
             if not result:
-                logger.info(f"🚫 User {user_id} chưa được cấp quyền trong group {group_id}")
                 return False
             
             role, is_approved, can_view, can_edit, can_delete, can_manage = result
             
-            # Chưa được duyệt
-            if is_approved == 0 and role != 'owner':
-                logger.info(f"⏳ User {user_id} chưa được duyệt")
+            if is_approved == 0:
                 return False
             
-            # Kiểm tra theo role yêu cầu
             if required_role == 'owner':
                 return role == 'owner'
             elif required_role == 'staff':
@@ -942,7 +933,6 @@ try:
             return False
     
     def get_user_permissions(group_id, user_id):
-        """Lấy chi tiết quyền của user"""
         try:
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
@@ -1081,7 +1071,7 @@ try:
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
             
-            # Dùng đúng tên cột theo cấu trúc mới
+            # Dùng đúng tên cột: can_view_all, can_edit_all, can_delete_all, can_manage_perms
             c.execute('''SELECT can_view_all, can_edit_all, can_delete_all, can_manage_perms 
                          FROM permissions 
                          WHERE group_id = ? AND user_id = ?''',
@@ -1130,7 +1120,6 @@ try:
         finally:
             if conn:
                 conn.close()
-
     # ==================== USER FUNCTIONS WITH AUTO-UPDATE ====================
     async def update_user_info_async(user):
         """Cập nhật thông tin user bất đồng bộ - gọi mỗi khi có tương tác"""
