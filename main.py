@@ -2363,7 +2363,7 @@ try:
     # ==================== HANDLE MESSAGE ====================
     async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if update.effective_user:
-            update_user_info(update.effective_user)
+            await update_user_info_async(update.effective_user)
         
         logger.info(f"Nhận tin nhắn từ user {update.effective_user.id} trong chat {update.effective_chat.type}: {update.message.text}")
         
