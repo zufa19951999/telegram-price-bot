@@ -1523,6 +1523,8 @@ try:
             help_msg += "• `/perm grant @user delete` - Cấp quyền xóa\n"
             help_msg += "• `/perm grant @user manage` - Cấp quyền QL\n"
             help_msg += "• `/perm revoke @user` - Thu hồi quyền\n"
+            help_msg += "• `/view @user` - Xem portfolio người khác\n"
+            help_msg += "• `/users` - Xem danh sách thành viên\n"
         
         help_msg += f"\n🕐 {format_vn_time()}"
         await update.message.reply_text(help_msg, parse_mode=ParseMode.MARKDOWN)
@@ -1944,6 +1946,155 @@ try:
         stats_msg += f"\n🕐 {format_vn_time()}"
         
         await msg.edit_text(stats_msg, parse_mode=ParseMode.MARKDOWN)
+
+    @auto_update_user
+    async def view_portfolio_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Xem portfolio của user khác (dành cho admin)"""
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        chat_type = update.effective_chat.type
+        
+        if chat_type not in ['group', 'supergroup']:
+            await update.message.reply_text("❌ Lệnh này chỉ dùng trong nhóm!")
+            return
+        
+        # Kiểm tra quyền xem
+        if not check_permission(chat_id, user_id, 'view'):
+            await update.message.reply_text("❌ Bạn không có quyền xem dữ liệu!")
+            return
+        
+        if not ctx.args:
+            await update.message.reply_text("❌ /view [@username hoặc ID]")
+            return
+        
+        target = ctx.args[0]
+        target_user_id = None
+        
+        # Xác định user cần xem
+        if target.startswith('@'):
+            username = target[1:]
+            target_user_id = get_user_id_by_username(username)
+        else:
+            try:
+                target_user_id = int(target)
+            except:
+                pass
+        
+        if not target_user_id:
+            await update.message.reply_text(f"❌ Không tìm thấy user {target}")
+            return
+        
+        # Lấy portfolio của user đó
+        portfolio_data = get_portfolio(target_user_id)
+        
+        if not portfolio_data:
+            await update.message.reply_text(f"📭 Danh mục của {target} trống!")
+            return
+        
+        # Lấy thông tin user
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT username, first_name FROM users WHERE user_id = ?", (target_user_id,))
+        user_info = c.fetchone()
+        conn.close()
+        
+        display_name = user_info[0] if user_info and user_info[0] else f"User {target_user_id}"
+        
+        # Lấy giá batch
+        symbols = list(set([row[0] for row in portfolio_data]))
+        prices = get_prices_batch(symbols)
+        
+        summary = {}
+        total_invest = 0
+        total_value = 0
+        
+        for row in portfolio_data:
+            symbol, amount, price, date, cost = row
+            if symbol not in summary:
+                summary[symbol] = {'amount': 0, 'cost': 0}
+            summary[symbol]['amount'] += amount
+            summary[symbol]['cost'] += cost
+            total_invest += cost
+        
+        msg = f"📊 *DANH MỤC CỦA {display_name}*\n━━━━━━━━━━━━\n\n"
+        
+        for symbol, data in summary.items():
+            price_data = prices.get(symbol)
+            if price_data:
+                current = data['amount'] * price_data['p']
+                profit = current - data['cost']
+                profit_percent = (profit / data['cost']) * 100 if data['cost'] > 0 else 0
+                total_value += current
+                
+                msg += f"*{symbol}*\n"
+                msg += f"📊 SL: `{data['amount']:.4f}`\n"
+                msg += f"💰 TB: `{fmt_price(data['cost']/data['amount'])}`\n"
+                msg += f"💎 TT: `{fmt_price(current)}`\n"
+                msg += f"{'✅' if profit>=0 else '❌'} LN: `{fmt_price(profit)}` ({profit_percent:+.2f}%)\n\n"
+        
+        total_profit = total_value - total_invest
+        total_profit_percent = (total_profit / total_invest) * 100 if total_invest > 0 else 0
+        
+        msg += "━━━━━━━━━━━━\n"
+        msg += f"💵 Vốn: `{fmt_price(total_invest)}`\n"
+        msg += f"💰 GT: `{fmt_price(total_value)}`\n"
+        msg += f"{'✅' if total_profit>=0 else '❌'} Tổng LN: `{fmt_price(total_profit)}` ({total_profit_percent:+.2f}%)\n\n"
+        msg += f"🕐 {format_vn_time()}"
+        
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+    @auto_update_user
+    async def list_users_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Xem danh sách user trong group (dành cho admin)"""
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        chat_type = update.effective_chat.type
+        
+        if chat_type not in ['group', 'supergroup']:
+            await update.message.reply_text("❌ Lệnh này chỉ dùng trong nhóm!")
+            return
+        
+        # Kiểm tra quyền xem
+        if not check_permission(chat_id, user_id, 'view'):
+            await update.message.reply_text("❌ Bạn không có quyền xem danh sách!")
+            return
+        
+        try:
+            admins = await ctx.bot.get_chat_administrators(chat_id)
+            
+            msg = "👥 *THÀNH VIÊN TRONG NHÓM*\n━━━━━━━━━━━━━━━━\n\n"
+            
+            for admin in admins:
+                user = admin.user
+                status = "👑 Admin" if admin.status in ['administrator', 'creator'] else "👤 Member"
+                
+                # Lấy thông tin từ database
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute("SELECT last_seen FROM users WHERE user_id = ?", (user.id,))
+                db_user = c.fetchone()
+                conn.close()
+                
+                last_seen = db_user[0][:10] if db_user else "Chưa từng"
+                
+                msg += f"• {status}\n"
+                msg += f"  ID: `{user.id}`\n"
+                msg += f"  Username: @{user.username if user.username else 'None'}\n"
+                msg += f"  Tên: {user.first_name} {user.last_name or ''}\n"
+                msg += f"  Lần cuối: {last_seen}\n\n"
+            
+            msg += f"🕐 {format_vn_time()}"
+            
+            # Gửi từng phần nếu quá dài
+            if len(msg) > 4000:
+                chunks = [msg[i:i+4000] for i in range(0, len(msg), 4000)]
+                for chunk in chunks:
+                    await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
+            else:
+                await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+                
+        except Exception as e:
+            await update.message.reply_text(f"❌ Lỗi: {e}")
 
     # ==================== PERMISSION COMMAND ====================
     async def perm_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2463,8 +2614,16 @@ try:
                 await query.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
             
             elif data == "show_portfolio":
-                uid = query.from_user.id
-                portfolio_data = get_portfolio(uid)
+                current_user_id = query.from_user.id
+                chat_id = query.message.chat.id
+                
+                # Nếu là trong group, kiểm tra xem có được xem data của người khác không
+                target_user_id = current_user_id
+                
+                # TODO: Thêm logic để chọn user cần xem (sẽ implement sau)
+                # Hiện tại vẫn xem của chính mình
+                
+                portfolio_data = get_portfolio(target_user_id)
                 
                 if not portfolio_data:
                     await query.edit_message_text(f"📭 Danh mục trống!\n\n🕐 {format_vn_time()}")
@@ -2833,6 +2992,9 @@ try:
                     "• `/perm grant @user delete` - Cấp quyền xóa\n"
                     "• `/perm grant @user manage` - Cấp quyền QL\n"
                     "• `/perm revoke @user` - Thu hồi quyền\n\n"
+                    "• `/view @user` - Xem portfolio người khác\n"
+                    "• `/users` - Xem danh sách thành viên\n"
+                    "\n"
                     f"🕐 {format_vn_time()}"
                 )
                 
@@ -3474,6 +3636,8 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             app.add_handler(CommandHandler("permgrant", quick_grant_command))
             app.add_handler(CommandHandler("getid", getid_command))
             app.add_handler(CommandHandler("syncusers", sync_users_command))
+            app.add_handler(CommandHandler("view", view_portfolio_command))
+            app.add_handler(CommandHandler("users", list_users_command))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
             app.add_handler(CallbackQueryHandler(handle_callback))
             
