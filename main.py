@@ -3,7 +3,6 @@ Crypto & Expense Manager Bot - Optimized for Render
 Author: Assistant
 Version: 2.0 - Render Optimized
 """
-
 import os
 import sys
 import threading
@@ -27,6 +26,13 @@ from telegram.error import TelegramError
 from functools import wraps
 from flask import Flask, request
 import asyncio
+# ==================== OWNER CONFIGURATION ====================
+OWNER_ID = 6737175223  # Thay bằng ID của ADM
+OWNER_USERNAME = "adm"  # Username của ADM
+
+def is_owner(user_id):
+    """Kiểm tra có phải là chủ sở hữu không"""
+    return user_id == OWNER_ID
 # ==================== USERNAME CACHE ====================
 class UsernameCache:
     def __init__(self):
@@ -315,24 +321,33 @@ try:
             
             c.execute('''CREATE TABLE IF NOT EXISTS permissions
                          (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                          group_id INTEGER, admin_id INTEGER, granted_by INTEGER,
-                          can_view_all INTEGER DEFAULT 1, can_edit_all INTEGER DEFAULT 0,
-                          can_delete_all INTEGER DEFAULT 0, can_manage_perms INTEGER DEFAULT 0,
+                          group_id INTEGER, 
+                          user_id INTEGER, 
+                          granted_by INTEGER,
+                          is_approved INTEGER DEFAULT 0,  -- 0: chưa duyệt, 1: đã duyệt
+                          role TEXT DEFAULT 'user',       -- 'owner', 'staff', 'user'
+                          can_view_all INTEGER DEFAULT 0,
+                          can_edit_all INTEGER DEFAULT 0,
+                          can_delete_all INTEGER DEFAULT 0,
+                          can_manage_perms INTEGER DEFAULT 0,
+                          created_at TEXT,
+                          approved_at TEXT,
+                          UNIQUE(group_id, user_id))''')
+
+            c.execute('''CREATE TABLE IF NOT EXISTS permission_logs
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          group_id INTEGER,
+                          action_by INTEGER,
+                          target_user INTEGER,
+                          action TEXT,
+                          old_role TEXT,
+                          new_role TEXT,
                           created_at TEXT)''')
             
             conn.commit()
-            logger.info(f"✅ Database initialized")
-            
-            # Tạo indexes cho performance
-            c.execute("CREATE INDEX IF NOT EXISTS idx_portfolio_user ON portfolio(user_id)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts(is_active)")
-            conn.commit()
-            
-            return True
+            logger.info(f"✅ Database initialized with enhanced permissions")
         except Exception as e:
             logger.error(f"❌ Lỗi database: {e}")
-            return False
         finally:
             if conn:
                 conn.close()
@@ -743,6 +758,184 @@ try:
         finally:
             if conn:
                 conn.close()
+
+    def check_user_access(group_id, user_id, required_role='user'):
+        """
+        Kiểm tra quyền truy cập của user
+        required_role: 'owner', 'staff', 'user'
+        """
+        try:
+            # Owner có toàn quyền
+            if is_owner(user_id):
+                return True
+            
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            
+            c.execute('''SELECT role, is_approved, can_view_all, can_edit_all, can_delete_all, can_manage_perms 
+                         FROM permissions 
+                         WHERE group_id = ? AND user_id = ?''',
+                      (group_id, user_id))
+            result = c.fetchone()
+            conn.close()
+            
+            if not result:
+                logger.info(f"🚫 User {user_id} chưa được cấp quyền trong group {group_id}")
+                return False
+            
+            role, is_approved, can_view, can_edit, can_delete, can_manage = result
+            
+            # Chưa được duyệt
+            if is_approved == 0 and role != 'owner':
+                logger.info(f"⏳ User {user_id} chưa được duyệt")
+                return False
+            
+            # Kiểm tra theo role yêu cầu
+            if required_role == 'owner':
+                return role == 'owner'
+            elif required_role == 'staff':
+                return role in ['owner', 'staff']
+            elif required_role == 'user':
+                return role in ['owner', 'staff', 'user']
+            
+            return False
+        except Exception as e:
+            logger.error(f"❌ Lỗi check_user_access: {e}")
+            return False
+    
+    def get_user_permissions(group_id, user_id):
+        """Lấy chi tiết quyền của user"""
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('''SELECT role, is_approved, can_view_all, can_edit_all, 
+                                can_delete_all, can_manage_perms, created_at, approved_at
+                         FROM permissions 
+                         WHERE group_id = ? AND user_id = ?''',
+                      (group_id, user_id))
+            result = c.fetchone()
+            conn.close()
+            return result
+        except Exception as e:
+            logger.error(f"❌ Lỗi get_user_permissions: {e}")
+            return None
+    
+    def grant_user_access(group_id, target_user_id, granted_by, role='user'):
+        """
+        Cấp quyền cho user
+        role: 'staff' (nhân viên), 'user' (người dùng thường)
+        """
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            created_at = get_vn_time().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Xóa quyền cũ nếu có
+            c.execute("DELETE FROM permissions WHERE group_id = ? AND user_id = ?", 
+                      (group_id, target_user_id))
+            
+            # Set quyền dựa vào role
+            if role == 'staff':
+                # Staff có quyền quản lý dữ liệu
+                permissions = {
+                    'is_approved': 1,
+                    'role': 'staff',
+                    'view': 1,
+                    'edit': 1,
+                    'delete': 1,
+                    'manage': 0  # Staff không được quản lý phân quyền
+                }
+            else:  # user
+                # User chỉ được xem
+                permissions = {
+                    'is_approved': 1,
+                    'role': 'user',
+                    'view': 1,
+                    'edit': 0,
+                    'delete': 0,
+                    'manage': 0
+                }
+            
+            c.execute('''INSERT INTO permissions 
+                         (group_id, user_id, granted_by, is_approved, role,
+                          can_view_all, can_edit_all, can_delete_all, can_manage_perms,
+                          created_at, approved_at)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                      (group_id, target_user_id, granted_by,
+                       permissions['is_approved'], permissions['role'],
+                       permissions['view'], permissions['edit'],
+                       permissions['delete'], permissions['manage'],
+                       created_at, created_at))
+            
+            # Ghi log
+            c.execute('''INSERT INTO permission_logs
+                         (group_id, action_by, target_user, action, new_role, created_at)
+                         VALUES (?, ?, ?, ?, ?, ?)''',
+                      (group_id, granted_by, target_user_id, 'GRANT', role, created_at))
+            
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"✅ Granted {role} access to user {target_user_id} in group {group_id}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Lỗi grant_user_access: {e}")
+            return False
+    
+    def approve_user(group_id, target_user_id, approved_by):
+        """Duyệt user (chờ cấp quyền)"""
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            approved_at = get_vn_time().strftime("%Y-%m-%d %H:%M:%S")
+            
+            c.execute('''UPDATE permissions 
+                         SET is_approved = 1, approved_at = ?
+                         WHERE group_id = ? AND user_id = ?''',
+                      (approved_at, group_id, target_user_id))
+            
+            affected = c.rowcount
+            conn.commit()
+            conn.close()
+            
+            if affected > 0:
+                logger.info(f"✅ Approved user {target_user_id} in group {group_id}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"❌ Lỗi approve_user: {e}")
+            return False
+
+    def require_permission(required_role='user'):
+        """Decorator yêu cầu quyền truy cập"""
+        def decorator(func):
+            @wraps(func)
+            async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+                user_id = update.effective_user.id
+                chat_id = update.effective_chat.id
+                chat_type = update.effective_chat.type
+                
+                # Owner luôn được phép
+                if is_owner(user_id):
+                    return await func(update, context, *args, **kwargs)
+                
+                # Trong private chat, tự động cho phép (sẽ check sau)
+                if chat_type == 'private':
+                    return await func(update, context, *args, **kwargs)
+                
+                # Trong group, kiểm tra quyền
+                if chat_type in ['group', 'supergroup']:
+                    if not check_user_access(chat_id, user_id, required_role):
+                        await update.message.reply_text(
+                            f"❌ Bạn chưa được cấp quyền sử dụng bot trong group này!\n\n"
+                            f"Vui lòng liên hệ @{OWNER_USERNAME} để được cấp quyền.",
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                        return
+                
+                return await func(update, context, *args, **kwargs)
+            return wrapper
+        return decorator
 
     def check_permission(group_id, user_id, permission_type='view'):
         conn = None
@@ -1458,6 +1651,197 @@ try:
             await msg.edit_text(f"❌ Lỗi: {e}")
 
     @auto_update_user
+    async def owner_panel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Panel quản lý dành cho Owner"""
+        user_id = update.effective_user.id
+        
+        if not is_owner(user_id):
+            await update.message.reply_text("❌ Chỉ Owner mới có quyền sử dụng lệnh này!")
+            return
+        
+        if not ctx.args:
+            msg = (
+                "👑 *OWNER PANEL*\n━━━━━━━━━━━━━━━━\n\n"
+                "*QUẢN LÝ NHÂN VIÊN:*\n"
+                "• `/owner addstaff @user` - Thêm nhân viên\n"
+                "• `/owner removestaff @user` - Xóa nhân viên\n"
+                "• `/owner liststaff` - Danh sách nhân viên\n\n"
+                "*QUẢN LÝ NGƯỜI DÙNG:*\n"
+                "• `/owner approve @user` - Duyệt user\n"
+                "• `/owner revoke @user` - Thu hồi quyền\n"
+                "• `/owner listpending` - DS chờ duyệt\n"
+                "• `/owner listusers` - DS người dùng\n\n"
+                "*THỐNG KÊ:*\n"
+                "• `/owner stats` - Thống kê hệ thống\n\n"
+                f"🕐 {format_vn_time()}"
+            )
+            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+            return
+        
+        action = ctx.args[0].lower()
+        
+        if action == "addstaff" and len(ctx.args) >= 2:
+            target = ctx.args[1]
+            target_id = await resolve_user_id(target, ctx)
+            
+            if not target_id:
+                await update.message.reply_text("❌ Không tìm thấy user!")
+                return
+            
+            chat_id = update.effective_chat.id
+            
+            if grant_user_access(chat_id, target_id, user_id, role='staff'):
+                await update.message.reply_text(
+                    f"✅ Đã thêm @{target} làm nhân viên!\n"
+                    f"Họ có thể quản lý dữ liệu trong group này."
+                )
+            else:
+                await update.message.reply_text("❌ Lỗi khi thêm nhân viên!")
+        
+        elif action == "approve" and len(ctx.args) >= 2:
+            target = ctx.args[1]
+            target_id = await resolve_user_id(target, ctx)
+            
+            if not target_id:
+                await update.message.reply_text("❌ Không tìm thấy user!")
+                return
+            
+            chat_id = update.effective_chat.id
+            
+            if grant_user_access(chat_id, target_id, user_id, role='user'):
+                await update.message.reply_text(
+                    f"✅ Đã duyệt @{target} sử dụng bot!\n"
+                    f"Họ có thể xem dữ liệu trong group này."
+                )
+            else:
+                await update.message.reply_text("❌ Lỗi khi duyệt user!")
+        
+        elif action == "listpending":
+            chat_id = update.effective_chat.id
+            
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('''SELECT user_id, username, first_name, created_at 
+                         FROM permissions 
+                         WHERE group_id = ? AND is_approved = 0 AND role = 'user'
+                         ORDER BY created_at''', (chat_id,))
+            pending = c.fetchall()
+            conn.close()
+            
+            if not pending:
+                await update.message.reply_text("📭 Không có user nào chờ duyệt!")
+                return
+            
+            msg = "⏳ *DANH SÁCH CHỜ DUYỆT*\n━━━━━━━━━━━━━━━━\n\n"
+            for user in pending:
+                user_id, username, first_name, created = user
+                display = f"@{username}" if username else first_name or f"User {user_id}"
+                msg += f"• {display} (`{user_id}`) - {created[:10]}\n"
+            
+            msg += f"\n🕐 {format_vn_time()}"
+            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+        
+        elif action == "stats":
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            
+            c.execute("SELECT COUNT(DISTINCT user_id) FROM users")
+            total_users = c.fetchone()[0]
+            
+            c.execute("SELECT COUNT(*) FROM permissions WHERE role = 'staff'")
+            total_staff = c.fetchone()[0]
+            
+            c.execute("SELECT COUNT(*) FROM permissions WHERE role = 'user' AND is_approved = 1")
+            total_approved = c.fetchone()[0]
+            
+            c.execute("SELECT COUNT(*) FROM permissions WHERE role = 'user' AND is_approved = 0")
+            total_pending = c.fetchone()[0]
+            
+            c.execute("SELECT COUNT(*) FROM portfolio")
+            total_transactions = c.fetchone()[0]
+            
+            c.execute("SELECT COUNT(DISTINCT user_id) FROM portfolio")
+            users_with_portfolio = c.fetchone()[0]
+            
+            conn.close()
+            
+            msg = (
+                "📊 *THỐNG KÊ HỆ THỐNG*\n━━━━━━━━━━━━━━━━\n\n"
+                f"👥 *Tổng user:* {total_users}\n"
+                f"👑 *Nhân viên:* {total_staff}\n"
+                f"✅ *Đã duyệt:* {total_approved}\n"
+                f"⏳ *Chờ duyệt:* {total_pending}\n\n"
+                f"💼 *Giao dịch:* {total_transactions}\n"
+                f"👤 *User có portfolio:* {users_with_portfolio}\n\n"
+                f"🕐 {format_vn_time()}"
+            )
+            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+    @auto_update_user
+    async def new_chat_members(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Khi có thành viên mới vào group"""
+        for new_member in update.message.new_chat_members:
+            if new_member.is_bot:
+                continue
+            
+            chat_id = update.effective_chat.id
+            
+            # Tự động thêm vào danh sách chờ duyệt
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            
+            c.execute("SELECT * FROM permissions WHERE group_id = ? AND user_id = ?", 
+                      (chat_id, new_member.id))
+            exists = c.fetchone()
+            
+            if not exists:
+                created_at = get_vn_time().strftime("%Y-%m-%d %H:%M:%S")
+                c.execute('''INSERT INTO permissions 
+                             (group_id, user_id, granted_by, is_approved, role,
+                              can_view_all, created_at)
+                             VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                          (chat_id, new_member.id, new_member.id,
+                           0, 'user', 0, created_at))
+                conn.commit()
+                
+                # Gửi thông báo cho Owner
+                try:
+                    await ctx.bot.send_message(
+                        OWNER_ID,
+                        f"👤 *User mới vào group*\n\n"
+                        f"User: @{new_member.username or new_member.first_name}\n"
+                        f"ID: `{new_member.id}`\n"
+                        f"Group: {update.effective_chat.title}\n\n"
+                        f"Duyệt: `/owner approve {new_member.id}`",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                except:
+                    pass
+            
+            conn.close()
+            
+            # Gửi welcome message
+            await update.message.reply_text(
+                f"👋 Chào mừng @{new_member.username or new_member.first_name}!\n\n"
+                f"Bạn cần được @{OWNER_USERNAME} duyệt mới có thể sử dụng bot.\n"
+                f"Vui lòng chờ trong giây lát...",
+                parse_mode=ParseMode.MARKDOWN
+            )
+    
+    async def resolve_user_id(target, ctx):
+        """Helper để lấy user ID từ username hoặc reply"""
+        if target.startswith('@'):
+            username = target[1:]
+            return get_user_id_by_username(username)
+        else:
+            try:
+                return int(target)
+            except:
+                if ctx.message.reply_to_message:
+                    return ctx.message.reply_to_message.from_user.id
+        return None
+
+    @auto_update_user
     async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if update.effective_chat.type in ['group', 'supergroup']:
             welcome_msg = (
@@ -1497,42 +1881,38 @@ try:
     async def help_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
-        chat_type = update.effective_chat.type
         
         help_msg = (
             "📘 *HƯỚNG DẪN*\n\n"
-            "*ĐẦU TƯ COIN:*\n"
-            "• `/s btc eth` - Xem giá coin\n"
-            "• `/usdt` - Tỷ giá USDT/VND\n"
-            "• `/buy btc 0.5 40000` - Mua coin\n"
-            "• `/sell btc 0.2` - Bán coin\n"
-            "• `/edit` - Xem/sửa giao dịch\n"
-            "• `/del [id]` - Xóa giao dịch\n"
-            "• `/alert BTC above 50000` - Cảnh báo giá\n"
-            "• `/alerts` - Xem cảnh báo\n"
-            "• `/stats` - Thống kê\n\n"
-            "*QUẢN LÝ CHI TIÊU:*\n"
-            "• `tn 500000` - Thêm thu nhập\n"
-            "• `dm Ăn uống` - Tạo danh mục\n"
-            "• `ct 1 50000 VND Ăn trưa` - Chi tiêu\n"
-            "• `ds` - Xem gần đây\n"
-            "• `bc` - Báo cáo tháng\n"
-            "• `xoa chi 5` - Xóa chi\n"
-            "• `xoa thu 3` - Xóa thu\n"
         )
         
-        if chat_type in ['group', 'supergroup'] and check_permission(chat_id, user_id, 'view'):
-            help_msg += "\n*👑 QUẢN TRỊ:*\n"
-            help_msg += "• `/perm list` - Danh sách admin\n"
-            help_msg += "• `/perm grant @user view` - Cấp quyền xem\n"
-            help_msg += "• `/perm grant @user edit` - Cấp quyền sửa\n"
-            help_msg += "• `/perm grant @user delete` - Cấp quyền xóa\n"
-            help_msg += "• `/perm grant @user manage` - Cấp quyền QL\n"
-            help_msg += "• `/perm revoke @user` - Thu hồi quyền\n"
-            help_msg += "• `/view @user` - Xem portfolio người khác\n"
-            help_msg += "• `/users` - Xem danh sách thành viên\n"
-            help_msg += "• `/syncadmins` - Đồng bộ admin (cấp quyền tự động)\n"
-            help_msg += "• `/checkperm` - Kiểm tra quyền của bạn\n"
+        if is_owner(user_id):
+            help_msg += (
+                "*👑 OWNER COMMANDS:*\n"
+                "• `/owner` - Panel quản lý\n"
+                "• `/owner addstaff @user` - Thêm nhân viên\n"
+                "• `/owner approve @user` - Duyệt user\n"
+                "• `/owner listpending` - DS chờ duyệt\n\n"
+            )
+        
+        # Kiểm tra quyền user
+        if check_user_access(chat_id, user_id, 'user'):
+            help_msg += (
+                "*ĐẦU TƯ COIN:*\n"
+                "• `/s btc eth` - Xem giá coin\n"
+                "• `/usdt` - Tỷ giá USDT/VND\n"
+                "• `/buy btc 0.5 40000` - Mua coin\n"
+                "• `/sell btc 0.2` - Bán coin\n\n"
+            )
+        
+        # Kiểm tra quyền staff
+        if check_user_access(chat_id, user_id, 'staff'):
+            help_msg += (
+                "*👥 NHÂN VIÊN:*\n"
+                "• `/edit` - Sửa giao dịch\n"
+                "• `/del` - Xóa giao dịch\n"
+                "• `/view @user` - Xem portfolio người khác\n\n"
+            )
         
         help_msg += f"\n🕐 {format_vn_time()}"
         await update.message.reply_text(help_msg, parse_mode=ParseMode.MARKDOWN)
@@ -1559,7 +1939,7 @@ try:
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
 
     @auto_update_user
-    @rate_limit(30)
+    @require_permission('user')
     async def s_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not ctx.args:
             return await update.message.reply_text("❌ /s btc eth doge")
@@ -1587,7 +1967,7 @@ try:
         await update.message.reply_text("\n━━━━━━━━━━━━\n".join(results) + f"\n\n🕐 {format_vn_time_short()}", parse_mode='Markdown')
 
     @auto_update_user
-    @rate_limit(30)
+    @require_permission('user')
     async def buy_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         uid = update.effective_user.id
         if len(ctx.args) < 3:
@@ -1627,7 +2007,7 @@ try:
             await update.message.reply_text(f"❌ Lỗi khi thêm giao dịch *{symbol}*", parse_mode='Markdown')
 
     @auto_update_user
-    @rate_limit(30)
+    @require_permission('user')
     async def sell_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         uid = update.effective_user.id
         if len(ctx.args) < 2:
@@ -1711,7 +2091,7 @@ try:
         await update.message.reply_text(msg, parse_mode='Markdown')
 
     @auto_update_user
-    @rate_limit(30)
+    @require_permission('staff')
     async def edit_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         uid = update.effective_user.id
     
@@ -1823,7 +2203,7 @@ try:
             await update.message.reply_text("❌ /edit - Xem DS\n/edit [id] - Xem chi tiết\n/edit [id] [sl] [giá] - Sửa")
 
     @auto_update_user
-    @rate_limit(30)
+    @require_permission('staff')
     async def delete_tx_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         uid = update.effective_user.id
     
@@ -4125,6 +4505,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             app.add_handler(CommandHandler("syncadmins", sync_admins_command))
             app.add_handler(CommandHandler("checkperm", check_perm_command))
             app.add_handler(CommandHandler("syncdata", sync_data_command))
+            app.add_handler(CommandHandler("owner", owner_panel))
             app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_chat_members))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
             app.add_handler(CallbackQueryHandler(handle_callback))
