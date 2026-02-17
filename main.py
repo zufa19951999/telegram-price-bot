@@ -1275,7 +1275,7 @@ try:
              InlineKeyboardButton("Ξ SOL", callback_data="price_SOL"),
              InlineKeyboardButton("💵 USDT", callback_data="price_USDT")],
             [InlineKeyboardButton("📊 Top 10", callback_data="show_top10"),
-             InlineKeyboardButton("💼 Danh mục", callback_data="show_portfolio")],
+             InlineKeyboardButton("👥 Xem danh mục", callback_data="show_portfolio")],
             [InlineKeyboardButton("📈 Lợi nhuận", callback_data="show_profit"),
              InlineKeyboardButton("✏️ Sửa/Xóa", callback_data="edit_transactions")],
             [InlineKeyboardButton("🔔 Cảnh báo giá", callback_data="show_alerts"),
@@ -2276,6 +2276,63 @@ try:
         msg += f"\n🕐 {format_vn_time()}"
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
+    @auto_update_user
+    async def sync_data_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Đồng bộ dữ liệu của tất cả user (admin only)"""
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        chat_type = update.effective_chat.type
+        
+        if chat_type not in ['group', 'supergroup']:
+            await update.message.reply_text("❌ Lệnh này chỉ dùng trong nhóm!")
+            return
+        
+        if not check_permission(chat_id, user_id, 'manage'):
+            await update.message.reply_text("❌ Bạn không có quyền thực hiện lệnh này!")
+            return
+        
+        msg = await update.message.reply_text("🔄 Đang đồng bộ dữ liệu user...")
+        
+        try:
+            # Lấy danh sách thành viên trong group
+            admins = await ctx.bot.get_chat_administrators(chat_id)
+            
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            
+            synced = 0
+            for admin in admins:
+                if admin.user:
+                    # Cập nhật user info
+                    current_time = get_vn_time().strftime("%Y-%m-%d %H:%M:%S")
+                    
+                    c.execute('''INSERT OR REPLACE INTO users 
+                                 (user_id, username, first_name, last_name, last_seen)
+                                 VALUES (?, ?, ?, ?, ?)''',
+                              (admin.user.id, 
+                               admin.user.username, 
+                               admin.user.first_name, 
+                               admin.user.last_name, 
+                               current_time))
+                    synced += 1
+            
+            conn.commit()
+            conn.close()
+            
+            # Xóa cache username
+            username_cache.clear()
+            
+            await msg.edit_text(
+                f"✅ *ĐỒNG BỘ DỮ LIỆU THÀNH CÔNG*\n━━━━━━━━━━━━━━━━\n\n"
+                f"📊 Đã đồng bộ: {synced} user\n"
+                f"💾 Cache đã được làm mới\n\n"
+                f"🕐 {format_vn_time()}",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            
+        except Exception as e:
+            await msg.edit_text(f"❌ Lỗi: {e}")
+
     # ==================== PERMISSION COMMAND ====================
     async def perm_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -2804,22 +2861,94 @@ try:
                 current_user_id = query.from_user.id
                 chat_id = query.message.chat.id
                 
-                # Nếu là trong group, kiểm tra xem có được xem data của người khác không
-                target_user_id = current_user_id
+                # KIỂM TRA XEM CÓ ĐANG XEM CỦA AI KHÔNG
+                # Lưu ý: Cần có cơ chế để chọn user cần xem
+                # Tạm thời, chúng ta sẽ thêm nút chọn user trong group
                 
-                # TODO: Thêm logic để chọn user cần xem (sẽ implement sau)
-                # Hiện tại vẫn xem của chính mình
+                # Lấy danh sách user đã tương tác trong group
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute('''SELECT DISTINCT user_id, username, first_name 
+                             FROM users 
+                             WHERE user_id IN (SELECT DISTINCT user_id FROM portfolio)
+                             ORDER BY last_seen DESC
+                             LIMIT 10''')
+                users_with_portfolio = c.fetchall()
+                conn.close()
                 
+                if not users_with_portfolio:
+                    await query.edit_message_text(
+                        f"📭 Chưa có ai có danh mục đầu tư!\n\n🕐 {format_vn_time()}",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]])
+                    )
+                    return
+                
+                # Tạo menu chọn user
+                msg = "👥 *CHỌN USER XEM DANH MỤC*\n━━━━━━━━━━━━━━━━\n\n"
+                keyboard = []
+                row = []
+                
+                for i, (uid, username, first_name) in enumerate(users_with_portfolio, 1):
+                    display = f"@{username}" if username else first_name or f"User {uid}"
+                    display_short = display[:15] + "..." if len(display) > 15 else display
+                    msg += f"{i}. {display}\n"
+                    
+                    row.append(InlineKeyboardButton(f"{i}", callback_data=f"view_portfolio_{uid}"))
+                    if len(row) == 5:
+                        keyboard.append(row)
+                        row = []
+                
+                if row:
+                    keyboard.append(row)
+                
+                keyboard.append([InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")])
+                
+                msg += f"\n🕐 {format_vn_time_short()}"
+                
+                await query.edit_message_text(
+                    msg, 
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            
+            elif data.startswith("view_portfolio_"):
+                target_user_id = int(data.replace("view_portfolio_", ""))
+                current_user_id = query.from_user.id
+                chat_id = query.message.chat.id
+                
+                # Kiểm tra quyền
+                if current_user_id != target_user_id:
+                    if not check_permission(chat_id, current_user_id, 'view'):
+                        await query.edit_message_text(
+                            "❌ Bạn không có quyền xem dữ liệu của người khác!",
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]])
+                        )
+                        return
+                
+                # Lấy thông tin user target
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute("SELECT username, first_name FROM users WHERE user_id = ?", (target_user_id,))
+                user_info = c.fetchone()
+                conn.close()
+                
+                display_name = user_info[0] if user_info and user_info[0] else (user_info[1] if user_info else f"User {target_user_id}")
+                
+                # Lấy portfolio của target user
                 portfolio_data = get_portfolio(target_user_id)
                 
                 if not portfolio_data:
-                    await query.edit_message_text(f"📭 Danh mục trống!\n\n🕐 {format_vn_time()}")
+                    await query.edit_message_text(
+                        f"📭 Danh mục của {display_name} trống!\n\n🕐 {format_vn_time()}",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]])
+                    )
                     return
                 
-                # Lấy giá batch cho tất cả symbol
+                # Lấy giá batch
                 symbols = list(set([row[0] for row in portfolio_data]))
                 prices = get_prices_batch(symbols)
                 
+                # Tính toán portfolio
                 summary = {}
                 total_invest = 0
                 total_value = 0
@@ -2832,7 +2961,8 @@ try:
                     summary[symbol]['cost'] += cost
                     total_invest += cost
                 
-                msg = "📊 *DANH MỤC*\n━━━━━━━━━━━━\n\n"
+                msg = f"📊 *DANH MỤC CỦA {display_name}*\n━━━━━━━━━━━━━━━━\n\n"
+                
                 for symbol, data in summary.items():
                     price_data = prices.get(symbol)
                     if price_data:
@@ -2850,24 +2980,104 @@ try:
                 total_profit = total_value - total_invest
                 total_profit_percent = (total_profit / total_invest) * 100 if total_invest > 0 else 0
                 
-                msg += "━━━━━━━━━━━━\n"
+                msg += "━━━━━━━━━━━━━━━━\n"
                 msg += f"💵 Vốn: `{fmt_price(total_invest)}`\n"
                 msg += f"💰 GT: `{fmt_price(total_value)}`\n"
                 msg += f"{'✅' if total_profit>=0 else '❌'} Tổng LN: `{fmt_price(total_profit)}` ({total_profit_percent:+.2f}%)\n\n"
                 msg += f"🕐 {format_vn_time()}"
                 
-                keyboard = [[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]]
-                await query.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+                keyboard = [[
+                    InlineKeyboardButton("👥 Xem user khác", callback_data="show_portfolio"),
+                    InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")
+                ]]
+                
+                await query.edit_message_text(
+                    msg, 
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
             
             elif data == "show_profit":
-                uid = query.from_user.id
-                transactions = get_transaction_detail(uid)
+                current_user_id = query.from_user.id
+                chat_id = query.message.chat.id
                 
-                if not transactions:
-                    await query.edit_message_text(f"📭 Danh mục trống!\n\n🕐 {format_vn_time()}")
+                # Hiển thị danh sách user để chọn
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute('''SELECT DISTINCT user_id, username, first_name 
+                             FROM users 
+                             WHERE user_id IN (SELECT DISTINCT user_id FROM portfolio)
+                             ORDER BY last_seen DESC
+                             LIMIT 10''')
+                users_with_portfolio = c.fetchall()
+                conn.close()
+                
+                if not users_with_portfolio:
+                    await query.edit_message_text(
+                        f"📭 Chưa có ai có danh mục đầu tư!\n\n🕐 {format_vn_time()}",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]])
+                    )
                     return
                 
-                msg = "📈 *CHI TIẾT LỢI NHUẬN*\n━━━━━━━━━━━━\n\n"
+                msg = "📈 *CHỌN USER XEM LỢI NHUẬN*\n━━━━━━━━━━━━━━━━\n\n"
+                keyboard = []
+                row = []
+                
+                for i, (uid, username, first_name) in enumerate(users_with_portfolio, 1):
+                    display = f"@{username}" if username else first_name or f"User {uid}"
+                    msg += f"{i}. {display}\n"
+                    row.append(InlineKeyboardButton(f"{i}", callback_data=f"view_profit_{uid}"))
+                    if len(row) == 5:
+                        keyboard.append(row)
+                        row = []
+                
+                if row:
+                    keyboard.append(row)
+                
+                keyboard.append([InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")])
+                
+                msg += f"\n🕐 {format_vn_time_short()}"
+                
+                await query.edit_message_text(
+                    msg, 
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            
+            elif data.startswith("view_profit_"):
+                target_user_id = int(data.replace("view_profit_", ""))
+                current_user_id = query.from_user.id
+                chat_id = query.message.chat.id
+                
+                # Kiểm tra quyền
+                if current_user_id != target_user_id:
+                    if not check_permission(chat_id, current_user_id, 'view'):
+                        await query.edit_message_text(
+                            "❌ Bạn không có quyền xem dữ liệu của người khác!",
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]])
+                        )
+                        return
+                
+                # Lấy thông tin user target
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute("SELECT username, first_name FROM users WHERE user_id = ?", (target_user_id,))
+                user_info = c.fetchone()
+                conn.close()
+                
+                display_name = user_info[0] if user_info and user_info[0] else (user_info[1] if user_info else f"User {target_user_id}")
+                
+                # Lấy transactions của target user
+                transactions = get_transaction_detail(target_user_id)
+                
+                if not transactions:
+                    await query.edit_message_text(
+                        f"📭 Danh mục của {display_name} trống!\n\n🕐 {format_vn_time()}",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]])
+                    )
+                    return
+                
+                msg = f"📈 *CHI TIẾT LỢI NHUẬN - {display_name}*\n━━━━━━━━━━━━━━━━\n\n"
                 total_invest = 0
                 total_value = 0
                 
@@ -2878,7 +3088,7 @@ try:
                     if price_data:
                         current = amount * price_data['p']
                         profit = current - cost
-                        profit_percent = (profit / cost) * 100
+                        profit_percent = (profit / cost) * 100 if cost > 0 else 0
                         
                         total_invest += cost
                         total_value += current
@@ -2894,27 +3104,106 @@ try:
                 total_profit = total_value - total_invest
                 total_profit_percent = (total_profit / total_invest) * 100 if total_invest > 0 else 0
                 
-                msg += "━━━━━━━━━━━━\n"
+                msg += "━━━━━━━━━━━━━━━━\n"
                 msg += f"💵 Vốn: `{fmt_price(total_invest)}`\n"
                 msg += f"💰 GT: `{fmt_price(total_value)}`\n"
                 msg += f"{'✅' if total_profit>=0 else '❌'} Tổng LN: `{fmt_price(total_profit)}` ({total_profit_percent:+.2f}%)\n\n"
                 msg += f"🕐 {format_vn_time()}"
                 
-                keyboard = [[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]]
-                await query.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+                keyboard = [[
+                    InlineKeyboardButton("👥 Xem user khác", callback_data="show_profit"),
+                    InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")
+                ]]
+                
+                await query.edit_message_text(
+                    msg, 
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
             
             elif data == "show_stats":
-                uid = query.from_user.id
+                current_user_id = query.from_user.id
+                chat_id = query.message.chat.id
+                
+                # Hiển thị danh sách user để chọn
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute('''SELECT DISTINCT user_id, username, first_name 
+                             FROM users 
+                             WHERE user_id IN (SELECT DISTINCT user_id FROM portfolio)
+                             ORDER BY last_seen DESC
+                             LIMIT 10''')
+                users_with_portfolio = c.fetchall()
+                conn.close()
+                
+                if not users_with_portfolio:
+                    await query.edit_message_text(
+                        f"📭 Chưa có ai có danh mục đầu tư!\n\n🕐 {format_vn_time()}",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]])
+                    )
+                    return
+                
+                msg = "📊 *CHỌN USER XEM THỐNG KÊ*\n━━━━━━━━━━━━━━━━\n\n"
+                keyboard = []
+                row = []
+                
+                for i, (uid, username, first_name) in enumerate(users_with_portfolio, 1):
+                    display = f"@{username}" if username else first_name or f"User {uid}"
+                    msg += f"{i}. {display}\n"
+                    row.append(InlineKeyboardButton(f"{i}", callback_data=f"view_stats_{uid}"))
+                    if len(row) == 5:
+                        keyboard.append(row)
+                        row = []
+                
+                if row:
+                    keyboard.append(row)
+                
+                keyboard.append([InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")])
+                
+                msg += f"\n🕐 {format_vn_time_short()}"
+                
+                await query.edit_message_text(
+                    msg, 
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            
+            elif data.startswith("view_stats_"):
+                target_user_id = int(data.replace("view_stats_", ""))
+                current_user_id = query.from_user.id
+                chat_id = query.message.chat.id
+                
+                # Kiểm tra quyền
+                if current_user_id != target_user_id:
+                    if not check_permission(chat_id, current_user_id, 'view'):
+                        await query.edit_message_text(
+                            "❌ Bạn không có quyền xem dữ liệu của người khác!",
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]])
+                        )
+                        return
+                
+                # Lấy thông tin user target
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute("SELECT username, first_name FROM users WHERE user_id = ?", (target_user_id,))
+                user_info = c.fetchone()
+                conn.close()
+                
+                display_name = user_info[0] if user_info and user_info[0] else (user_info[1] if user_info else f"User {target_user_id}")
+                
                 await query.edit_message_text("🔄 Đang tính toán thống kê...")
                 
-                stats = get_portfolio_stats(uid)
+                stats = get_portfolio_stats(target_user_id)
                 
                 if not stats:
-                    await query.edit_message_text("📭 Danh mục trống!")
+                    await query.edit_message_text(
+                        f"📭 Danh mục của {display_name} trống!",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]])
+                    )
                     return
                 
                 msg = (
-                    f"📊 *THỐNG KÊ DANH MỤC*\n━━━━━━━━━━━━━━━━\n\n"
+                    f"📊 *THỐNG KÊ - {display_name}*\n━━━━━━━━━━━━━━━━\n\n"
                     f"*TỔNG QUAN*\n"
                     f"• Vốn: `{fmt_price(stats['total_invest'])}`\n"
                     f"• Giá trị: `{fmt_price(stats['total_value'])}`\n"
@@ -2948,8 +3237,16 @@ try:
                 
                 msg += f"\n🕐 {format_vn_time()}"
                 
-                keyboard = [[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")]]
-                await query.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+                keyboard = [[
+                    InlineKeyboardButton("👥 Xem user khác", callback_data="show_stats"),
+                    InlineKeyboardButton("🔙 Về menu", callback_data="back_to_invest")
+                ]]
+                
+                await query.edit_message_text(
+                    msg, 
+                    parseMode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
             
             elif data == "show_alerts":
                 uid = query.from_user.id
@@ -3827,6 +4124,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             app.add_handler(CommandHandler("users", list_users_command))
             app.add_handler(CommandHandler("syncadmins", sync_admins_command))
             app.add_handler(CommandHandler("checkperm", check_perm_command))
+            app.add_handler(CommandHandler("syncdata", sync_data_command))
             app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_chat_members))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
             app.add_handler(CallbackQueryHandler(handle_callback))
