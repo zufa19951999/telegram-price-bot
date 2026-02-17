@@ -755,19 +755,25 @@ try:
             result = c.fetchone()
             
             if not result:
+                logger.info(f"🔍 Permission check: User {user_id} has NO permissions in group {group_id}")
                 return False
             
             can_view, can_edit, can_delete, can_manage = result
             
             if permission_type == 'view':
-                return can_view == 1
+                has_perm = can_view == 1
             elif permission_type == 'edit':
-                return can_edit == 1
+                has_perm = can_edit == 1
             elif permission_type == 'delete':
-                return can_delete == 1
+                has_perm = can_delete == 1
             elif permission_type == 'manage':
-                return can_manage == 1
-            return False
+                has_perm = can_manage == 1
+            else:
+                has_perm = False
+            
+            logger.info(f"🔍 Permission check: User {user_id} in group {group_id} - {permission_type}: {has_perm}")
+            return has_perm
+            
         except Exception as e:
             logger.error(f"❌ Lỗi kiểm tra quyền: {e}")
             return False
@@ -1525,6 +1531,8 @@ try:
             help_msg += "• `/perm revoke @user` - Thu hồi quyền\n"
             help_msg += "• `/view @user` - Xem portfolio người khác\n"
             help_msg += "• `/users` - Xem danh sách thành viên\n"
+            help_msg += "• `/syncadmins` - Đồng bộ admin (cấp quyền tự động)\n"
+            help_msg += "• `/checkperm` - Kiểm tra quyền của bạn\n"
         
         help_msg += f"\n🕐 {format_vn_time()}"
         await update.message.reply_text(help_msg, parse_mode=ParseMode.MARKDOWN)
@@ -2096,6 +2104,178 @@ try:
         except Exception as e:
             await update.message.reply_text(f"❌ Lỗi: {e}")
 
+    @auto_update_user
+    async def sync_admins_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Đồng bộ và tự động cấp quyền cho tất cả admin trong group"""
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        chat_type = update.effective_chat.type
+        
+        if chat_type not in ['group', 'supergroup']:
+            await update.message.reply_text("❌ Lệnh này chỉ dùng trong nhóm!")
+            return
+        
+        # Kiểm tra quyền manage (chỉ admin mới có thể đồng bộ)
+        if not check_permission(chat_id, user_id, 'manage'):
+            await update.message.reply_text("❌ Bạn không có quyền thực hiện lệnh này!")
+            return
+        
+        msg = await update.message.reply_text("🔄 Đang đồng bộ danh sách admin...")
+        
+        try:
+            # Lấy danh sách admin từ Telegram
+            admins = await ctx.bot.get_chat_administrators(chat_id)
+            
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            
+            # Đếm số admin hiện có trong database
+            c.execute("SELECT COUNT(*) FROM permissions WHERE group_id = ?", (chat_id,))
+            current_count = c.fetchone()[0]
+            
+            granted_count = 0
+            updated_count = 0
+            
+            for admin in admins:
+                if admin.user:
+                    # Cập nhật user info
+                    await update_user_info_async(admin.user)
+                    
+                    # Kiểm tra xem đã có quyền chưa
+                    c.execute("SELECT * FROM permissions WHERE group_id = ? AND admin_id = ?", 
+                              (chat_id, admin.user.id))
+                    exists = c.fetchone()
+                    
+                    if not exists:
+                        # Nếu chưa có, cấp quyền cơ bản (view)
+                        permissions = {'view': 1, 'edit': 0, 'delete': 0, 'manage': 0}
+                        
+                        # Nếu là creator thì cấp full quyền
+                        if admin.status == 'creator':
+                            permissions = {'view': 1, 'edit': 1, 'delete': 1, 'manage': 1}
+                        
+                        c.execute('''INSERT INTO permissions 
+                                     (group_id, admin_id, granted_by, can_view_all, can_edit_all, 
+                                      can_delete_all, can_manage_perms, created_at)
+                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                                  (chat_id, admin.user.id, user_id,
+                                   permissions['view'], permissions['edit'], 
+                                   permissions['delete'], permissions['manage'],
+                                   get_vn_time().strftime("%Y-%m-%d %H:%M:%S")))
+                        granted_count += 1
+                    else:
+                        # Nếu đã có, cập nhật thông tin (có thể nâng cấp quyền nếu cần)
+                        updated_count += 1
+            
+            conn.commit()
+            conn.close()
+            
+            await msg.edit_text(
+                f"✅ *ĐỒNG BỘ ADMIN THÀNH CÔNG*\n━━━━━━━━━━━━━━━━\n\n"
+                f"📊 Kết quả:\n"
+                f"• Tổng số admin trong group: {len(admins)}\n"
+                f"• Đã cấp quyền mới: {granted_count}\n"
+                f"• Đã cập nhật: {updated_count}\n"
+                f"• Tổng trong DB: {current_count + granted_count}\n\n"
+                f"🕐 {format_vn_time()}",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            
+        except Exception as e:
+            await msg.edit_text(f"❌ Lỗi: {e}")
+
+    @auto_update_user
+    async def new_chat_members(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Xử lý khi có thành viên mới vào group"""
+        for new_member in update.message.new_chat_members:
+            # Cập nhật user info
+            await update_user_info_async(new_member)
+            
+            # Nếu là bot thì không cần xử lý
+            if new_member.is_bot:
+                continue
+            
+            chat_id = update.effective_chat.id
+            
+            # Kiểm tra xem người này có phải là admin không
+            try:
+                admins = await ctx.bot.get_chat_administrators(chat_id)
+                for admin in admins:
+                    if admin.user.id == new_member.id:
+                        # Nếu là admin, tự động cấp quyền cơ bản
+                        conn = sqlite3.connect(DB_PATH)
+                        c = conn.cursor()
+                        
+                        # Kiểm tra xem đã có quyền chưa
+                        c.execute("SELECT * FROM permissions WHERE group_id = ? AND admin_id = ?", 
+                                  (chat_id, new_member.id))
+                        exists = c.fetchone()
+                        
+                        if not exists:
+                            # Cấp quyền view cơ bản
+                            permissions = {'view': 1, 'edit': 0, 'delete': 0, 'manage': 0}
+                            
+                            # Nếu là creator thì full quyền
+                            if admin.status == 'creator':
+                                permissions = {'view': 1, 'edit': 1, 'delete': 1, 'manage': 1}
+                            
+                            c.execute('''INSERT INTO permissions 
+                                         (group_id, admin_id, granted_by, can_view_all, can_edit_all, 
+                                          can_delete_all, can_manage_perms, created_at)
+                                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                                      (chat_id, new_member.id, new_member.id,
+                                       permissions['view'], permissions['edit'], 
+                                       permissions['delete'], permissions['manage'],
+                                       get_vn_time().strftime("%Y-%m-%d %H:%M:%S")))
+                            conn.commit()
+                            
+                            logger.info(f"✅ Auto-granted permissions for new admin @{new_member.username} in {chat_id}")
+                        
+                        conn.close()
+                        break
+            except Exception as e:
+                logger.error(f"❌ Lỗi xử lý new member: {e}")
+
+    @auto_update_user
+    async def check_perm_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Kiểm tra quyền của user trong group"""
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        chat_type = update.effective_chat.type
+        
+        if chat_type not in ['group', 'supergroup']:
+            await update.message.reply_text("❌ Lệnh này chỉ dùng trong nhóm!")
+            return
+        
+        target_id = user_id
+        target_name = "bạn"
+        
+        # Nếu có reply, kiểm tra người được reply
+        if update.message.reply_to_message:
+            target_id = update.message.reply_to_message.from_user.id
+            target_name = f"@{update.message.reply_to_message.from_user.username or target_id}"
+        
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''SELECT can_view_all, can_edit_all, can_delete_all, can_manage_perms 
+                     FROM permissions WHERE group_id = ? AND admin_id = ?''',
+                  (chat_id, target_id))
+        result = c.fetchone()
+        conn.close()
+        
+        if not result:
+            msg = f"❌ *{target_name}* chưa được cấp quyền trong group này!"
+        else:
+            can_view, can_edit, can_delete, can_manage = result
+            msg = f"🔐 *QUYỀN CỦA {target_name}*\n━━━━━━━━━━━━━━━━\n\n"
+            msg += f"• 👁 Xem: {'✅' if can_view else '❌'}\n"
+            msg += f"• ✏️ Sửa: {'✅' if can_edit else '❌'}\n"
+            msg += f"• 🗑 Xóa: {'✅' if can_delete else '❌'}\n"
+            msg += f"• 🔐 Quản lý: {'✅' if can_manage else '❌'}\n"
+        
+        msg += f"\n🕐 {format_vn_time()}"
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
     # ==================== PERMISSION COMMAND ====================
     async def perm_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -2105,15 +2285,17 @@ try:
         if chat_type not in ['group', 'supergroup']:
             await update.message.reply_text("❌ Lệnh này chỉ dùng trong nhóm!")
             return
-        # TỰ ĐỘNG CẤP QUYỀN CHO USER ĐẦU TIÊN
+        
+        # KIỂM TRA VÀ AUTO-GRANT CHO USER ĐẦU TIÊN
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM permissions WHERE group_id = ?", (chat_id,))
-        count = c.fetchone()[0]
-        conn.close()
         
-        if count == 0:
-            # User đầu tiên được auto grant full quyền
+        # Đếm số lượng admin đã được cấp quyền trong group này
+        c.execute("SELECT COUNT(*) FROM permissions WHERE group_id = ?", (chat_id,))
+        admin_count = c.fetchone()[0]
+        
+        # Nếu CHƯA CÓ AI ĐƯỢC CẤP QUYỀN, auto grant cho user hiện tại
+        if admin_count == 0:
             permissions = {'view': 1, 'edit': 1, 'delete': 1, 'manage': 1}
             if grant_permission(chat_id, user_id, user_id, permissions):
                 await update.message.reply_text(
@@ -2122,7 +2304,12 @@ try:
                     "Dùng `/perm list` để xem danh sách.",
                     parse_mode=ParseMode.MARKDOWN
                 )
+                # QUAN TRỌNG: Update user info ngay lập tức
+                await update_user_info_async(update.effective_user)
+                conn.close()
                 return
+        
+        conn.close()
         
         # Tiếp tục logic kiểm tra quyền bình thường
         if not check_permission(chat_id, user_id, 'manage'):
@@ -3638,6 +3825,9 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             app.add_handler(CommandHandler("syncusers", sync_users_command))
             app.add_handler(CommandHandler("view", view_portfolio_command))
             app.add_handler(CommandHandler("users", list_users_command))
+            app.add_handler(CommandHandler("syncadmins", sync_admins_command))
+            app.add_handler(CommandHandler("checkperm", check_perm_command))
+            app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_chat_members))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
             app.add_handler(CallbackQueryHandler(handle_callback))
             
