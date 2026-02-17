@@ -789,15 +789,35 @@ try:
                 conn.close()
 
     def get_user_id_by_username(username):
+        """Tìm user ID từ username - hỗ trợ cả có và không có @"""
         conn = None
         try:
+            # Xử lý username
+            clean_username = username.lower().replace('@', '').strip()
+            
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
-            c.execute("SELECT user_id FROM users WHERE username = ?", (username,))
+            
+            # Tìm chính xác
+            c.execute("SELECT user_id FROM users WHERE username = ?", (clean_username,))
             result = c.fetchone()
-            return result[0] if result else None
+            
+            if result:
+                return result[0]
+            
+            # Tìm gần đúng (nếu không tìm thấy chính xác)
+            c.execute("SELECT user_id, username FROM users WHERE username LIKE ?", 
+                      (f"%{clean_username}%",))
+            results = c.fetchall()
+            
+            if results:
+                # Nếu có nhiều kết quả, chọn cái đầu tiên
+                logger.info(f"Found {len(results)} users matching '{username}'")
+                return results[0][0]
+            
+            return None
         except Exception as e:
-            logger.error(f"❌ Lỗi tìm user: {e}")
+            logger.error(f"❌ Lỗi tìm user {username}: {e}")
             return None
         finally:
             if conn:
