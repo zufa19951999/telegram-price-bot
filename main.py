@@ -842,7 +842,7 @@ try:
             # Nếu là cấu trúc cũ (có cột admin_id)
             if 'admin_id' in columns:
                 # Dùng cấu trúc cũ
-                c.execute("DELETE FROM permissions WHERE group_id = ? AND admin_id = ?", 
+                c.execute("DELETE FROM permissions WHERE group_id = ? AND user_id = ?", 
                           (group_id, user_id))
                 
                 c.execute('''INSERT INTO permissions 
@@ -2666,7 +2666,7 @@ try:
                         c = conn.cursor()
                         
                         # Kiểm tra xem đã có quyền chưa
-                        c.execute("SELECT * FROM permissions WHERE group_id = ? AND admin_id = ?", 
+                        c.execute("SELECT * FROM permissions WHERE group_id = ? AND user_id = ?", 
                                   (chat_id, new_member.id))
                         exists = c.fetchone()
                         
@@ -2716,8 +2716,10 @@ try:
         
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
+        
+        # ĐÃ SỬA: dùng user_id thay vì admin_id
         c.execute('''SELECT can_view_all, can_edit_all, can_delete_all, can_manage_perms 
-                     FROM permissions WHERE group_id = ? AND admin_id = ?''',
+                     FROM permissions WHERE group_id = ? AND user_id = ?''',
                   (chat_id, target_id))
         result = c.fetchone()
         conn.close()
