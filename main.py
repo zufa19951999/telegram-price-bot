@@ -4424,110 +4424,112 @@ try:
                     )
             
             elif data == "expense_recent":
-                current_user_id = query.from_user.id
-                chat_id = query.message.chat.id
-                effective_user_id = ctx.bot_data.get('effective_user_id', current_user_id)
-                
-                if current_user_id != effective_user_id and not check_permission(chat_id, current_user_id, 'view'):
-                    await query.edit_message_text("❌ Bạn không có quyền xem dữ liệu!")
-                    return
-                
-                recent_incomes = get_recent_incomes(effective_user_id, 20)
-                recent_expenses = get_recent_expenses(effective_user_id, 20)
-                
-                if not recent_incomes and not recent_expenses:
+                try:
+                    current_user_id = query.from_user.id
+                    chat_id = query.message.chat.id
+                    effective_user_id = ctx.bot_data.get('effective_user_id', current_user_id)
+                    
+                    if current_user_id != effective_user_id and not check_permission(chat_id, current_user_id, 'view'):
+                        await query.edit_message_text("❌ Bạn không có quyền xem dữ liệu!")
+                        return
+                    
+                    recent_incomes = get_recent_incomes(effective_user_id, 20)
+                    recent_expenses = get_recent_expenses(effective_user_id, 20)
+                    
+                    if not recent_incomes and not recent_expenses:
+                        await query.edit_message_text(
+                            f"📭 Không có giao dịch nào!\n\n🕐 {format_vn_time_short()}",
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]])
+                        )
+                        return
+                    
+                    msg = "🔄 *20 GIAO DỊCH GẦN ĐÂY*\n━━━━━━━━━━━━━━━━\n\n"
+                    
+                    all_transactions = []
+                    
+                    for inc in recent_incomes:
+                        id, amount, source, note, date, currency = inc
+                        all_transactions.append(('💰', id, date, f"{format_currency_simple(amount, currency)} - {source}", note))
+                    
+                    for exp in recent_expenses:
+                        id, cat_name, amount, note, date, currency = exp
+                        all_transactions.append(('💸', id, date, f"{format_currency_simple(amount, currency)} - {cat_name}", note))
+                    
+                    all_transactions.sort(key=lambda x: x[2], reverse=True)
+                    
+                    for emoji, id, date, desc, note in all_transactions[:20]:
+                        msg += f"{emoji} #{id} {date}: {desc}\n"
+                        if note:
+                            msg += f"   📝 {note}\n"
+                    
+                    msg += f"\n🕐 {format_vn_time_short()}"
+                    
                     await query.edit_message_text(
-                        f"📭 Không có giao dịch nào!\n\n🕐 {format_vn_time_short()}",
+                        msg, 
+                        parse_mode=ParseMode.MARKDOWN,
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]])
                     )
-                    return
-                
-                msg = "🔄 *20 GIAO DỊCH GẦN ĐÂY*\n━━━━━━━━━━━━━━━━\n\n"
-                
-                all_transactions = []
-                
-                for inc in recent_incomes:
-                    id, amount, source, note, date, currency = inc
-                    all_transactions.append(('💰', id, date, f"{format_currency_simple(amount, currency)} - {source}", note))
-                
-                for exp in recent_expenses:
-                    id, cat_name, amount, note, date, currency = exp
-                    all_transactions.append(('💸', id, date, f"{format_currency_simple(amount, currency)} - {cat_name}", note))
-                
-                all_transactions.sort(key=lambda x: x[2], reverse=True)
-                
-                for emoji, id, date, desc, note in all_transactions[:20]:
-                    msg += f"{emoji} #{id} {date}: {desc}\n"
-                    if note:
-                        msg += f"   📝 {note}\n"
-                
-                msg += f"\n🕐 {format_vn_time_short()}"
-                
-                await query.edit_message_text(
-                    msg, 
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]])
-                )
-            except Exception as e:
-                logger.error(f"Lỗi expense_recent: {e}")
-                await query.edit_message_text(
-                    "❌ Có lỗi xảy ra!",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]])
-                )
+                except Exception as e:
+                    logger.error(f"Lỗi expense_recent: {e}")
+                    await query.edit_message_text(
+                        "❌ Có lỗi xảy ra!",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]])
+                    )
             
             elif data == "expense_export":
-                uid = query.from_user.id
-                await query.edit_message_text("🔄 Đang tạo file báo cáo...")
-                
-                expenses = get_recent_expenses(uid, 100)
-                incomes = get_recent_incomes(uid, 100)
-                
-                if not expenses and not incomes:
-                    await query.edit_message_text("📭 Không có dữ liệu để xuất!")
-                    return
-                
-                timestamp = get_vn_time().strftime('%Y%m%d_%H%M%S')
-                filename = f"expense_report_{uid}_{timestamp}.csv"
-                filepath = os.path.join(EXPORT_DIR, filename)
-                
-                with open(filepath, 'w', newline='', encoding='utf-8-sig') as csvfile:
-                    writer = csv.writer(csvfile)
-                    
-                    writer.writerow(['=== THU NHẬP ==='])
-                    writer.writerow(['ID', 'Ngày', 'Nguồn', 'Số tiền', 'Loại tiền', 'Ghi chú'])
-                    for inc in incomes:
-                        writer.writerow([inc[0], inc[4], inc[2], inc[1], inc[5], inc[3]])
-                    
-                    writer.writerow([])
-                    writer.writerow(['=== CHI TIÊU ==='])
-                    writer.writerow(['ID', 'Ngày', 'Danh mục', 'Số tiền', 'Loại tiền', 'Ghi chú'])
-                    for exp in expenses:
-                        writer.writerow([exp[0], exp[4], exp[1], exp[2], exp[5], exp[3]])
-                
                 try:
-                    with open(filepath, 'rb') as f:
-                        await query.message.reply_document(
-                            document=f,
-                            filename=filename,
-                            caption=f"📊 *BÁO CÁO CHI TIÊU*\n━━━━━━━━━━━━━━━━\n\n✅ Xuất thành công!\n🕐 {format_vn_time()}",
-                            parse_mode=ParseMode.MARKDOWN
+                    uid = query.from_user.id
+                    await query.edit_message_text("🔄 Đang tạo file báo cáo...")
+                    
+                    expenses = get_recent_expenses(uid, 100)
+                    incomes = get_recent_incomes(uid, 100)
+                    
+                    if not expenses and not incomes:
+                        await query.edit_message_text("📭 Không có dữ liệu để xuất!")
+                        return
+                    
+                    timestamp = get_vn_time().strftime('%Y%m%d_%H%M%S')
+                    filename = f"expense_report_{uid}_{timestamp}.csv"
+                    filepath = os.path.join(EXPORT_DIR, filename)
+                    
+                    with open(filepath, 'w', newline='', encoding='utf-8-sig') as csvfile:
+                        writer = csv.writer(csvfile)
+                        
+                        writer.writerow(['=== THU NHẬP ==='])
+                        writer.writerow(['ID', 'Ngày', 'Nguồn', 'Số tiền', 'Loại tiền', 'Ghi chú'])
+                        for inc in incomes:
+                            writer.writerow([inc[0], inc[4], inc[2], inc[1], inc[5], inc[3]])
+                        
+                        writer.writerow([])
+                        writer.writerow(['=== CHI TIÊU ==='])
+                        writer.writerow(['ID', 'Ngày', 'Danh mục', 'Số tiền', 'Loại tiền', 'Ghi chú'])
+                        for exp in expenses:
+                            writer.writerow([exp[0], exp[4], exp[1], exp[2], exp[5], exp[3]])
+                    
+                    try:
+                        with open(filepath, 'rb') as f:
+                            await query.message.reply_document(
+                                document=f,
+                                filename=filename,
+                                caption=f"📊 *BÁO CÁO CHI TIÊU*\n━━━━━━━━━━━━━━━━\n\n✅ Xuất thành công!\n🕐 {format_vn_time()}",
+                                parse_mode=ParseMode.MARKDOWN
+                            )
+                        os.remove(filepath)
+                        await query.edit_message_text(
+                            "💰 *QUẢN LÝ CHI TIÊU*",
+                            parse_mode=ParseMode.MARKDOWN,
+                            reply_markup=get_expense_menu_keyboard()
                         )
-                    os.remove(filepath)
-                    await query.edit_message_text(
-                        "💰 *QUẢN LÝ CHI TIÊU*",
-                        parse_mode=ParseMode.MARKDOWN,
-                        reply_markup=get_expense_menu_keyboard()
-                    )
+                    except Exception as e:
+                        logger.error(f"Lỗi gửi file: {e}")
+                        await query.edit_message_text("❌ Lỗi khi gửi file!")
                 except Exception as e:
-                    await query.edit_message_text("❌ Lỗi khi gửi file!")
+                    logger.error(f"Lỗi expense_export: {e}")
+                    await query.edit_message_text("❌ Có lỗi xảy ra khi xuất file!")
             
             else:
                 await query.edit_message_text("❌ Không hiểu lệnh!")
-        
-        except Exception as e:
-            logger.error(f"Lỗi callback: {e}")
-            await query.edit_message_text("❌ Có lỗi xảy ra!")
-
+    
     # ==================== PORTFOLIO STATS HELPER ====================
     def get_portfolio_stats(user_id):
         try:
