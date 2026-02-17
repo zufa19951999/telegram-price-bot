@@ -3232,8 +3232,8 @@ try:
 
     # ==================== EXPENSE SHORTCUT HANDLERS ====================
     async def expense_shortcut_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        user_id = ctx.bot_data.get('effective_user_id', update.effective_user.id)
         text = update.message.text.strip()
-        user_id = update.effective_user.id
         
         if text.startswith('tn '):
             parts = text.split()
