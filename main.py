@@ -2823,6 +2823,86 @@ try:
         except Exception as e:
             await msg.edit_text(f"❌ Lỗi: {e}")
 
+    @auto_update_user
+    async def debug_perm_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Debug permissions - chỉ dành cho owner"""
+        user_id = update.effective_user.id
+        
+        # Chỉ owner mới dùng được
+        if not is_owner(user_id):
+            await update.message.reply_text("❌ Chỉ Owner mới có quyền sử dụng lệnh này!")
+            return
+        
+        chat_id = update.effective_chat.id
+        
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            
+            # Lấy thông tin về bảng permissions
+            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='permissions'")
+            if not c.fetchone():
+                await update.message.reply_text("❌ Bảng permissions chưa được tạo!")
+                conn.close()
+                return
+            
+            # Lấy cấu trúc bảng
+            c.execute("PRAGMA table_info(permissions)")
+            columns = c.fetchall()
+            
+            msg = "🔧 *DEBUG PERMISSIONS*\n"
+            msg += f"Group ID: `{chat_id}`\n"
+            msg += f"User ID: `{user_id}`\n"
+            msg += "━━━━━━━━━━━━━━━━\n\n"
+            
+            msg += "*CẤU TRÚC BẢNG:*\n"
+            for col in columns:
+                msg += f"• `{col[1]}` ({col[2]})"
+                if col[5] == 1:
+                    msg += " PRIMARY KEY"
+                if col[3] == 1:
+                    msg += " NOT NULL"
+                if col[4] is not None:
+                    msg += f" DEFAULT '{col[4]}'"
+                msg += "\n"
+            
+            # Lấy dữ liệu của group hiện tại
+            c.execute("SELECT * FROM permissions WHERE group_id = ?", (chat_id,))
+            rows = c.fetchall()
+            
+            msg += f"\n*DỮ LIỆU ({len(rows)} rows):*\n"
+            if rows:
+                for row in rows:
+                    msg += f"• `{row}`\n"
+            else:
+                msg += "• Không có dữ liệu\n"
+            
+            # Kiểm tra quyền của user hiện tại
+            c.execute("SELECT * FROM permissions WHERE group_id = ? AND user_id = ?", (chat_id, user_id))
+            user_perm = c.fetchone()
+            
+            msg += f"\n*QUYỀN CỦA BẠN:*\n"
+            if user_perm:
+                msg += f"• {user_perm}\n"
+            else:
+                msg += "• Chưa có quyền trong group này\n"
+            
+            conn.close()
+            
+            # Gửi từng phần nếu quá dài
+            if len(msg) > 4000:
+                chunks = [msg[i:i+4000] for i in range(0, len(msg), 4000)]
+                for i, chunk in enumerate(chunks, 1):
+                    await update.message.reply_text(
+                        f"{chunk}\n\n*(Phần {i}/{len(chunks)})*", 
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+            else:
+                await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+                
+        except Exception as e:
+            await update.message.reply_text(f"❌ Lỗi: {str(e)}")
+
     # ==================== PERMISSION COMMAND ====================
     async def perm_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
