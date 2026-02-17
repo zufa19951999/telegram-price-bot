@@ -4527,8 +4527,11 @@ try:
                     logger.error(f"Lỗi expense_export: {e}")
                     await query.edit_message_text("❌ Có lỗi xảy ra khi xuất file!")
             
-            else:
-                await query.edit_message_text("❌ Không hiểu lệnh!")
+                else:
+                    await query.edit_message_text("❌ Không hiểu lệnh!")
+        except Exception as e:
+            logger.error(f"Lỗi callback: {e}")
+            await query.edit_message_text("❌ Có lỗi xảy ra!")
     
     # ==================== PORTFOLIO STATS HELPER ====================
     def get_portfolio_stats(user_id):
