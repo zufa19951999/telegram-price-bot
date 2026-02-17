@@ -1,7 +1,22 @@
 services:
-  - type: worker
-    name: telegram-bot
-    env: python
+  - type: web
+    name: crypto-bot
+    runtime: python
+    plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
-    autoDeploy: false  # Tắt auto-deploy để tránh multiple instances
+    startCommand: gunicorn bot:webhook_app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: CMC_API_KEY
+        sync: false
+      - key: RENDER
+        value: true
+      - key: MEMORY_LIMIT
+        value: 512
+      - key: CPU_LIMIT
+        value: 1
+      - key: RENDER_EXTERNAL_URL
+        value: https://your-bot-name.onrender.com
+    healthCheckPath: /health
+    autoDeploy: true
