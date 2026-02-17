@@ -3122,14 +3122,25 @@ try:
             
             msg = "👑 *DANH SÁCH ADMIN*\n━━━━━━━━━━━━━━━━\n\n"
             for admin in admins:
-                admin_id, view, edit, delete, manage = admin
+                # admin gồm: user_id, view, edit, delete, manage, username, first_name
+                user_id = admin[0]
+                view, edit, delete, manage = admin[1:5]
+                username = admin[5]
+                first_name = admin[6]
+                
+                # Tạo tên hiển thị: ID + Username (nếu có)
+                if username:
+                    display = f"`{user_id}` @{username}"
+                else:
+                    display = f"`{user_id}` {first_name or ''}"
+                
                 permissions = []
                 if view: permissions.append("👁 Xem")
                 if edit: permissions.append("✏️ Sửa")
                 if delete: permissions.append("🗑 Xóa")
                 if manage: permissions.append("🔐 Quản lý")
                 
-                msg += f"• `{admin_id}`: {', '.join(permissions)}\n"
+                msg += f"• {display}: {', '.join(permissions)}\n"
             
             msg += f"\n🕐 {format_vn_time_short()}"
             await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
