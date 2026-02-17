@@ -4254,9 +4254,16 @@ try:
                 await query.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]]))
             
             elif data == "expense_report_menu":
-                uid = query.from_user.id
-                expenses = get_expenses_by_period(uid, 'month')
-                incomes = get_income_by_period(uid, 'month')
+                current_user_id = query.from_user.id
+                chat_id = query.message.chat.id
+                effective_user_id = ctx.bot_data.get('effective_user_id', current_user_id)
+                
+                if current_user_id != effective_user_id and not check_permission(chat_id, current_user_id, 'view'):
+                    await query.edit_message_text("❌ Bạn không có quyền xem dữ liệu!")
+                    return
+                
+                expenses = get_expenses_by_period(effective_user_id, 'month')
+                incomes = get_income_by_period(effective_user_id, 'month')
                 
                 msg = f"📊 *BÁO CÁO THÁNG {get_vn_time().strftime('%m/%Y')}*\n━━━━━━━━━━━━━━━━\n\n"
                 
@@ -4285,10 +4292,16 @@ try:
                 await query.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]]))
             
             elif data == "expense_today":
-                uid = query.from_user.id
-                try:
-                    incomes_data = get_income_by_period(uid, 'day')
-                    expenses_data = get_expenses_by_period(uid, 'day')
+                current_user_id = query.from_user.id
+                chat_id = query.message.chat.id
+                effective_user_id = ctx.bot_data.get('effective_user_id', current_user_id)
+                
+                if current_user_id != effective_user_id and not check_permission(chat_id, current_user_id, 'view'):
+                    await query.edit_message_text("❌ Bạn không có quyền xem dữ liệu!")
+                    return
+                
+                incomes_data = get_income_by_period(effective_user_id, 'day')
+                expenses_data = get_expenses_by_period(effective_user_id, 'day')
                     
                     msg = f"📅 *HÔM NAY ({get_vn_time().strftime('%d/%m/%Y')})*\n━━━━━━━━━━━━━━━━\n\n"
                     
@@ -4336,12 +4349,35 @@ try:
                     )
             
             elif data == "expense_month":
-                uid = query.from_user.id
+                current_user_id = query.from_user.id
+                chat_id = query.message.chat.id
+                
+                # Lấy effective_user_id (chủ sở hữu) từ context
+                effective_user_id = ctx.bot_data.get('effective_user_id', current_user_id)
+                
+                # Kiểm tra quyền xem của người khác
+                if current_user_id != effective_user_id and not check_permission(chat_id, current_user_id, 'view'):
+                    await query.edit_message_text(
+                        "❌ Bạn không có quyền xem dữ liệu!",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]])
+                    )
+                    return
+                
                 try:
-                    incomes_data = get_income_by_period(uid, 'month')
-                    expenses_data = get_expenses_by_period(uid, 'month')
+                    # Dùng effective_user_id (chủ sở hữu) để lấy dữ liệu
+                    incomes_data = get_income_by_period(effective_user_id, 'month')
+                    expenses_data = get_expenses_by_period(effective_user_id, 'month')
                     
-                    msg = f"📅 *THÁNG {get_vn_time().strftime('%m/%Y')}*\n━━━━━━━━━━━━━━━━\n\n"
+                    # Lấy thông tin chủ sở hữu để hiển thị
+                    conn = sqlite3.connect(DB_PATH)
+                    c = conn.cursor()
+                    c.execute("SELECT username, first_name FROM users WHERE user_id = ?", (effective_user_id,))
+                    owner_info = c.fetchone()
+                    conn.close()
+                    
+                    owner_name = f"@{owner_info[0]}" if owner_info and owner_info[0] else (owner_info[1] if owner_info else f"User {effective_user_id}")
+                    
+                    msg = f"📅 *CHI TIÊU THÁNG {get_vn_time().strftime('%m/%Y')} - {owner_name}*\n━━━━━━━━━━━━━━━━\n\n"
                     
                     if incomes_data['transactions']:
                         msg += "*💰 THU NHẬP:*\n"
@@ -4351,12 +4387,12 @@ try:
                             if note:
                                 msg += f"  📝 {note}\n"
                         
-                        msg += f"\n📊 *Tổng thu theo loại tiền:*\n"
+                        msg += f"\n📊 *Tổng thu:*\n"
                         for currency, total in incomes_data['summary'].items():
                             msg += f"  {format_currency_simple(total, currency)}\n"
                         msg += f"  *Tổng số:* {incomes_data['total_count']} giao dịch\n\n"
                     else:
-                        msg += "📭 Không có thu nhập trong tháng này.\n\n"
+                        msg += "📭 Không có thu nhập.\n\n"
                     
                     if expenses_data['transactions']:
                         msg += "*💸 CHI TIÊU:*\n"
@@ -4366,44 +4402,13 @@ try:
                             if note:
                                 msg += f"  📝 {note}\n"
                         
-                        msg += f"\n📊 *Tổng chi theo loại tiền:*\n"
+                        msg += f"\n📊 *Tổng chi:*\n"
                         for currency, total in expenses_data['summary'].items():
                             msg += f"  {format_currency_simple(total, currency)}\n"
-                        
-                        msg += f"\n📋 *Chi tiêu theo danh mục:*\n"
-                        for key, data in expenses_data['category_summary'].items():
-                            budget_status = ""
-                            if data['budget'] > 0:
-                                percent = (data['total'] / data['budget']) * 100
-                                if percent > 100:
-                                    budget_status = " ⚠️ Vượt budget!"
-                                elif percent > 80:
-                                    budget_status = " ⚠️ Gần hết budget"
-                                msg += f"  • {data['category']} ({data['currency']}): {format_currency_simple(data['total'], data['currency'])} ({data['count']} lần) - Budget: {format_currency_simple(data['budget'], 'VND')}{budget_status}\n"
-                            else:
-                                msg += f"  • {data['category']} ({data['currency']}): {format_currency_simple(data['total'], data['currency'])} ({data['count']} lần)\n"
-                        
-                        msg += f"\n  *Tổng số:* {expenses_data['total_count']} giao dịch\n"
                     else:
-                        msg += "📭 Không có chi tiêu trong tháng này."
+                        msg += "📭 Không có chi tiêu."
                     
-                    msg += f"\n\n*⚖️ CÂN ĐỐI THU CHI:*\n"
-                    all_currencies = set(list(incomes_data['summary'].keys()) + list(expenses_data['summary'].keys()))
-                    
-                    for currency in all_currencies:
-                        income = incomes_data['summary'].get(currency, 0)
-                        expense = expenses_data['summary'].get(currency, 0)
-                        balance = income - expense
-                        if balance > 0:
-                            emoji = "✅"
-                        elif balance < 0:
-                            emoji = "❌"
-                        else:
-                            emoji = "➖"
-                        
-                        msg += f"  {emoji} {currency}: {format_currency_simple(balance, currency)}\n"
-                    
-                    msg += f"\n🕐 {format_vn_time()}"
+                    msg += f"\n\n🕐 {format_vn_time()}"
                     
                     await query.edit_message_text(
                         msg, 
@@ -4413,15 +4418,21 @@ try:
                 except Exception as e:
                     logger.error(f"Lỗi expense_month: {e}")
                     await query.edit_message_text(
-                        "❌ Có lỗi xảy ra khi xem tháng này!",
+                        "❌ Có lỗi xảy ra!",
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]])
                     )
             
             elif data == "expense_recent":
-                uid = query.from_user.id
-                try:
-                    recent_incomes = get_recent_incomes(uid, 10)
-                    recent_expenses = get_recent_expenses(uid, 10)
+                current_user_id = query.from_user.id
+                chat_id = query.message.chat.id
+                effective_user_id = ctx.bot_data.get('effective_user_id', current_user_id)
+                
+                if current_user_id != effective_user_id and not check_permission(chat_id, current_user_id, 'view'):
+                    await query.edit_message_text("❌ Bạn không có quyền xem dữ liệu!")
+                    return
+                
+                recent_incomes = get_recent_incomes(effective_user_id, 20)
+                recent_expenses = get_recent_expenses(effective_user_id, 20)
                     
                     if not recent_incomes and not recent_expenses:
                         await query.edit_message_text(
