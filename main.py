@@ -4350,21 +4350,21 @@ try:
                     )
             
             elif data == "expense_month":
-                current_user_id = query.from_user.id
-                chat_id = query.message.chat.id
-                
-                # Lấy effective_user_id (chủ sở hữu) từ context
-                effective_user_id = ctx.bot_data.get('effective_user_id', current_user_id)
-                
-                # Kiểm tra quyền xem của người khác
-                if current_user_id != effective_user_id and not check_permission(chat_id, current_user_id, 'view'):
-                    await query.edit_message_text(
-                        "❌ Bạn không có quyền xem dữ liệu!",
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]])
-                    )
-                    return
-                
                 try:
+                    current_user_id = query.from_user.id
+                    chat_id = query.message.chat.id
+                    
+                    # Lấy effective_user_id (chủ sở hữu) từ context
+                    effective_user_id = ctx.bot_data.get('effective_user_id', current_user_id)
+                    
+                    # Kiểm tra quyền xem của người khác
+                    if current_user_id != effective_user_id and not check_permission(chat_id, current_user_id, 'view'):
+                        await query.edit_message_text(
+                            "❌ Bạn không có quyền xem dữ liệu!",
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về menu", callback_data="back_to_expense")]])
+                        )
+                        return
+                
                     # Dùng effective_user_id (chủ sở hữu) để lấy dữ liệu
                     incomes_data = get_income_by_period(effective_user_id, 'month')
                     expenses_data = get_expenses_by_period(effective_user_id, 'month')
