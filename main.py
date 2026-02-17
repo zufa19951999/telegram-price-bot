@@ -3500,10 +3500,30 @@ try:
             except:
                 return
         
-        if chat_type == 'private' and text.startswith(('tn ', 'dm ', 'ct ', 'ds', 'bc', 'xoa chi ', 'xoa thu ')):
+        # XỬ LÝ CÁC LỆNH CHI TIÊU - CHO PHÉP CẢ PRIVATE VÀ GROUP
+        if text.startswith(('tn ', 'dm ', 'ct ', 'ds', 'bc', 'xoa chi ', 'xoa thu ')):
+            # Nếu là group, kiểm tra quyền
+            if chat_type in ['group', 'supergroup']:
+                user_id = update.effective_user.id
+                chat_id = update.effective_chat.id
+                effective_user_id = ctx.bot_data.get('effective_user_id', user_id)
+                
+                # Nếu user đang thao tác trên data của chủ sở hữu (khác với user_id của họ)
+                if user_id != effective_user_id:
+                    # Kiểm tra quyền xem
+                    if not check_permission(chat_id, user_id, 'view'):
+                        await update.message.reply_text(
+                            "❌ Bạn không có quyền thêm dữ liệu trong group này!\n"
+                            "Vui lòng liên hệ chủ sở hữu để được cấp quyền.",
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                        return
+            
+            # Nếu đã qua kiểm tra quyền, xử lý lệnh
             await expense_shortcut_handler(update, ctx)
             return
         
+        # XỬ LÝ MENU
         if text == "💰 ĐẦU TƯ COIN":
             await update.message.reply_text(
                 f"💰 *MENU ĐẦU TƯ COIN*\n━━━━━━━━━━━━━━━━\n\n🕐 {format_vn_time()}",
