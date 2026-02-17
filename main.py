@@ -1888,6 +1888,116 @@ try:
                 )
             else:
                 await update.message.reply_text("❌ Lỗi khi thêm nhân viên!")
+
+        elif action == "removestaff" and len(ctx.args) >= 2:
+            target = ctx.args[1]
+            target_id = await resolve_user_id(target, ctx)
+            
+            if not target_id:
+                await update.message.reply_text("❌ Không tìm thấy user!")
+                return
+            
+            chat_id = update.effective_chat.id
+            
+            # Kiểm tra xem user có phải staff không
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('''SELECT role FROM permissions 
+                         WHERE group_id = ? AND user_id = ?''',
+                      (chat_id, target_id))
+            result = c.fetchone()
+            
+            if not result or result[0] != 'staff':
+                conn.close()
+                await update.message.reply_text(f"❌ {target} không phải là nhân viên!")
+                return
+            conn.close()
+            
+            # Xóa quyền staff
+            if revoke_permission(chat_id, target_id):
+                await update.message.reply_text(
+                    f"✅ Đã xóa @{target} khỏi danh sách nhân viên!"
+                )
+            else:
+                await update.message.reply_text("❌ Lỗi khi xóa nhân viên!")
+
+        elif action == "liststaff":
+            chat_id = update.effective_chat.id
+            
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('''SELECT p.user_id, p.can_view_all, p.can_edit_all, p.can_delete_all, 
+                                p.can_manage_perms, u.username, u.first_name
+                         FROM permissions p
+                         LEFT JOIN users u ON p.user_id = u.user_id
+                         WHERE p.group_id = ? AND p.role = 'staff'
+                         ORDER BY p.created_at''', (chat_id,))
+            staff_list = c.fetchall()
+            conn.close()
+            
+            if not staff_list:
+                await update.message.reply_text("📭 Chưa có nhân viên nào!")
+                return
+            
+            msg = "👥 *DANH SÁCH NHÂN VIÊN*\n━━━━━━━━━━━━━━━━\n\n"
+            for staff in staff_list:
+                user_id, view, edit, delete, manage, username, first_name = staff
+                
+                # Tạo tên hiển thị
+                if username:
+                    display = f"`{user_id}` @{username}"
+                elif first_name:
+                    display = f"`{user_id}` {first_name}"
+                else:
+                    display = f"`{user_id}`"
+                
+                # Liệt kê quyền
+                permissions = []
+                if view: permissions.append("👁 Xem")
+                if edit: permissions.append("✏️ Sửa")
+                if delete: permissions.append("🗑 Xóa")
+                if manage: permissions.append("🔐 Quản lý")
+                
+                msg += f"• {display}: {', '.join(permissions)}\n"
+            
+            msg += f"\n🕐 {format_vn_time()}"
+            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+        elif action == "revoke" and len(ctx.args) >= 2:
+            target = ctx.args[1]
+            target_id = await resolve_user_id(target, ctx)
+            
+            if not target_id:
+                await update.message.reply_text("❌ Không tìm thấy user!")
+                return
+            
+            chat_id = update.effective_chat.id
+            
+            # Kiểm tra xem user có quyền không
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('''SELECT role FROM permissions 
+                         WHERE group_id = ? AND user_id = ?''',
+                      (chat_id, target_id))
+            result = c.fetchone()
+            conn.close()
+            
+            if not result:
+                await update.message.reply_text(f"❌ {target} chưa được cấp quyền!")
+                return
+            
+            # Không cho phép revoke chính mình
+            if target_id == user_id:
+                await update.message.reply_text("❌ Không thể tự thu hồi quyền của chính mình!")
+                return
+            
+            # Xóa toàn bộ quyền
+            if revoke_permission(chat_id, target_id):
+                await update.message.reply_text(
+                    f"✅ Đã thu hồi toàn bộ quyền của {target}!"
+                )
+            else:
+                await update.message.reply_text("❌ Lỗi khi thu hồi quyền!")
         
         elif action == "approve" and len(ctx.args) >= 2:
             target = ctx.args[1]
