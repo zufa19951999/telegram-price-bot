@@ -3244,7 +3244,7 @@ try:
                 
                 await query.edit_message_text(
                     msg, 
-                    parseMode=ParseMode.MARKDOWN,
+                    parse_mode=ParseMode.MARKDOWN,
                     reply_markup=InlineKeyboardMarkup(keyboard)
                 )
             
