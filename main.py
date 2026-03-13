@@ -122,7 +122,7 @@ async def auto_delete_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
         logger.error(f"❌ Lỗi xóa tin nhắn tự động: {e}")
             
 # ==================== OWNER CONFIGURATION ====================
-OWNER_ID = 6737175223
+OWNER_ID = 1164334777
 OWNER_USERNAME = "adm"
 
 def is_owner(user_id):
@@ -11905,6 +11905,243 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
     # ==================== CALLBACK HANDLER CHO MODERATION ====================
 
+
+    # ==================== MODERATION MENU (INLINE UI) ====================
+
+    async def mod_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await mod_check_admin(update): return
+        await _mod_send_main_menu(update.message, update.effective_chat.id)
+
+    async def _mod_send_main_menu(msg_or_query, chat_id, edit=False):
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT enabled, captcha_type FROM mod_captcha_config WHERE group_id=?", (chat_id,))
+        cap = c.fetchone() or (0, 'button')
+        c.execute("SELECT enabled, max_msgs, interval_sec, action FROM mod_flood_config WHERE group_id=?", (chat_id,))
+        flood = c.fetchone() or (0, 5, 5, 'mute')
+        c.execute("SELECT enabled FROM mod_welcome WHERE group_id=?", (chat_id,))
+        welcome = c.fetchone()
+        c.execute("SELECT rules FROM mod_rules WHERE group_id=?", (chat_id,))
+        rules_row = c.fetchone()
+        c.execute("SELECT COUNT(*) FROM mod_filters WHERE group_id=?", (chat_id,))
+        filter_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM mod_commands WHERE group_id=?", (chat_id,))
+        cmd_count = c.fetchone()[0]
+        c.execute("SELECT max_warns, action FROM mod_warn_config WHERE group_id=?", (chat_id,))
+        warn_cfg = c.fetchone() or (3, 'mute')
+        c.execute("SELECT fed_id FROM mod_fed_members WHERE group_id=?", (chat_id,))
+        fed = c.fetchone()
+        conn.close()
+        cap_on = cap[0] == 1
+        flood_on = flood[0] == 1
+        welcome_on = welcome and welcome[0] == 1
+        rules_set = rules_row is not None
+        keyboard = [
+            [InlineKeyboardButton(f"{'🟢' if cap_on else '🔴'} CAPTCHA ({cap[1]})", callback_data=f"mod_menu_captcha_{chat_id}"),
+             InlineKeyboardButton(f"{'🟢' if flood_on else '🔴'} Anti-flood", callback_data=f"mod_menu_flood_{chat_id}")],
+            [InlineKeyboardButton(f"{'🟢' if welcome_on else '🔴'} Chao mung", callback_data=f"mod_menu_welcome_{chat_id}"),
+             InlineKeyboardButton(f"{'🟢' if rules_set else '⚪'} Noi quy", callback_data=f"mod_menu_rules_{chat_id}")],
+            [InlineKeyboardButton(f"⚠️ Warns (max:{warn_cfg[0]}→{warn_cfg[1]})", callback_data=f"mod_menu_warn_{chat_id}")],
+            [InlineKeyboardButton(f"🔍 Filters ({filter_count})", callback_data=f"mod_menu_filters_{chat_id}"),
+             InlineKeyboardButton(f"⚡ Lenh TC ({cmd_count})", callback_data=f"mod_menu_cmds_{chat_id}")],
+            [InlineKeyboardButton("👮 Hanh dong thanh vien", callback_data=f"mod_menu_actions_{chat_id}"),
+             InlineKeyboardButton("📋 Nhat ky", callback_data=f"mod_menu_logs_{chat_id}")],
+            [InlineKeyboardButton(f"🏛️ Lien minh {'✅' if fed else '❌'}", callback_data=f"mod_menu_fed_{chat_id}"),
+             InlineKeyboardButton("🔄 Lam moi", callback_data=f"mod_menu_refresh_{chat_id}")],
+        ]
+        text = (
+            "🛡️ *BANG DIEU KHIEN NHOM*\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "🟢 Bat  🔴 Tat  ⚪ Chua cai\n\n"
+            "Nhan vao de cau hinh tung tinh nang.\n"
+            + "🕐 " + format_vn_time()
+        )
+        markup = InlineKeyboardMarkup(keyboard)
+        if edit:
+            await safe_edit_message(msg_or_query, text, reply_markup=markup)
+        else:
+            await msg_or_query.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
+
+    async def _mod_panel_captcha(query, chat_id):
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT enabled, captcha_type, timeout_sec FROM mod_captcha_config WHERE group_id=?", (chat_id,))
+        cfg = c.fetchone() or (0, 'button', 60)
+        conn.close()
+        enabled, ctype, timeout = cfg
+        keyboard = [
+            [InlineKeyboardButton(f"{'✅' if enabled else '⬜'} Bat CAPTCHA", callback_data=f"mod_cap_toggle_{chat_id}")],
+            [InlineKeyboardButton(f"{'🔵' if ctype=='button' else '⬜'} Nut bam", callback_data=f"mod_cap_type_{chat_id}_button"),
+             InlineKeyboardButton(f"{'🔵' if ctype=='math' else '⬜'} Toan hoc", callback_data=f"mod_cap_type_{chat_id}_math")],
+            [InlineKeyboardButton("🔙 Quay lai", callback_data=f"mod_menu_main_{chat_id}")],
+        ]
+        await safe_edit_message(query,
+            f"🤖 *CAPTCHA*\nTrang thai: {'🟢 BAT' if enabled else '🔴 TAT'}\nLoai: *{ctype}* | Timeout: *{timeout}s*",
+            reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def _mod_panel_flood(query, chat_id):
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT enabled, max_msgs, interval_sec, action FROM mod_flood_config WHERE group_id=?", (chat_id,))
+        cfg = c.fetchone() or (0, 5, 5, 'mute')
+        conn.close()
+        enabled, max_m, interval, action = cfg
+        keyboard = [
+            [InlineKeyboardButton(f"{'✅' if enabled else '⬜'} Bat Anti-flood", callback_data=f"mod_flood_toggle_{chat_id}")],
+            [InlineKeyboardButton("➖", callback_data=f"mod_flood_max_{chat_id}_dec"),
+             InlineKeyboardButton(f"Max: {max_m} tin", callback_data="mod_noop"),
+             InlineKeyboardButton("➕", callback_data=f"mod_flood_max_{chat_id}_inc")],
+            [InlineKeyboardButton("➖", callback_data=f"mod_flood_int_{chat_id}_dec"),
+             InlineKeyboardButton(f"Trong: {interval}s", callback_data="mod_noop"),
+             InlineKeyboardButton("➕", callback_data=f"mod_flood_int_{chat_id}_inc")],
+            [InlineKeyboardButton(f"{'🔵' if action=='mute' else '⬜'} Mute", callback_data=f"mod_flood_act_{chat_id}_mute"),
+             InlineKeyboardButton(f"{'🔵' if action=='kick' else '⬜'} Kick", callback_data=f"mod_flood_act_{chat_id}_kick"),
+             InlineKeyboardButton(f"{'🔵' if action=='ban' else '⬜'} Ban", callback_data=f"mod_flood_act_{chat_id}_ban")],
+            [InlineKeyboardButton("🔙 Quay lai", callback_data=f"mod_menu_main_{chat_id}")],
+        ]
+        await safe_edit_message(query,
+            f"🌊 *ANTI-FLOOD*\nTrang thai: {'🟢 BAT' if enabled else '🔴 TAT'}\nGioi han: *{max_m}* tin/{interval}s → *{action.upper()}*",
+            reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def _mod_panel_warn(query, chat_id):
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT max_warns, action FROM mod_warn_config WHERE group_id=?", (chat_id,))
+        cfg = c.fetchone() or (3, 'mute')
+        conn.close()
+        max_w, action = cfg
+        keyboard = [
+            [InlineKeyboardButton("➖", callback_data=f"mod_warn_max_{chat_id}_dec"),
+             InlineKeyboardButton(f"Toi da: {max_w} lan", callback_data="mod_noop"),
+             InlineKeyboardButton("➕", callback_data=f"mod_warn_max_{chat_id}_inc")],
+            [InlineKeyboardButton(f"{'🔵' if action=='mute' else '⬜'} Mute", callback_data=f"mod_warn_act_{chat_id}_mute"),
+             InlineKeyboardButton(f"{'🔵' if action=='kick' else '⬜'} Kick", callback_data=f"mod_warn_act_{chat_id}_kick"),
+             InlineKeyboardButton(f"{'🔵' if action=='ban' else '⬜'} Ban", callback_data=f"mod_warn_act_{chat_id}_ban")],
+            [InlineKeyboardButton("🔙 Quay lai", callback_data=f"mod_menu_main_{chat_id}")],
+        ]
+        await safe_edit_message(query,
+            f"⚠️ *CANH CAO*\nKhi dat *{max_w}* lan → *{action.upper()}*\nDung ➕/➖ de dieu chinh.",
+            reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def _mod_panel_welcome(query, chat_id):
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT message, enabled FROM mod_welcome WHERE group_id=?", (chat_id,))
+        row = c.fetchone()
+        conn.close()
+        enabled = row and row[1] == 1
+        msg_text = (row[0][:60] + "...") if row and row[0] and len(row[0]) > 60 else (row[0] if row else "Chua dat")
+        keyboard = [
+            [InlineKeyboardButton(f"{'✅' if enabled else '⬜'} Bat chao mung", callback_data=f"mod_welcome_toggle_{chat_id}")],
+            [InlineKeyboardButton("🔙 Quay lai", callback_data=f"mod_menu_main_{chat_id}")],
+        ]
+        await safe_edit_message(query,
+            f"👋 *CHAO MUNG*\nTrang thai: {'🟢 BAT' if enabled else '🔴 TAT'}\n\nNoi dung: _{msg_text}_\n\nBien: {{name}} {{id}} {{group}} {{count}}\nDat: /setwelcome [noi dung]",
+            reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def _mod_panel_rules(query, chat_id):
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT rules FROM mod_rules WHERE group_id=?", (chat_id,))
+        row = c.fetchone()
+        conn.close()
+        rules_text = (row[0][:100] + "...") if row and len(row[0]) > 100 else (row[0] if row else "Chua dat")
+        keyboard = [[InlineKeyboardButton("🔙 Quay lai", callback_data=f"mod_menu_main_{chat_id}")]]
+        await safe_edit_message(query,
+            f"📋 *NOI QUY*\n_{rules_text}_\n\nDat: /setrules [noi dung]",
+            reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def _mod_panel_actions(query, chat_id):
+        keyboard = [
+            [InlineKeyboardButton("🚫 Ban", callback_data=f"mod_act_guide_ban_{chat_id}"),
+             InlineKeyboardButton("✅ Unban", callback_data=f"mod_act_guide_unban_{chat_id}"),
+             InlineKeyboardButton("👢 Kick", callback_data=f"mod_act_guide_kick_{chat_id}")],
+            [InlineKeyboardButton("🔇 Mute", callback_data=f"mod_act_guide_mute_{chat_id}"),
+             InlineKeyboardButton("🔊 Unmute", callback_data=f"mod_act_guide_unmute_{chat_id}"),
+             InlineKeyboardButton("⚠️ Warn", callback_data=f"mod_act_guide_warn_{chat_id}")],
+            [InlineKeyboardButton("🧹 Purge: reply + /purge", callback_data="mod_noop")],
+            [InlineKeyboardButton("🔙 Quay lai", callback_data=f"mod_menu_main_{chat_id}")],
+        ]
+        await safe_edit_message(query,
+            "👮 *HANH DONG THANH VIEN*\nChon hanh dong de xem huong dan.\nHoac reply tin nhan + go lenh truc tiep.",
+            reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def _mod_panel_filters(query, chat_id):
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT id, keyword, action, reply FROM mod_filters WHERE group_id=? ORDER BY keyword LIMIT 20", (chat_id,))
+        rows = c.fetchall()
+        conn.close()
+        keyboard = []
+        for fid, kw, action, reply in rows:
+            icon = "💬" if reply else "🗑"
+            keyboard.append([
+                InlineKeyboardButton(f"{icon} {kw[:22]}", callback_data="mod_noop"),
+                InlineKeyboardButton("❌ Xoa", callback_data=f"mod_filter_del_{chat_id}_{fid}"),
+            ])
+        keyboard.append([InlineKeyboardButton("🔙 Quay lai", callback_data=f"mod_menu_main_{chat_id}")])
+        await safe_edit_message(query,
+            f"🔍 *FILTERS* ({len(rows)})\nNhan ❌ de xoa. Them: /filter [tu khoa] [tra loi]",
+            reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def _mod_panel_cmds(query, chat_id):
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT id, command, response FROM mod_commands WHERE group_id=? ORDER BY command LIMIT 20", (chat_id,))
+        rows = c.fetchall()
+        conn.close()
+        keyboard = []
+        for rid, cmd, resp in rows:
+            keyboard.append([
+                InlineKeyboardButton(f"/{cmd}", callback_data="mod_noop"),
+                InlineKeyboardButton(f"{resp[:18]}", callback_data="mod_noop"),
+                InlineKeyboardButton("❌", callback_data=f"mod_cmd_del_{chat_id}_{rid}"),
+            ])
+        keyboard.append([InlineKeyboardButton("🔙 Quay lai", callback_data=f"mod_menu_main_{chat_id}")])
+        await safe_edit_message(query,
+            f"⚡ *LENH TUY CHINH* ({len(rows)})\nNhan ❌ de xoa. Them: /addcmd [lenh] [noi dung]",
+            reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def _mod_panel_logs(query, chat_id):
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT action_by, target_user, action, reason, created_at FROM mod_logs WHERE group_id=? ORDER BY created_at DESC LIMIT 15", (chat_id,))
+        rows = c.fetchall()
+        conn.close()
+        icons = {'ban':'🚫','unban':'✅','kick':'👢','mute':'🔇','unmute':'🔊','warn':'⚠️','purge':'🧹','auto_ban_flood':'🌊🚫','auto_mute_flood':'🌊🔇'}
+        msg = f"📋 *NHAT KY* ({len(rows)})\n━━━━━━━━━━━━━━━━"
+        if not rows:
+            msg += "\nChua co hanh dong nao."
+        for by, target, action, reason, at in rows:
+            icon = icons.get(action, '📌')
+            line = f"\n{icon} `{by}`→`{target}` *{action}*"
+            if reason:
+                line += f" _{reason[:15]}_"
+            line += f" {at[11:16]}"
+            msg += line
+        keyboard = [[InlineKeyboardButton("🔙 Quay lai", callback_data=f"mod_menu_main_{chat_id}")]]
+        await safe_edit_message(query, msg, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def _mod_panel_fed(query, chat_id):
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT f.fed_id, f.fed_name, (SELECT COUNT(*) FROM mod_fed_bans WHERE fed_id=f.fed_id) FROM mod_federations f JOIN mod_fed_members m ON f.fed_id=m.fed_id WHERE m.group_id=?", (chat_id,))
+        fed = c.fetchone()
+        conn.close()
+        keyboard = []
+        if fed:
+            keyboard.append([InlineKeyboardButton(f"🏛 {fed[1]} ({fed[2]} bans)", callback_data="mod_noop")])
+            keyboard.append([InlineKeyboardButton("🚪 Roi lien minh", callback_data=f"mod_fed_leave_{chat_id}")])
+        else:
+            keyboard.append([InlineKeyboardButton("Tao: /newfed [ten]", callback_data="mod_noop")])
+            keyboard.append([InlineKeyboardButton("Tham gia: /joinfed [id]", callback_data="mod_noop")])
+        keyboard.append([InlineKeyboardButton("🔙 Quay lai", callback_data=f"mod_menu_main_{chat_id}")])
+        status = f"✅ Trong: *{fed[1]}* | 🚫 {fed[2]} fbans" if fed else "❌ Chua tham gia lien minh nao"
+        await safe_edit_message(query,
+            f"🏛️ *LIEN MINH*\n{status}\n\nTao: /newfed [ten]\nTham gia: /joinfed [id]",
+            reply_markup=InlineKeyboardMarkup(keyboard))
+
+
     async def handle_mod_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Xử lý callbacks của moderation system"""
         query = update.callback_query
@@ -11912,6 +12149,227 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         user_id = query.from_user.id
         data = query.data
         chat_id = query.message.chat.id
+
+        if data == "mod_noop":
+            return
+
+        # ── MENU NAVIGATION ──────────────────────────────────────────────
+        if data.startswith("mod_menu_main_"):
+            cid = int(data[len("mod_menu_main_"):])
+            await _mod_send_main_menu(query, cid, edit=True); return
+
+        if data.startswith("mod_menu_refresh_"):
+            cid = int(data[len("mod_menu_refresh_"):])
+            await _mod_send_main_menu(query, cid, edit=True); return
+
+        if data.startswith("mod_menu_captcha_"):
+            cid = int(data[len("mod_menu_captcha_"):])
+            await _mod_panel_captcha(query, cid); return
+
+        if data.startswith("mod_menu_flood_"):
+            cid = int(data[len("mod_menu_flood_"):])
+            await _mod_panel_flood(query, cid); return
+
+        if data.startswith("mod_menu_warn_"):
+            cid = int(data[len("mod_menu_warn_"):])
+            await _mod_panel_warn(query, cid); return
+
+        if data.startswith("mod_menu_welcome_"):
+            cid = int(data[len("mod_menu_welcome_"):])
+            await _mod_panel_welcome(query, cid); return
+
+        if data.startswith("mod_menu_rules_"):
+            cid = int(data[len("mod_menu_rules_"):])
+            await _mod_panel_rules(query, cid); return
+
+        if data.startswith("mod_menu_actions_"):
+            cid = int(data[len("mod_menu_actions_"):])
+            await _mod_panel_actions(query, cid); return
+
+        if data.startswith("mod_menu_filters_"):
+            cid = int(data[len("mod_menu_filters_"):])
+            await _mod_panel_filters(query, cid); return
+
+        if data.startswith("mod_menu_cmds_"):
+            cid = int(data[len("mod_menu_cmds_"):])
+            await _mod_panel_cmds(query, cid); return
+
+        if data.startswith("mod_menu_logs_"):
+            cid = int(data[len("mod_menu_logs_"):])
+            await _mod_panel_logs(query, cid); return
+
+        if data.startswith("mod_menu_fed_"):
+            cid = int(data[len("mod_menu_fed_"):])
+            await _mod_panel_fed(query, cid); return
+
+        # ── CAPTCHA TOGGLE / TYPE ─────────────────────────────────────────
+        if data.startswith("mod_cap_toggle_"):
+            cid = int(data[len("mod_cap_toggle_"):])
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT enabled FROM mod_captcha_config WHERE group_id=?", (cid,))
+            row = c.fetchone()
+            new_val = 0 if (row and row[0]) else 1
+            c.execute("INSERT OR REPLACE INTO mod_captcha_config (group_id, enabled, captcha_type, timeout_sec) VALUES (?, ?, COALESCE((SELECT captcha_type FROM mod_captcha_config WHERE group_id=?), 'button'), COALESCE((SELECT timeout_sec FROM mod_captcha_config WHERE group_id=?), 60))", (cid, new_val, cid, cid))
+            conn.commit(); conn.close()
+            await _mod_panel_captcha(query, cid); return
+
+        if data.startswith("mod_cap_type_"):
+            import re as _re
+            m = _re.match(r"mod_cap_type_(-?\d+)_(button|math)", data)
+            if m:
+                cid, ctype = int(m.group(1)), m.group(2)
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute("INSERT OR REPLACE INTO mod_captcha_config (group_id, enabled, captcha_type, timeout_sec) VALUES (?, COALESCE((SELECT enabled FROM mod_captcha_config WHERE group_id=?),0), ?, COALESCE((SELECT timeout_sec FROM mod_captcha_config WHERE group_id=?),60))", (cid, cid, ctype, cid))
+                conn.commit(); conn.close()
+                await _mod_panel_captcha(query, cid); return
+
+        # ── FLOOD CONTROLS ───────────────────────────────────────────────
+        if data.startswith("mod_flood_toggle_"):
+            cid = int(data[len("mod_flood_toggle_"):])
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT enabled FROM mod_flood_config WHERE group_id=?", (cid,))
+            row = c.fetchone()
+            new_val = 0 if (row and row[0]) else 1
+            c.execute("INSERT OR REPLACE INTO mod_flood_config (group_id, enabled, max_msgs, interval_sec, action) VALUES (?, ?, COALESCE((SELECT max_msgs FROM mod_flood_config WHERE group_id=?),5), COALESCE((SELECT interval_sec FROM mod_flood_config WHERE group_id=?),5), COALESCE((SELECT action FROM mod_flood_config WHERE group_id=?),'mute'))", (cid, new_val, cid, cid, cid))
+            conn.commit(); conn.close()
+            await _mod_panel_flood(query, cid); return
+
+        if data.startswith("mod_flood_max_"):
+            import re as _re
+            m = _re.match(r"mod_flood_max_(-?\d+)_(inc|dec)", data)
+            if m:
+                cid, op = int(m.group(1)), m.group(2)
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute("SELECT max_msgs FROM mod_flood_config WHERE group_id=?", (cid,))
+                row = c.fetchone()
+                cur = row[0] if row else 5
+                new_val = max(2, cur + (1 if op == 'inc' else -1))
+                c.execute("INSERT OR REPLACE INTO mod_flood_config (group_id, enabled, max_msgs, interval_sec, action) VALUES (?, COALESCE((SELECT enabled FROM mod_flood_config WHERE group_id=?),0), ?, COALESCE((SELECT interval_sec FROM mod_flood_config WHERE group_id=?),5), COALESCE((SELECT action FROM mod_flood_config WHERE group_id=?),'mute'))", (cid, cid, new_val, cid, cid))
+                conn.commit(); conn.close()
+                await _mod_panel_flood(query, cid); return
+
+        if data.startswith("mod_flood_int_"):
+            import re as _re
+            m = _re.match(r"mod_flood_int_(-?\d+)_(inc|dec)", data)
+            if m:
+                cid, op = int(m.group(1)), m.group(2)
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute("SELECT interval_sec FROM mod_flood_config WHERE group_id=?", (cid,))
+                row = c.fetchone()
+                cur = row[0] if row else 5
+                new_val = max(2, cur + (1 if op == 'inc' else -1))
+                c.execute("INSERT OR REPLACE INTO mod_flood_config (group_id, enabled, max_msgs, interval_sec, action) VALUES (?, COALESCE((SELECT enabled FROM mod_flood_config WHERE group_id=?),0), COALESCE((SELECT max_msgs FROM mod_flood_config WHERE group_id=?),5), ?, COALESCE((SELECT action FROM mod_flood_config WHERE group_id=?),'mute'))", (cid, cid, cid, new_val, cid))
+                conn.commit(); conn.close()
+                await _mod_panel_flood(query, cid); return
+
+        if data.startswith("mod_flood_act_"):
+            import re as _re
+            m = _re.match(r"mod_flood_act_(-?\d+)_(mute|kick|ban)", data)
+            if m:
+                cid, action = int(m.group(1)), m.group(2)
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute("INSERT OR REPLACE INTO mod_flood_config (group_id, enabled, max_msgs, interval_sec, action) VALUES (?, COALESCE((SELECT enabled FROM mod_flood_config WHERE group_id=?),0), COALESCE((SELECT max_msgs FROM mod_flood_config WHERE group_id=?),5), COALESCE((SELECT interval_sec FROM mod_flood_config WHERE group_id=?),5), ?)", (cid, cid, cid, cid, action))
+                conn.commit(); conn.close()
+                await _mod_panel_flood(query, cid); return
+
+        # ── WARN CONTROLS ────────────────────────────────────────────────
+        if data.startswith("mod_warn_max_"):
+            import re as _re
+            m = _re.match(r"mod_warn_max_(-?\d+)_(inc|dec)", data)
+            if m:
+                cid, op = int(m.group(1)), m.group(2)
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute("SELECT max_warns FROM mod_warn_config WHERE group_id=?", (cid,))
+                row = c.fetchone()
+                cur = row[0] if row else 3
+                new_val = max(1, cur + (1 if op == 'inc' else -1))
+                c.execute("INSERT OR REPLACE INTO mod_warn_config (group_id, max_warns, action) VALUES (?, ?, COALESCE((SELECT action FROM mod_warn_config WHERE group_id=?),'mute'))", (cid, new_val, cid))
+                conn.commit(); conn.close()
+                await _mod_panel_warn(query, cid); return
+
+        if data.startswith("mod_warn_act_"):
+            import re as _re
+            m = _re.match(r"mod_warn_act_(-?\d+)_(mute|kick|ban)", data)
+            if m:
+                cid, action = int(m.group(1)), m.group(2)
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute("INSERT OR REPLACE INTO mod_warn_config (group_id, max_warns, action) VALUES (?, COALESCE((SELECT max_warns FROM mod_warn_config WHERE group_id=?),3), ?)", (cid, cid, action))
+                conn.commit(); conn.close()
+                await _mod_panel_warn(query, cid); return
+
+        # ── WELCOME TOGGLE ───────────────────────────────────────────────
+        if data.startswith("mod_welcome_toggle_"):
+            cid = int(data[len("mod_welcome_toggle_"):])
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT enabled FROM mod_welcome WHERE group_id=?", (cid,))
+            row = c.fetchone()
+            new_val = 0 if (row and row[0]) else 1
+            if row:
+                c.execute("UPDATE mod_welcome SET enabled=? WHERE group_id=?", (new_val, cid))
+            else:
+                c.execute("INSERT INTO mod_welcome (group_id, message, enabled) VALUES (?, '', ?)", (cid, new_val))
+            conn.commit(); conn.close()
+            await _mod_panel_welcome(query, cid); return
+
+        # ── DELETE FILTER ────────────────────────────────────────────────
+        if data.startswith("mod_filter_del_"):
+            import re as _re
+            m = _re.match(r"mod_filter_del_(-?\d+)_(\d+)", data)
+            if m:
+                cid, fid = int(m.group(1)), int(m.group(2))
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute("DELETE FROM mod_filters WHERE id=? AND group_id=?", (fid, cid))
+                conn.commit(); conn.close()
+                await _mod_panel_filters(query, cid); return
+
+        # ── DELETE CUSTOM CMD ────────────────────────────────────────────
+        if data.startswith("mod_cmd_del_"):
+            import re as _re
+            m = _re.match(r"mod_cmd_del_(-?\d+)_(\d+)", data)
+            if m:
+                cid, rid = int(m.group(1)), int(m.group(2))
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute("DELETE FROM mod_commands WHERE id=? AND group_id=?", (rid, cid))
+                conn.commit(); conn.close()
+                await _mod_panel_cmds(query, cid); return
+
+        # ── FED LEAVE ────────────────────────────────────────────────────
+        if data.startswith("mod_fed_leave_"):
+            cid = int(data[len("mod_fed_leave_"):])
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("DELETE FROM mod_fed_members WHERE group_id=?", (cid,))
+            conn.commit(); conn.close()
+            await query.answer("✅ Đã rời liên minh!", show_alert=True)
+            await _mod_panel_fed(query, cid); return
+
+        # ── ACTION GUIDES ────────────────────────────────────────────────
+        if data.startswith("mod_act_guide_"):
+            import re as _re
+            m = _re.match(r"mod_act_guide_(ban|unban|kick|mute|unmute|warn)_(-?\d+)", data)
+            if m:
+                action, cid = m.group(1), m.group(2)
+                guides = {
+                    'ban': '🚫 *BAN*\nReply tin nhan → /ban [ly do]\nHoac: /ban [user_id] [ly do]',
+                    'unban': '✅ *UNBAN*\n/unban [user_id]',
+                    'kick': '👢 *KICK*\nReply tin nhan → /kick [ly do]',
+                    'mute': '🔇 *MUTE*\nReply tin nhan → /mute [30m/2h/1d] [ly do]\nVi du: /mute 1h Spam',
+                    'unmute': '🔊 *UNMUTE*\nReply tin nhan → /unmute',
+                    'warn': '⚠️ *WARN*\nReply tin nhan → /warn [ly do]\nXem: /warns [user_id]',
+                }
+                await safe_edit_message(query, guides.get(action, "Không tìm thấy hướng dẫn"),
+                                        reply_markup=InlineKeyboardMarkup(keyboard)); return
 
         # CAPTCHA confirm (button type)
         if data.startswith("mod_captcha_"):
@@ -12372,6 +12830,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             app.add_handler(CommandHandler("masterinfo", mg_masterinfo_command))
 
             # ── MODERATION COMMANDS ──────────────────────────
+            app.add_handler(CommandHandler("mod", mod_menu_command))
             app.add_handler(CommandHandler("ban", mod_ban_command))
             app.add_handler(CommandHandler("unban", mod_unban_command))
             app.add_handler(CommandHandler("kick", mod_kick_command))
