@@ -10205,15 +10205,32 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             rows = c.fetchall(); conn.close(); return rows
         except: return []
 
-    async def mg_broadcast(context, master_id, message, sent_by, target_ids=None):
+    async def mg_broadcast(context, master_id, message, sent_by, target_ids=None, photo_id=None, caption=None):
+        """Gửi broadcast text hoặc ảnh+caption đến các nhóm con"""
         children = mg_get_children(master_id)
         targets = [(cid, cname) for cid, cname, _, _ in children
                    if (target_ids is None or cid in target_ids) and mg_has_feature(cid, "broadcast_recv")]
         success = fail = 0
-        full_msg = f"📢 *THÔNG BÁO TỪ NHÓM TỔNG*\n━━━━━━━━━━━━━━━━\n\n{message}\n\n🕐 {format_vn_time()}"
+        header = f"📢 *THÔNG BÁO TỪ NHÓM TỔNG*\n━━━━━━━━━━━━━━━━\n\n"
+        footer = f"\n\n🕐 {format_vn_time()}"
         for child_id, child_name in targets:
             try:
-                await context.bot.send_message(chat_id=child_id, text=full_msg, parse_mode=ParseMode.MARKDOWN)
+                if photo_id:
+                    # Gửi ảnh kèm caption
+                    cap = header + (caption or "") + footer
+                    await context.bot.send_photo(
+                        chat_id=child_id,
+                        photo=photo_id,
+                        caption=cap,
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                else:
+                    full_msg = header + message + footer
+                    await context.bot.send_message(
+                        chat_id=child_id,
+                        text=full_msg,
+                        parse_mode=ParseMode.MARKDOWN
+                    )
                 success += 1
             except Exception as e:
                 fail += 1
@@ -10223,7 +10240,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             c = conn.cursor()
             c.execute('''INSERT INTO broadcasts (master_group_id, message, sent_by, target_groups, sent_at, success_count, fail_count)
                          VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                      (master_id, message, sent_by, ",".join(str(t[0]) for t in targets),
+                      (master_id, caption or message, sent_by, ",".join(str(t[0]) for t in targets),
                        get_vn_time().strftime("%Y-%m-%d %H:%M:%S"), success, fail))
             conn.commit(); conn.close()
         except Exception as e:
@@ -10531,14 +10548,28 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             if not check_permission(chat_id, user_id, 'manage'):
                 await update.message.reply_text("❌ Bạn cần quyền manage để gửi broadcast!"); return
 
-        if not context.args:
+        # Kiểm tra có reply ảnh không
+        photo_id = None
+        caption_text = None
+        if update.message.reply_to_message and update.message.reply_to_message.photo:
+            # Reply vào ảnh → lấy file_id ảnh lớn nhất
+            photo_id = update.message.reply_to_message.photo[-1].file_id
+            caption_text = " ".join(context.args) if context.args else (update.message.reply_to_message.caption or "")
+        elif update.message.photo:
+            # Gửi ảnh trực tiếp kèm /broadcast làm caption
+            photo_id = update.message.photo[-1].file_id
+            caption_text = " ".join(context.args) if context.args else ""
+        
+        if not context.args and not photo_id:
             await update.message.reply_text(
-                "📖 *Cách dùng:*\n`/broadcast [nội dung thông báo]`\n\n"
-                "*Ví dụ:*\n`/broadcast Họp nhóm lúc 8pm tối nay!`\n\n"
+                "📖 *Cách dùng:*\n"
+                "`/broadcast [nội dung]` — Gửi text\n"
+                "Reply ảnh + `/broadcast [caption]` — Gửi ảnh\n\n"
+                "*Ví dụ:*\n`/broadcast Họp nhóm lúc 8pm!`\n\n"
                 "Sau đó chọn nhóm muốn gửi.",
                 parse_mode=ParseMode.MARKDOWN); return
 
-        message_text = " ".join(context.args)
+        message_text = " ".join(context.args) if context.args else ""
         children = mg_get_children(master_id)
 
         if not children:
@@ -10546,16 +10577,23 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                 "⚠️ Chưa có nhóm con!\nDùng `/addchild [id] [level]` để thêm.",
                 parse_mode=ParseMode.MARKDOWN); return
 
-        # Lưu draft
+        # Lưu draft kèm photo nếu có
         draft_key = f"{chat_id}_{user_id}"
         _broadcast_drafts[draft_key] = {
             'msg': message_text,
             'master_id': master_id,
-            'targets': set(),  # rỗng = chưa chọn nhóm nào
+            'targets': set(),
+            'photo_id': photo_id,
+            'caption': caption_text,
         }
 
+        # Preview
+        preview = caption_text or message_text
+        preview_short = preview[:60] + "..." if len(preview) > 60 else preview
+        type_icon = "🖼" if photo_id else "📝"
+
         # Tạo panel chọn nhóm
-        await _mg_send_broadcast_panel(update.message, draft_key, children, message_text)
+        await _mg_send_broadcast_panel(update.message, draft_key, children, f"{type_icon} {preview_short}")
 
     async def _mg_send_broadcast_panel(message_or_query, draft_key, children, message_text, edit=False):
         """Hiển thị panel chọn nhóm để broadcast"""
@@ -10749,13 +10787,16 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                 await query.answer("❌ Phiên đã hết hạn! Gõ lại /broadcast", show_alert=True); return
             master_id = draft['master_id']
             message_text = draft['msg']
+            photo_id = draft.get('photo_id')
+            caption = draft.get('caption')
             # Nếu chưa chọn nhóm nào → gửi tất cả
             target_ids = draft['targets'] if draft['targets'] else None
             children = mg_get_children(master_id)
             target_count = len(target_ids) if target_ids else sum(
                 1 for cid, _, _, _ in children if mg_has_feature(cid, "broadcast_recv"))
-            await safe_edit_message(query, f"📤 *Đang gửi đến {target_count} nhóm...*")
-            success, fail = await mg_broadcast(context, master_id, message_text, user_id, target_ids)
+            type_icon = "🖼" if photo_id else "📝"
+            await safe_edit_message(query, f"📤 *Đang gửi {type_icon} đến {target_count} nhóm...*")
+            success, fail = await mg_broadcast(context, master_id, message_text, user_id, target_ids, photo_id=photo_id, caption=caption)
             _broadcast_drafts.pop(draft_key, None)
             await safe_edit_message(query,
                 f"📢 *KẾT QUẢ BROADCAST*\n━━━━━━━━━━━━━━━━\n\n"
