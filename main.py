@@ -751,9 +751,56 @@ try:
                 sell_date TEXT,
                 created_at TEXT
             )''')
-                
+
+            # === MULTI-GROUP SYSTEM TABLES ===
+            c.execute('''CREATE TABLE IF NOT EXISTS master_groups (
+                group_id INTEGER PRIMARY KEY,
+                group_name TEXT,
+                set_by INTEGER,
+                created_at TEXT
+            )''')
+            c.execute('''CREATE TABLE IF NOT EXISTS group_hierarchy (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                master_group_id INTEGER,
+                child_group_id INTEGER,
+                child_group_name TEXT,
+                autonomy_level INTEGER DEFAULT 0,
+                added_by INTEGER,
+                created_at TEXT,
+                UNIQUE(master_group_id, child_group_id)
+            )''')
+            c.execute('''CREATE TABLE IF NOT EXISTS group_features (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER,
+                feature_key TEXT,
+                is_enabled INTEGER DEFAULT 0,
+                set_by INTEGER,
+                updated_at TEXT,
+                UNIQUE(group_id, feature_key)
+            )''')
+            c.execute('''CREATE TABLE IF NOT EXISTS cross_bans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                master_group_id INTEGER,
+                banned_user_id INTEGER,
+                banned_by INTEGER,
+                reason TEXT,
+                banned_at TEXT,
+                is_active INTEGER DEFAULT 1,
+                UNIQUE(master_group_id, banned_user_id)
+            )''')
+            c.execute('''CREATE TABLE IF NOT EXISTS broadcasts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                master_group_id INTEGER,
+                message TEXT,
+                sent_by INTEGER,
+                target_groups TEXT,
+                sent_at TEXT,
+                success_count INTEGER DEFAULT 0,
+                fail_count INTEGER DEFAULT 0
+            )''')
+
             conn.commit()
-            logger.info(f"✅ Database initialized with sell_history table")
+            logger.info(f"✅ Database initialized with sell_history + multi-group tables")
             return True
         except Exception as e:
             logger.error(f"❌ Lỗi database: {e}")
@@ -6099,7 +6146,20 @@ try:
                 continue
             
             chat_id = update.effective_chat.id
-            
+
+            # === MULTI-GROUP: Tự động kick nếu bị cross-ban ===
+            if mg_is_cross_banned(chat_id, new_member.id):
+                try:
+                    await ctx.bot.ban_chat_member(chat_id=chat_id, user_id=new_member.id)
+                    await update.message.reply_text(
+                        f"🚫 {escape_markdown(new_member.first_name)} bị kick tự động do nằm trong danh sách ban của hệ thống.",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                    logger.info(f"🚫 Auto-kicked cross-banned user {new_member.id} from {chat_id}")
+                    continue
+                except Exception as e:
+                    logger.error(f"❌ Không kick được {new_member.id}: {e}")
+
             try:
                 admins = await ctx.bot.get_chat_administrators(chat_id)
                 for admin in admins:
@@ -7947,6 +8007,11 @@ try:
             await update_user_info_async(query.from_user)
         
         data = query.data
+
+        # === MULTI-GROUP CALLBACK ROUTING ===
+        if data.startswith("mg_"):
+            await handle_mg_callback(update, ctx)
+            return
         
         try:
             # Lấy thông tin cơ bản
@@ -9935,6 +10000,584 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             logger.error(f"❌ Health server error: {e}")
             time.sleep(10)
 
+    # ==================== MULTI-GROUP MANAGEMENT SYSTEM ====================
+
+    # Danh sách tính năng có thể bật/tắt
+    FEATURE_CATALOG = {
+        "kick_mute":      {"name": "Kick/Mute thành viên",   "group": "🛡️ Quản lý nhóm"},
+        "welcome":        {"name": "Chào mừng thành viên",   "group": "🛡️ Quản lý nhóm"},
+        "anti_spam":      {"name": "Chống spam",             "group": "🛡️ Quản lý nhóm"},
+        "filter_kw":      {"name": "Lọc từ khóa",            "group": "🛡️ Quản lý nhóm"},
+        "del_msg":        {"name": "Xóa tin nhắn",           "group": "🛡️ Quản lý nhóm"},
+        "pin_msg":        {"name": "Ghim tin nhắn",          "group": "🛡️ Quản lý nhóm"},
+        "poll":           {"name": "Tạo poll",               "group": "🛡️ Quản lý nhóm"},
+        "crypto_view":    {"name": "Xem giá coin",           "group": "💰 Crypto"},
+        "crypto_buy":     {"name": "Mua coin",               "group": "💰 Crypto"},
+        "crypto_sell":    {"name": "Bán coin",               "group": "💰 Crypto"},
+        "crypto_alert":   {"name": "Cảnh báo giá",           "group": "💰 Crypto"},
+        "crypto_port":    {"name": "Xem portfolio",          "group": "💰 Crypto"},
+        "crypto_profit":  {"name": "Tính lợi nhuận",         "group": "💰 Crypto"},
+        "crypto_export":  {"name": "Xuất báo cáo crypto",    "group": "💰 Crypto"},
+        "expense_add":    {"name": "Ghi thu/chi",            "group": "💸 Thu chi"},
+        "expense_cat":    {"name": "Quản lý danh mục",       "group": "💸 Thu chi"},
+        "expense_budget": {"name": "Đặt ngân sách",          "group": "💸 Thu chi"},
+        "expense_view":   {"name": "Xem cân đối",            "group": "💸 Thu chi"},
+        "expense_report": {"name": "Báo cáo thu chi",        "group": "💸 Thu chi"},
+        "expense_export": {"name": "Xuất Excel/PDF",         "group": "💸 Thu chi"},
+        "broadcast_recv": {"name": "Nhận TB từ nhóm tổng",  "group": "📢 Thông báo"},
+        "broadcast_send": {"name": "Gửi TB nội bộ",         "group": "📢 Thông báo"},
+        "alert_market":   {"name": "Cảnh báo biến động TT", "group": "📢 Thông báo"},
+        "report_sched":   {"name": "Báo cáo định kỳ",       "group": "📢 Thông báo"},
+    }
+
+    AUTONOMY_PRESETS = {
+        0: [],
+        1: ["crypto_view", "crypto_buy", "crypto_sell", "crypto_port",
+            "expense_add", "expense_view", "broadcast_recv"],
+        2: ["crypto_view", "crypto_buy", "crypto_sell", "crypto_port", "crypto_alert",
+            "crypto_profit", "expense_add", "expense_cat", "expense_view", "expense_report",
+            "kick_mute", "welcome", "anti_spam", "del_msg",
+            "broadcast_recv", "broadcast_send", "report_sched"],
+        3: list(FEATURE_CATALOG.keys()),
+    }
+
+    # ── DB Helpers ──────────────────────────────────────────────────
+
+    def mg_set_master(group_id, group_name, set_by):
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('''INSERT OR REPLACE INTO master_groups (group_id, group_name, set_by, created_at)
+                         VALUES (?, ?, ?, ?)''',
+                      (group_id, group_name, set_by, get_vn_time().strftime("%Y-%m-%d %H:%M:%S")))
+            conn.commit(); conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"❌ mg_set_master: {e}"); return False
+
+    def mg_is_master(group_id):
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT group_id FROM master_groups WHERE group_id = ?", (group_id,))
+            r = c.fetchone(); conn.close(); return r is not None
+        except: return False
+
+    def mg_get_master_of_child(child_group_id):
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT master_group_id FROM group_hierarchy WHERE child_group_id = ?", (child_group_id,))
+            r = c.fetchone(); conn.close()
+            return r[0] if r else None
+        except: return None
+
+    def mg_add_child(master_id, child_id, child_name, level, added_by):
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('''INSERT OR REPLACE INTO group_hierarchy
+                         (master_group_id, child_group_id, child_group_name, autonomy_level, added_by, created_at)
+                         VALUES (?, ?, ?, ?, ?, ?)''',
+                      (master_id, child_id, child_name, level, added_by,
+                       get_vn_time().strftime("%Y-%m-%d %H:%M:%S")))
+            conn.commit(); conn.close()
+            mg_apply_preset(child_id, level, added_by)
+            return True
+        except Exception as e:
+            logger.error(f"❌ mg_add_child: {e}"); return False
+
+    def mg_remove_child(master_id, child_id):
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("DELETE FROM group_hierarchy WHERE master_group_id=? AND child_group_id=?",
+                      (master_id, child_id))
+            conn.commit(); conn.close(); return True
+        except Exception as e:
+            logger.error(f"❌ mg_remove_child: {e}"); return False
+
+    def mg_get_children(master_id):
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('''SELECT child_group_id, child_group_name, autonomy_level, created_at
+                         FROM group_hierarchy WHERE master_group_id=? ORDER BY autonomy_level DESC''', (master_id,))
+            rows = c.fetchall(); conn.close(); return rows
+        except: return []
+
+    def mg_set_feature(group_id, feature_key, is_enabled, set_by):
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('''INSERT OR REPLACE INTO group_features (group_id, feature_key, is_enabled, set_by, updated_at)
+                         VALUES (?, ?, ?, ?, ?)''',
+                      (group_id, feature_key, 1 if is_enabled else 0, set_by,
+                       get_vn_time().strftime("%Y-%m-%d %H:%M:%S")))
+            conn.commit(); conn.close(); return True
+        except Exception as e:
+            logger.error(f"❌ mg_set_feature: {e}"); return False
+
+    def mg_has_feature(group_id, feature_key):
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT is_enabled FROM group_features WHERE group_id=? AND feature_key=?",
+                      (group_id, feature_key))
+            r = c.fetchone(); conn.close()
+            return r is not None and r[0] == 1
+        except: return False
+
+    def mg_get_features(group_id):
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT feature_key, is_enabled FROM group_features WHERE group_id=?", (group_id,))
+            rows = c.fetchall(); conn.close()
+            return {row[0]: bool(row[1]) for row in rows}
+        except: return {}
+
+    def mg_apply_preset(group_id, level, set_by):
+        enabled = AUTONOMY_PRESETS.get(level, [])
+        for key in FEATURE_CATALOG:
+            mg_set_feature(group_id, key, key in enabled, set_by)
+        logger.info(f"✅ Preset Lv{level} → group {group_id}: {len(enabled)} features ON")
+
+    def mg_cross_ban(master_id, banned_user_id, banned_by, reason=""):
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('''INSERT OR REPLACE INTO cross_bans
+                         (master_group_id, banned_user_id, banned_by, reason, banned_at, is_active)
+                         VALUES (?, ?, ?, ?, ?, 1)''',
+                      (master_id, banned_user_id, banned_by, reason,
+                       get_vn_time().strftime("%Y-%m-%d %H:%M:%S")))
+            conn.commit(); conn.close(); return True
+        except Exception as e:
+            logger.error(f"❌ mg_cross_ban: {e}"); return False
+
+    def mg_cross_unban(master_id, banned_user_id):
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("UPDATE cross_bans SET is_active=0 WHERE master_group_id=? AND banned_user_id=?",
+                      (master_id, banned_user_id))
+            conn.commit(); conn.close(); return True
+        except Exception as e:
+            logger.error(f"❌ mg_cross_unban: {e}"); return False
+
+    def mg_is_cross_banned(group_id, user_id):
+        master_id = mg_get_master_of_child(group_id)
+        if not master_id:
+            master_id = group_id if mg_is_master(group_id) else None
+        if not master_id:
+            return False
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('''SELECT id FROM cross_bans WHERE master_group_id=? AND banned_user_id=? AND is_active=1''',
+                      (master_id, user_id))
+            r = c.fetchone(); conn.close(); return r is not None
+        except: return False
+
+    def mg_get_ban_list(master_id):
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('''SELECT banned_user_id, banned_by, reason, banned_at FROM cross_bans
+                         WHERE master_group_id=? AND is_active=1 ORDER BY banned_at DESC''', (master_id,))
+            rows = c.fetchall(); conn.close(); return rows
+        except: return []
+
+    async def mg_broadcast(context, master_id, message, sent_by, target_ids=None):
+        children = mg_get_children(master_id)
+        targets = [(cid, cname) for cid, cname, _, _ in children
+                   if (target_ids is None or cid in target_ids) and mg_has_feature(cid, "broadcast_recv")]
+        success = fail = 0
+        full_msg = f"📢 *THÔNG BÁO TỪ NHÓM TỔNG*\n━━━━━━━━━━━━━━━━\n\n{message}\n\n🕐 {format_vn_time()}"
+        for child_id, child_name in targets:
+            try:
+                await context.bot.send_message(chat_id=child_id, text=full_msg, parse_mode=ParseMode.MARKDOWN)
+                success += 1
+            except Exception as e:
+                fail += 1
+                logger.error(f"❌ Broadcast failed → {child_name}: {e}")
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('''INSERT INTO broadcasts (master_group_id, message, sent_by, target_groups, sent_at, success_count, fail_count)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                      (master_id, message, sent_by, ",".join(str(t[0]) for t in targets),
+                       get_vn_time().strftime("%Y-%m-%d %H:%M:%S"), success, fail))
+            conn.commit(); conn.close()
+        except Exception as e:
+            logger.error(f"❌ Lưu broadcast history: {e}")
+        return success, fail
+
+    # ── Commands ────────────────────────────────────────────────────
+
+    async def mg_setmaster_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/setmaster — Đặt nhóm hiện tại làm nhóm tổng (chỉ owner bot)"""
+        user_id = update.effective_user.id
+        chat = update.effective_chat
+        if not is_owner(user_id):
+            await update.message.reply_text("❌ Chỉ owner bot mới dùng lệnh này!"); return
+        if chat.type not in ['group', 'supergroup']:
+            await update.message.reply_text("❌ Lệnh này chỉ dùng trong nhóm!"); return
+        group_name = chat.title or f"Group {chat.id}"
+        if mg_set_master(chat.id, group_name, user_id):
+            await update.message.reply_text(
+                f"✅ *ĐÃ ĐẶT NHÓM TỔNG*\n━━━━━━━━━━━━━━━━\n\n"
+                f"🏢 Nhóm: *{escape_markdown(group_name)}*\n"
+                f"🆔 ID: `{chat.id}`\n\n"
+                f"*Các lệnh tiếp theo:*\n"
+                f"• `/addchild [id] [level]` — Thêm nhóm con\n"
+                f"• `/masterinfo` — Xem thông tin hệ thống\n"
+                f"• `/broadcast [msg]` — Gửi thông báo\n\n"
+                f"🕐 {format_vn_time()}", parse_mode=ParseMode.MARKDOWN)
+        else:
+            await update.message.reply_text("❌ Lỗi khi đặt nhóm tổng!")
+
+    async def mg_masterinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/masterinfo — Xem thông tin nhóm tổng và danh sách nhóm con"""
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        master_id = chat_id if mg_is_master(chat_id) else mg_get_master_of_child(chat_id)
+        if not master_id and not is_owner(user_id):
+            await update.message.reply_text("❌ Nhóm này chưa thuộc hệ thống nào!"); return
+        if not master_id:
+            master_id = chat_id
+        children = mg_get_children(master_id)
+        level_labels = {0: "🔒 Bị động", 1: "🔓 Cơ bản", 2: "🔓 Nâng cao", 3: "🔓 Đầy đủ"}
+        msg = f"🏢 *NHÓM TỔNG — HỆ THỐNG*\n━━━━━━━━━━━━━━━━\n\n"
+        msg += f"🆔 Master ID: `{master_id}`\n"
+        msg += f"👥 Nhóm con: *{len(children)}*\n"
+        msg += f"🚫 Đang ban: *{len(mg_get_ban_list(master_id))}* users\n\n"
+        if children:
+            msg += "*📋 DANH SÁCH NHÓM CON:*\n"
+            for cid, cname, level, created_at in children:
+                msg += f"├ {escape_markdown(cname)} \\(`{cid}`\\)\n"
+                msg += f"│  └ {level_labels.get(level, f'Lv{level}')} — {created_at[:10]}\n"
+        else:
+            msg += "⚠️ Chưa có nhóm con nào\\!\n"
+        msg += f"\n🕐 {format_vn_time()}"
+        keyboard = [
+            [InlineKeyboardButton("➕ Thêm nhóm con", callback_data="mg_add_child_guide"),
+             InlineKeyboardButton("🚫 Ban list", callback_data=f"mg_banlist_{master_id}")],
+            [InlineKeyboardButton("📢 Broadcast", callback_data=f"mg_broadcast_panel_{master_id}"),
+             InlineKeyboardButton("🎛️ Tính năng", callback_data=f"mg_features_{master_id}")],
+        ]
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN_V2,
+                                         reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def mg_addchild_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/addchild [group_id] [level 0-3] [tên] — Thêm nhóm con"""
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        if not is_owner(user_id):
+            await update.message.reply_text("❌ Chỉ owner bot mới dùng lệnh này!"); return
+        if not mg_is_master(chat_id):
+            await update.message.reply_text(
+                "❌ Nhóm này chưa phải nhóm tổng\\!\nDùng `/setmaster` trước\\.",
+                parse_mode=ParseMode.MARKDOWN_V2); return
+        args = context.args
+        if not args or len(args) < 2:
+            await update.message.reply_text(
+                "📖 *Cách dùng:*\n`/addchild [group\\_id] [level] [tên nhóm]`\n\n"
+                "*Ví dụ:*\n`/addchild \\-1001234567890 2 Crypto Group`\n\n"
+                "*Cấp độ:*\n`0` Bị động  `1` Cơ bản  `2` Nâng cao  `3` Đầy đủ",
+                parse_mode=ParseMode.MARKDOWN_V2); return
+        try:
+            child_id = int(args[0])
+            level = int(args[1])
+            if not 0 <= level <= 3: raise ValueError
+            child_name = " ".join(args[2:]) if len(args) > 2 else f"Group {child_id}"
+        except ValueError:
+            await update.message.reply_text("❌ Sai tham số! group\\_id phải là số, level từ 0\\-3",
+                                             parse_mode=ParseMode.MARKDOWN_V2); return
+        if mg_add_child(chat_id, child_id, child_name, level, user_id):
+            level_labels = {0: "🔒 Bị động", 1: "🔓 Cơ bản", 2: "🔓 Nâng cao", 3: "🔓 Đầy đủ"}
+            await update.message.reply_text(
+                f"✅ *ĐÃ THÊM NHÓM CON*\n━━━━━━━━━━━━━━━━\n\n"
+                f"📌 Tên: *{escape_markdown(child_name)}*\n"
+                f"🆔 ID: `{child_id}`\n"
+                f"🎯 Cấp độ: {level_labels.get(level)}\n"
+                f"🎛️ Tính năng bật: *{len(AUTONOMY_PRESETS.get(level,[]))}*/{len(FEATURE_CATALOG)}\n\n"
+                f"Dùng `/features {child_id}` để tùy chỉnh thêm\\.\n🕐 {format_vn_time()}",
+                parse_mode=ParseMode.MARKDOWN_V2)
+        else:
+            await update.message.reply_text("❌ Lỗi thêm nhóm con!")
+
+    async def mg_removechild_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/removechild [group_id] — Xóa nhóm con"""
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        if not is_owner(user_id):
+            await update.message.reply_text("❌ Chỉ owner bot mới dùng lệnh này!"); return
+        if not mg_is_master(chat_id):
+            await update.message.reply_text("❌ Nhóm này chưa phải nhóm tổng!"); return
+        if not context.args:
+            await update.message.reply_text("📖 Cách dùng: `/removechild [group_id]`",
+                                             parse_mode=ParseMode.MARKDOWN); return
+        try:
+            child_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("❌ group_id phải là số!"); return
+        if mg_remove_child(chat_id, child_id):
+            await update.message.reply_text(
+                f"✅ Đã xóa nhóm `{child_id}` khỏi hệ thống\\!\n🕐 {format_vn_time()}",
+                parse_mode=ParseMode.MARKDOWN_V2)
+        else:
+            await update.message.reply_text("❌ Lỗi xóa nhóm con!")
+
+    async def mg_features_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/features [group_id] — Bật/tắt tính năng của nhóm"""
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        target_id = int(context.args[0]) if context.args else chat_id
+        master_id = mg_get_master_of_child(target_id)
+        if not is_owner(user_id) and not mg_is_master(chat_id) and chat_id != master_id:
+            await update.message.reply_text("❌ Không có quyền!"); return
+        await _mg_send_features_panel(update, target_id, user_id)
+
+    async def _mg_send_features_panel(update_or_query, target_group_id, user_id):
+        features = mg_get_features(target_group_id)
+        categories = {}
+        for key, meta in FEATURE_CATALOG.items():
+            cat = meta["group"]
+            categories.setdefault(cat, []).append((key, meta["name"]))
+        keyboard = []
+        for cat, items in categories.items():
+            keyboard.append([InlineKeyboardButton(f"── {cat} ──", callback_data="mg_noop")])
+            row = []
+            for key, name in items:
+                icon = "✅" if features.get(key, False) else "⬜"
+                row.append(InlineKeyboardButton(f"{icon} {name}",
+                            callback_data=f"mg_toggle_{target_group_id}_{key}"))
+                if len(row) == 2:
+                    keyboard.append(row); row = []
+            if row: keyboard.append(row)
+        keyboard.append([
+            InlineKeyboardButton("🔒 Preset Lv0", callback_data=f"mg_preset_{target_group_id}_0"),
+            InlineKeyboardButton("🔓 Preset Lv1", callback_data=f"mg_preset_{target_group_id}_1"),
+        ])
+        keyboard.append([
+            InlineKeyboardButton("🔓 Preset Lv2", callback_data=f"mg_preset_{target_group_id}_2"),
+            InlineKeyboardButton("🔓 Preset Lv3", callback_data=f"mg_preset_{target_group_id}_3"),
+        ])
+        enabled_count = sum(1 for v in features.values() if v)
+        msg = (f"🎛️ *QUẢN LÝ TÍNH NĂNG*\n━━━━━━━━━━━━━━━━\n\n"
+               f"Nhóm: `{target_group_id}`\n"
+               f"Đang bật: *{enabled_count}*/{len(FEATURE_CATALOG)}\n\n"
+               f"Nhấn để bật/tắt:")
+        markup = InlineKeyboardMarkup(keyboard)
+        if hasattr(update_or_query, 'message'):
+            await update_or_query.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
+        else:
+            await safe_edit_message(update_or_query, msg, reply_markup=markup)
+
+    async def mg_crossban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/crossban [user_id] [lý do] — Ban user khỏi toàn hệ thống"""
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        if not is_owner(user_id):
+            await update.message.reply_text("❌ Chỉ owner bot mới dùng lệnh này!"); return
+        if not mg_is_master(chat_id):
+            await update.message.reply_text("❌ Lệnh này chỉ dùng trong nhóm tổng!"); return
+        if not context.args:
+            await update.message.reply_text(
+                "📖 *Cách dùng:*\n`/crossban [user_id] [lý do]`\n\n"
+                f"🕐 {format_vn_time()}", parse_mode=ParseMode.MARKDOWN); return
+        try:
+            target_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("❌ user_id phải là số!"); return
+        if target_id == OWNER_ID:
+            await update.message.reply_text("❌ Không thể ban owner bot!"); return
+        reason = " ".join(context.args[1:]) if len(context.args) > 1 else "Không có lý do"
+        if mg_cross_ban(chat_id, target_id, user_id, reason):
+            children = mg_get_children(chat_id)
+            kicked = 0
+            for child_id, _, _, _ in children:
+                try:
+                    await context.bot.ban_chat_member(chat_id=child_id, user_id=target_id)
+                    kicked += 1
+                except Exception as e:
+                    logger.warning(f"⚠️ Không kick được {target_id} khỏi {child_id}: {e}")
+            await update.message.reply_text(
+                f"🚫 *ĐÃ BAN XUYÊN NHÓM*\n━━━━━━━━━━━━━━━━\n\n"
+                f"👤 User ID: `{target_id}`\n"
+                f"📝 Lý do: {escape_markdown(reason)}\n"
+                f"👢 Kicked: *{kicked}*/{len(children)} nhóm con\n\n"
+                f"Gỡ ban: `/crossunban {target_id}`\n🕐 {format_vn_time()}",
+                parse_mode=ParseMode.MARKDOWN)
+        else:
+            await update.message.reply_text("❌ Lỗi ban user!")
+
+    async def mg_crossunban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/crossunban [user_id] — Gỡ ban user"""
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        if not is_owner(user_id):
+            await update.message.reply_text("❌ Chỉ owner bot mới dùng lệnh này!"); return
+        if not mg_is_master(chat_id):
+            await update.message.reply_text("❌ Lệnh này chỉ dùng trong nhóm tổng!"); return
+        if not context.args:
+            await update.message.reply_text("📖 Cách dùng: `/crossunban [user_id]`",
+                                             parse_mode=ParseMode.MARKDOWN); return
+        try:
+            target_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("❌ user_id phải là số!"); return
+        if mg_cross_unban(chat_id, target_id):
+            children = mg_get_children(chat_id)
+            unbanned = 0
+            for child_id, _, _, _ in children:
+                try:
+                    await context.bot.unban_chat_member(chat_id=child_id, user_id=target_id)
+                    unbanned += 1
+                except Exception as e:
+                    logger.warning(f"⚠️ Không unban được {target_id} khỏi {child_id}: {e}")
+            await update.message.reply_text(
+                f"✅ *ĐÃ GỠ BAN XUYÊN NHÓM*\n━━━━━━━━━━━━━━━━\n\n"
+                f"👤 User ID: `{target_id}`\n"
+                f"🔓 Unban ở: *{unbanned}*/{len(children)} nhóm\n🕐 {format_vn_time()}",
+                parse_mode=ParseMode.MARKDOWN)
+        else:
+            await update.message.reply_text("❌ Lỗi gỡ ban!")
+
+    async def mg_banlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/banlist — Xem danh sách bị ban"""
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        if not is_owner(user_id) and not mg_is_master(chat_id):
+            await update.message.reply_text("❌ Không có quyền!"); return
+        master_id = chat_id if mg_is_master(chat_id) else mg_get_master_of_child(chat_id)
+        if not master_id:
+            await update.message.reply_text("❌ Nhóm này không thuộc hệ thống nào!"); return
+        bans = mg_get_ban_list(master_id)
+        if not bans:
+            await update.message.reply_text(
+                f"✅ *DANH SÁCH BAN — TRỐNG*\n\nKhông có user nào bị ban\\.\n🕐 {format_vn_time()}",
+                parse_mode=ParseMode.MARKDOWN_V2); return
+        msg = f"🚫 *DANH SÁCH BAN XUYÊN NHÓM*\n━━━━━━━━━━━━━━━━\n\nTổng: *{len(bans)}* user\n\n"
+        for i, (bid, _, reason, bat) in enumerate(bans[:20], 1):
+            msg += f"{i}\\. `{bid}` — {escape_markdown(reason or 'Không có lý do')} _{bat[:10]}_\n"
+        if len(bans) > 20:
+            msg += f"\n_\\.\\.\\. và {len(bans)-20} user khác_"
+        msg += f"\n\n🕐 {format_vn_time()}"
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN_V2)
+
+    async def mg_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/broadcast [tin nhắn] — Gửi thông báo tới tất cả nhóm con"""
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        if not is_owner(user_id):
+            await update.message.reply_text("❌ Chỉ owner bot mới dùng lệnh này!"); return
+        if not mg_is_master(chat_id):
+            await update.message.reply_text(
+                "❌ Lệnh này chỉ dùng trong nhóm tổng!\nDùng `/setmaster` trước.",
+                parse_mode=ParseMode.MARKDOWN); return
+        if not context.args:
+            await update.message.reply_text(
+                "📖 *Cách dùng:*\n`/broadcast [nội dung]`\n\n"
+                f"Gửi đến tất cả nhóm con có bật nhận broadcast.\n🕐 {format_vn_time()}",
+                parse_mode=ParseMode.MARKDOWN); return
+        message_text = " ".join(context.args)
+        children = mg_get_children(chat_id)
+        if not children:
+            await update.message.reply_text(
+                "⚠️ Chưa có nhóm con!\nDùng `/addchild [id] [level]` để thêm.",
+                parse_mode=ParseMode.MARKDOWN); return
+        progress = await update.message.reply_text(
+            f"📤 *Đang gửi...*\nĐến {len(children)} nhóm con...", parse_mode=ParseMode.MARKDOWN)
+        success, fail = await mg_broadcast(context, chat_id, message_text, user_id)
+        await progress.edit_text(
+            f"📢 *KẾT QUẢ BROADCAST*\n━━━━━━━━━━━━━━━━\n\n"
+            f"✅ Thành công: *{success}* nhóm\n"
+            f"❌ Thất bại: *{fail}* nhóm\n\n"
+            f"📝 _{escape_markdown(message_text[:100])}{'...' if len(message_text)>100 else ''}_\n\n"
+            f"🕐 {format_vn_time()}", parse_mode=ParseMode.MARKDOWN)
+
+    async def handle_mg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Xử lý tất cả callback mg_* của multi-group system"""
+        query = update.callback_query
+        await query.answer()
+        user_id = query.from_user.id
+        data = query.data
+
+        if data == "mg_noop":
+            return
+
+        elif data.startswith("mg_toggle_") and not data.startswith("mg_toggle_group_"):
+            # mg_toggle_{group_id}_{feature_key}
+            parts = data[len("mg_toggle_"):].split("_", 1)
+            try:
+                group_id = int(parts[0])
+                feature_key = parts[1]
+            except (ValueError, IndexError):
+                await query.answer("❌ Lỗi dữ liệu!", show_alert=True); return
+            if not is_owner(user_id):
+                await query.answer("❌ Không có quyền!", show_alert=True); return
+            current = mg_has_feature(group_id, feature_key)
+            mg_set_feature(group_id, feature_key, not current, user_id)
+            await _mg_send_features_panel(query, group_id, user_id)
+
+        elif data.startswith("mg_preset_"):
+            parts = data[len("mg_preset_"):].split("_")
+            try:
+                group_id = int(parts[0]); level = int(parts[1])
+            except (ValueError, IndexError):
+                await query.answer("❌ Lỗi!", show_alert=True); return
+            if not is_owner(user_id):
+                await query.answer("❌ Không có quyền!", show_alert=True); return
+            mg_apply_preset(group_id, level, user_id)
+            await query.answer(f"✅ Đã áp dụng Preset Level {level}!", show_alert=True)
+            await _mg_send_features_panel(query, group_id, user_id)
+
+        elif data.startswith("mg_banlist_"):
+            master_id = int(data[len("mg_banlist_"):])
+            bans = mg_get_ban_list(master_id)
+            if not bans:
+                await query.answer("✅ Không có ai bị ban!", show_alert=True); return
+            msg = f"🚫 *BAN LIST* \\({len(bans)} users\\)\n━━━━━━━━━━━━━━━━\n\n"
+            for bid, _, reason, _ in bans[:10]:
+                msg += f"• `{bid}` — {escape_markdown(reason or '-')}\n"
+            await safe_edit_message(query, msg)
+
+        elif data.startswith("mg_broadcast_panel_"):
+            master_id = int(data[len("mg_broadcast_panel_"):])
+            children = mg_get_children(master_id)
+            recv = sum(1 for cid, _, _, _ in children if mg_has_feature(cid, "broadcast_recv"))
+            msg = (f"📢 *BROADCAST PANEL*\n━━━━━━━━━━━━━━━━\n\n"
+                   f"Nhóm con: *{len(children)}*\n"
+                   f"Có thể nhận: *{recv}*\n\n"
+                   f"Dùng lệnh trong nhóm tổng:\n`/broadcast [nội dung]`")
+            await safe_edit_message(query, msg)
+
+        elif data.startswith("mg_features_"):
+            master_id = int(data[len("mg_features_"):])
+            children = mg_get_children(master_id)
+            if not children:
+                await query.answer("⚠️ Chưa có nhóm con!", show_alert=True); return
+            keyboard = [[InlineKeyboardButton(f"⚙️ {cname}", callback_data=f"mg_toggle_group_{cid}")]
+                        for cid, cname, _, _ in children]
+            keyboard.append([InlineKeyboardButton("🔙 Quay lại", callback_data="mg_noop")])
+            await safe_edit_message(query, "🎛️ *CHỌN NHÓM ĐỂ CẤU HÌNH:*",
+                                    reply_markup=InlineKeyboardMarkup(keyboard))
+
+        elif data.startswith("mg_toggle_group_"):
+            group_id = int(data[len("mg_toggle_group_"):])
+            await _mg_send_features_panel(query, group_id, user_id)
+
+        elif data == "mg_add_child_guide":
+            await safe_edit_message(query,
+                "📖 *THÊM NHÓM CON*\n━━━━━━━━━━━━━━━━\n\n"
+                "Gõ lệnh trong nhóm tổng:\n\n"
+                "`/addchild [group_id] [level] [tên]`\n\n"
+                "*Level:* 0=Bị động  1=Cơ bản  2=Nâng cao  3=Đầy đủ\n\n"
+                "*Lấy group_id:* Forward tin nhắn từ nhóm con vào @userinfobot")
+
     # ==================== SMART STARTUP ====================
     def smart_startup():
         logger.info("🚀 SMART STARTUP")
@@ -10245,6 +10888,17 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
             app.add_handler(CallbackQueryHandler(handle_sell_confirmation, pattern="^(confirm_sell_|cancel_sell)"))
             app.add_handler(CallbackQueryHandler(handle_callback))
+
+            # === MULTI-GROUP SYSTEM HANDLERS ===
+            app.add_handler(CommandHandler("setmaster", mg_setmaster_command))
+            app.add_handler(CommandHandler("masterinfo", mg_masterinfo_command))
+            app.add_handler(CommandHandler("addchild", mg_addchild_command))
+            app.add_handler(CommandHandler("removechild", mg_removechild_command))
+            app.add_handler(CommandHandler("features", mg_features_command))
+            app.add_handler(CommandHandler("crossban", mg_crossban_command))
+            app.add_handler(CommandHandler("crossunban", mg_crossunban_command))
+            app.add_handler(CommandHandler("banlist", mg_banlist_command))
+            app.add_handler(CommandHandler("broadcast", mg_broadcast_command))
         
             logger.info("✅ Đã đăng ký handlers")
             
