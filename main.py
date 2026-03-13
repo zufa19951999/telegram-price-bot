@@ -10211,7 +10211,6 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         targets = [(cid, cname) for cid, cname, _, _ in children
                    if (target_ids is None or cid in target_ids) and mg_has_feature(cid, "broadcast_recv")]
         success = fail = 0
-        header = f"📢 *THÔNG BÁO TỪ NHÓM TỔNG*\n━━━━━━━━━━━━━━━━\n\n"
         footer = f"\n\n🕐 {format_vn_time()}"
         for child_id, child_name in targets:
             try:
