@@ -712,6 +712,7 @@ try:
                 created_at TEXT
             )''')
             conn.commit()
+            mod_init_tables()
             logger.info(f"✅ Database initialized")
             return True
         except Exception as e:
@@ -6160,6 +6161,13 @@ try:
                 except Exception as e:
                     logger.error(f"❌ Không kick được {new_member.id}: {e}")
 
+            # === MODERATION: Federation ban check ===
+            if await mod_check_fed_ban(ctx, chat_id, new_member.id):
+                continue
+
+            # === MODERATION: CAPTCHA + Welcome ===
+            await mod_on_new_member(update, ctx, new_member)
+
             try:
                 admins = await ctx.bot.get_chat_administrators(chat_id)
                 for admin in admins:
@@ -7442,6 +7450,9 @@ try:
         if chat_type in ['group', 'supergroup']:
             if not check_permission(chat_id, user_id, 'view'):
                 logger.info(f"⛔ User {user_id} không có quyền trong group, bỏ qua")
+                return
+            # Moderation: flood / filter / custom commands
+            if await mod_on_message(update, ctx):
                 return
         
         # Xử lý tính toán nếu có
@@ -10490,36 +10501,111 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         msg += f"\n\n🕐 {format_vn_time()}"
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
+    # Lưu trạng thái broadcast đang soạn (chat_id → {msg, targets})
+    _broadcast_drafts = {}
+
     async def mg_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """/broadcast [tin nhắn] — Gửi thông báo tới tất cả nhóm con"""
+        """/broadcast [nội dung] — Mở panel chọn nhóm để gửi thông báo"""
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
-        if not is_owner(user_id):
-            await update.message.reply_text("❌ Chỉ owner bot mới dùng lệnh này!"); return
-        if not mg_is_master(chat_id):
-            await update.message.reply_text(
-                "❌ Lệnh này chỉ dùng trong nhóm tổng!\nDùng `/setmaster` trước.",
-                parse_mode=ParseMode.MARKDOWN); return
+
+        # Kiểm tra quyền: owner bot HOẶC admin/owner của nhóm con có master
+        master_id = None
+        if is_owner(user_id):
+            if mg_is_master(chat_id):
+                master_id = chat_id
+            else:
+                master_id = mg_get_master_of_child(chat_id)
+                if not master_id:
+                    await update.message.reply_text("❌ Nhóm này chưa thuộc hệ thống nào!"); return
+        else:
+            # Admin/owner nhóm con
+            master_id = mg_get_master_of_child(chat_id)
+            if not master_id:
+                await update.message.reply_text("❌ Nhóm này chưa thuộc hệ thống nào!"); return
+            if not check_permission(chat_id, user_id, 'manage'):
+                await update.message.reply_text("❌ Bạn cần quyền manage để gửi broadcast!"); return
+
         if not context.args:
             await update.message.reply_text(
-                "📖 *Cách dùng:*\n`/broadcast [nội dung]`\n\n"
-                f"Gửi đến tất cả nhóm con có bật nhận broadcast.\n🕐 {format_vn_time()}",
+                "📖 *Cách dùng:*\n`/broadcast [nội dung thông báo]`\n\n"
+                "*Ví dụ:*\n`/broadcast Họp nhóm lúc 8pm tối nay!`\n\n"
+                "Sau đó chọn nhóm muốn gửi.",
                 parse_mode=ParseMode.MARKDOWN); return
+
         message_text = " ".join(context.args)
-        children = mg_get_children(chat_id)
+        children = mg_get_children(master_id)
+
         if not children:
             await update.message.reply_text(
                 "⚠️ Chưa có nhóm con!\nDùng `/addchild [id] [level]` để thêm.",
                 parse_mode=ParseMode.MARKDOWN); return
-        progress = await update.message.reply_text(
-            f"📤 *Đang gửi...*\nĐến {len(children)} nhóm con...", parse_mode=ParseMode.MARKDOWN)
-        success, fail = await mg_broadcast(context, chat_id, message_text, user_id)
-        await progress.edit_text(
-            f"📢 *KẾT QUẢ BROADCAST*\n━━━━━━━━━━━━━━━━\n\n"
-            f"✅ Thành công: *{success}* nhóm\n"
-            f"❌ Thất bại: *{fail}* nhóm\n\n"
-            f"📝 _{escape_markdown(message_text[:100])}{'...' if len(message_text)>100 else ''}_\n\n"
-            f"🕐 {format_vn_time()}", parse_mode=ParseMode.MARKDOWN)
+
+        # Lưu draft
+        draft_key = f"{chat_id}_{user_id}"
+        _broadcast_drafts[draft_key] = {
+            'msg': message_text,
+            'master_id': master_id,
+            'targets': set(),  # rỗng = chưa chọn nhóm nào
+        }
+
+        # Tạo panel chọn nhóm
+        await _mg_send_broadcast_panel(update.message, draft_key, children, message_text)
+
+    async def _mg_send_broadcast_panel(message_or_query, draft_key, children, message_text, edit=False):
+        """Hiển thị panel chọn nhóm để broadcast"""
+        draft = _broadcast_drafts.get(draft_key, {})
+        selected = draft.get('targets', set())
+
+        keyboard = []
+        for cid, cname, level, _ in children:
+            is_recv = mg_has_feature(cid, "broadcast_recv")
+            if not is_recv:
+                continue  # Bỏ qua nhóm không bật nhận broadcast
+            icon = "✅" if cid in selected else "⬜"
+            short_name = cname[:20] + "..." if len(cname) > 20 else cname
+            keyboard.append([InlineKeyboardButton(
+                f"{icon} {short_name}",
+                callback_data=f"mg_bc_toggle_{draft_key}_{cid}"
+            )])
+
+        if not keyboard:
+            txt = "⚠️ Không có nhóm con nào bật tính năng nhận broadcast!\nDùng /features để bật."
+            if edit:
+                await message_or_query.edit_text(txt)
+            else:
+                await message_or_query.reply_text(txt)
+            return
+
+        # Nút chọn tất cả / bỏ tất cả
+        all_ids = {cid for cid, _, _, _ in children if mg_has_feature(cid, "broadcast_recv")}
+        all_selected = all_ids == selected
+        keyboard.append([
+            InlineKeyboardButton(
+                "☑️ Chọn tất cả" if not all_selected else "🔲 Bỏ tất cả",
+                callback_data=f"mg_bc_all_{draft_key}_{'deselect' if all_selected else 'select'}"
+            )
+        ])
+        keyboard.append([
+            InlineKeyboardButton(
+                f"📢 GỬI ({len(selected)} nhóm)" if selected else "📢 GỬI TẤT CẢ",
+                callback_data=f"mg_bc_send_{draft_key}"
+            ),
+            InlineKeyboardButton("❌ Hủy", callback_data=f"mg_bc_cancel_{draft_key}")
+        ])
+
+        preview = message_text[:80] + "..." if len(message_text) > 80 else message_text
+        msg = (
+            f"📢 *CHỌN NHÓM ĐỂ GỬI THÔNG BÁO*\n━━━━━━━━━━━━━━━━\n\n"
+            f"📝 Nội dung: _{escape_markdown(preview)}_\n\n"
+            f"*Chọn nhóm muốn gửi* (✅ = đã chọn):\n"
+            f"Đã chọn: *{len(selected)}*/{len(all_ids)} nhóm"
+        )
+        markup = InlineKeyboardMarkup(keyboard)
+        if edit:
+            await safe_edit_message(message_or_query, msg, reply_markup=markup)
+        else:
+            await message_or_query.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
 
     async def handle_mg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Xử lý tất cả callback mg_* của multi-group system"""
@@ -10608,6 +10694,1367 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                 "`/addchild [group_id] [level] [tên]`\n\n"
                 "*Level:* 0=Bị động  1=Cơ bản  2=Nâng cao  3=Đầy đủ\n\n"
                 "*Lấy group_id:* Forward tin nhắn từ nhóm con vào @userinfobot")
+
+        # ── Broadcast panel callbacks ────────────────────────────────────
+        elif data.startswith("mg_bc_toggle_"):
+            # mg_bc_toggle_{chat_id}_{user_id}_{group_id}
+            import re as _re
+            m = _re.match(r"^mg_bc_toggle_(-?\d+)_(-?\d+)_(-?\d+)$", data)
+            if not m:
+                await query.answer("❌ Lỗi dữ liệu!", show_alert=True); return
+            draft_key = f"{m.group(1)}_{m.group(2)}"
+            target_cid = int(m.group(3))
+            draft = _broadcast_drafts.get(draft_key)
+            if not draft:
+                await query.answer("❌ Phiên đã hết hạn! Gõ lại /broadcast", show_alert=True); return
+            if target_cid in draft['targets']:
+                draft['targets'].discard(target_cid)
+            else:
+                draft['targets'].add(target_cid)
+            master_id = draft['master_id']
+            children = mg_get_children(master_id)
+            await _mg_send_broadcast_panel(query, draft_key, children, draft['msg'], edit=True)
+
+        elif data.startswith("mg_bc_all_"):
+            import re as _re
+            m = _re.match(r"^mg_bc_all_(-?\d+)_(-?\d+)_(select|deselect)$", data)
+            if not m:
+                await query.answer("❌ Lỗi!", show_alert=True); return
+            draft_key = f"{m.group(1)}_{m.group(2)}"
+            action = m.group(3)
+            draft = _broadcast_drafts.get(draft_key)
+            if not draft:
+                await query.answer("❌ Phiên đã hết hạn!", show_alert=True); return
+            master_id = draft['master_id']
+            children = mg_get_children(master_id)
+            if action == 'select':
+                draft['targets'] = {cid for cid, _, _, _ in children if mg_has_feature(cid, "broadcast_recv")}
+            else:
+                draft['targets'] = set()
+            await _mg_send_broadcast_panel(query, draft_key, children, draft['msg'], edit=True)
+
+        elif data.startswith("mg_bc_send_"):
+            import re as _re
+            m = _re.match(r"^mg_bc_send_(-?\d+)_(-?\d+)$", data)
+            if not m:
+                await query.answer("❌ Lỗi!", show_alert=True); return
+            draft_key = f"{m.group(1)}_{m.group(2)}"
+            draft = _broadcast_drafts.get(draft_key)
+            if not draft:
+                await query.answer("❌ Phiên đã hết hạn! Gõ lại /broadcast", show_alert=True); return
+            master_id = draft['master_id']
+            message_text = draft['msg']
+            # Nếu chưa chọn nhóm nào → gửi tất cả
+            target_ids = draft['targets'] if draft['targets'] else None
+            children = mg_get_children(master_id)
+            target_count = len(target_ids) if target_ids else sum(
+                1 for cid, _, _, _ in children if mg_has_feature(cid, "broadcast_recv"))
+            await safe_edit_message(query, f"📤 *Đang gửi đến {target_count} nhóm...*")
+            success, fail = await mg_broadcast(context, master_id, message_text, user_id, target_ids)
+            _broadcast_drafts.pop(draft_key, None)
+            await safe_edit_message(query,
+                f"📢 *KẾT QUẢ BROADCAST*\n━━━━━━━━━━━━━━━━\n\n"
+                f"✅ Thành công: *{success}* nhóm\n"
+                f"❌ Thất bại: *{fail}* nhóm\n\n"
+                f"📝 _{escape_markdown(message_text[:80])}_\n\n"
+                f"🕐 {format_vn_time()}")
+
+        elif data.startswith("mg_bc_cancel_"):
+            import re as _re
+            m = _re.match(r"^mg_bc_cancel_(-?\d+)_(-?\d+)$", data)
+            if m:
+                draft_key = f"{m.group(1)}_{m.group(2)}"
+                _broadcast_drafts.pop(draft_key, None)
+            await safe_edit_message(query, "❌ Đã hủy broadcast.")
+
+    # ==================== MODERATION: DATABASE TABLES ====================
+
+    def mod_init_tables():
+        """Khởi tạo tất cả bảng cho hệ thống moderation"""
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+
+            # Cảnh cáo (Warns)
+            c.execute('''CREATE TABLE IF NOT EXISTS mod_warns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER, user_id INTEGER,
+                reason TEXT, warned_by INTEGER,
+                created_at TEXT
+            )''')
+            # Cấu hình warn: max warn, action khi đạt max
+            c.execute('''CREATE TABLE IF NOT EXISTS mod_warn_config (
+                group_id INTEGER PRIMARY KEY,
+                max_warns INTEGER DEFAULT 3,
+                action TEXT DEFAULT 'mute',
+                mute_duration INTEGER DEFAULT 3600
+            )''')
+            # Chào mừng tùy chỉnh
+            c.execute('''CREATE TABLE IF NOT EXISTS mod_welcome (
+                group_id INTEGER PRIMARY KEY,
+                message TEXT,
+                enabled INTEGER DEFAULT 1,
+                set_by INTEGER, updated_at TEXT
+            )''')
+            # Nội quy nhóm
+            c.execute('''CREATE TABLE IF NOT EXISTS mod_rules (
+                group_id INTEGER PRIMARY KEY,
+                rules TEXT,
+                set_by INTEGER, updated_at TEXT
+            )''')
+            # Lọc từ khóa
+            c.execute('''CREATE TABLE IF NOT EXISTS mod_filters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER, keyword TEXT,
+                action TEXT DEFAULT 'delete',
+                reply TEXT,
+                added_by INTEGER, created_at TEXT,
+                UNIQUE(group_id, keyword)
+            )''')
+            # Lệnh tùy chỉnh
+            c.execute('''CREATE TABLE IF NOT EXISTS mod_commands (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER, command TEXT,
+                response TEXT,
+                added_by INTEGER, created_at TEXT,
+                UNIQUE(group_id, command)
+            )''')
+            # Anti-flood config
+            c.execute('''CREATE TABLE IF NOT EXISTS mod_flood_config (
+                group_id INTEGER PRIMARY KEY,
+                enabled INTEGER DEFAULT 0,
+                max_msgs INTEGER DEFAULT 5,
+                interval_sec INTEGER DEFAULT 5,
+                action TEXT DEFAULT 'mute'
+            )''')
+            # Anti-flood tracking (RAM only, không lưu DB)
+            # CAPTCHA config
+            c.execute('''CREATE TABLE IF NOT EXISTS mod_captcha_config (
+                group_id INTEGER PRIMARY KEY,
+                enabled INTEGER DEFAULT 0,
+                captcha_type TEXT DEFAULT 'button',
+                timeout_sec INTEGER DEFAULT 60
+            )''')
+            # CAPTCHA pending
+            c.execute('''CREATE TABLE IF NOT EXISTS mod_captcha_pending (
+                group_id INTEGER, user_id INTEGER,
+                answer TEXT, expires_at TEXT,
+                message_id INTEGER,
+                PRIMARY KEY (group_id, user_id)
+            )''')
+            # Admin logs
+            c.execute('''CREATE TABLE IF NOT EXISTS mod_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER, action_by INTEGER,
+                target_user INTEGER, action TEXT,
+                reason TEXT, extra TEXT,
+                created_at TEXT
+            )''')
+            # Report
+            c.execute('''CREATE TABLE IF NOT EXISTS mod_reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER, reporter_id INTEGER,
+                target_user INTEGER, message_id INTEGER,
+                reason TEXT, status TEXT DEFAULT 'pending',
+                created_at TEXT
+            )''')
+            # Federation
+            c.execute('''CREATE TABLE IF NOT EXISTS mod_federations (
+                fed_id TEXT PRIMARY KEY,
+                fed_name TEXT,
+                owner_id INTEGER,
+                created_at TEXT
+            )''')
+            c.execute('''CREATE TABLE IF NOT EXISTS mod_fed_members (
+                fed_id TEXT, group_id INTEGER,
+                joined_at TEXT,
+                PRIMARY KEY (fed_id, group_id)
+            )''')
+            c.execute('''CREATE TABLE IF NOT EXISTS mod_fed_bans (
+                fed_id TEXT, user_id INTEGER,
+                reason TEXT, banned_by INTEGER,
+                banned_at TEXT,
+                PRIMARY KEY (fed_id, user_id)
+            )''')
+
+            conn.commit()
+            conn.close()
+            logger.info("✅ Moderation tables initialized")
+        except Exception as e:
+            logger.error(f"❌ mod_init_tables: {e}")
+
+    # Flood tracking trong RAM
+    _flood_tracker = {}  # {(group_id, user_id): [timestamps]}
+
+    # ==================== MODERATION: HELPERS ====================
+
+    def mod_log(group_id, action_by, target_user, action, reason="", extra=""):
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('''INSERT INTO mod_logs (group_id, action_by, target_user, action, reason, extra, created_at)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                      (group_id, action_by, target_user, action, reason, extra,
+                       get_vn_time().strftime("%Y-%m-%d %H:%M:%S")))
+            conn.commit(); conn.close()
+        except Exception as e:
+            logger.error(f"❌ mod_log: {e}")
+
+    def mod_is_admin(group_id, user_id):
+        """Kiểm tra user có quyền manage trong nhóm không"""
+        return is_owner(user_id) or check_permission(group_id, user_id, 'manage')
+
+    async def mod_check_admin(update: Update) -> bool:
+        """Trả về True nếu user là admin, ngược lại reply lỗi"""
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        if mod_is_admin(chat_id, user_id):
+            return True
+        await update.message.reply_text("❌ Bạn cần quyền admin để dùng lệnh này!")
+        return False
+
+    async def mod_get_target(update: Update, context):
+        """Lấy target user từ reply hoặc args"""
+        if update.message.reply_to_message:
+            u = update.message.reply_to_message.from_user
+            return u.id, u.first_name
+        if context.args:
+            try:
+                uid = int(context.args[0])
+                return uid, str(uid)
+            except ValueError:
+                username = context.args[0].replace('@', '')
+                uid = get_user_id_by_username(username)
+                if uid:
+                    return uid, username
+        return None, None
+
+    # ==================== BAN / MUTE / KICK / WARN ====================
+
+    async def mod_ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/ban [reply/user_id] [lý do] — Cấm thành viên vĩnh viễn"""
+        if not await mod_check_admin(update): return
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+        target_id, target_name = await mod_get_target(update, context)
+        if not target_id:
+            await update.message.reply_text("❌ Reply vào tin nhắn người cần ban hoặc dùng /ban [user_id]")
+            return
+        reason = " ".join(context.args[1:]) if context.args and len(context.args) > 1 else \
+                 " ".join(context.args) if context.args and not update.message.reply_to_message else "Không có lý do"
+        try:
+            await context.bot.ban_chat_member(chat_id=chat_id, user_id=target_id)
+            mod_log(chat_id, user_id, target_id, "ban", reason)
+            await update.message.reply_text(
+                f"🚫 *ĐÃ BAN*\n━━━━━━━━━━━━━━━━\n\n"
+                f"👤 User: `{target_id}`\n"
+                f"📝 Lý do: {reason}\n"
+                f"👮 Admin: {update.effective_user.first_name}\n"
+                f"🕐 {format_vn_time()}", parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Lỗi ban: {e}")
+
+    async def mod_unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/unban [user_id] — Gỡ ban"""
+        if not await mod_check_admin(update): return
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+        target_id, target_name = await mod_get_target(update, context)
+        if not target_id:
+            await update.message.reply_text("❌ Dùng /unban [user_id]"); return
+        try:
+            await context.bot.unban_chat_member(chat_id=chat_id, user_id=target_id)
+            mod_log(chat_id, user_id, target_id, "unban")
+            await update.message.reply_text(f"✅ Đã gỡ ban `{target_id}`", parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Lỗi unban: {e}")
+
+    async def mod_kick_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/kick [reply/user_id] [lý do] — Đuổi thành viên (có thể quay lại)"""
+        if not await mod_check_admin(update): return
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+        target_id, target_name = await mod_get_target(update, context)
+        if not target_id:
+            await update.message.reply_text("❌ Reply vào tin nhắn người cần kick"); return
+        reason = " ".join(context.args[1:]) if context.args and len(context.args) > 1 else "Không có lý do"
+        try:
+            await context.bot.ban_chat_member(chat_id=chat_id, user_id=target_id)
+            await context.bot.unban_chat_member(chat_id=chat_id, user_id=target_id)
+            mod_log(chat_id, user_id, target_id, "kick", reason)
+            await update.message.reply_text(
+                f"👢 *ĐÃ KICK*\n\n👤 User: `{target_id}`\n📝 Lý do: {reason}\n🕐 {format_vn_time()}",
+                parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Lỗi kick: {e}")
+
+    async def mod_mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/mute [reply/user_id] [thời gian: 1h/30m/2d] [lý do] — Tắt tiếng"""
+        if not await mod_check_admin(update): return
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+        target_id, target_name = await mod_get_target(update, context)
+        if not target_id:
+            await update.message.reply_text(
+                "❌ Cách dùng: `/mute [reply/user_id] [thời gian] [lý do]`\n"
+                "Ví dụ: `/mute 30m Spam` hoặc reply + `/mute 2h`",
+                parse_mode=ParseMode.MARKDOWN); return
+        # Parse thời gian
+        duration_sec = None
+        duration_str = "vĩnh viễn"
+        args = context.args if not update.message.reply_to_message else context.args
+        time_arg = None
+        for arg in (args or []):
+            import re as _re
+            m = _re.match(r'^(\d+)(s|m|h|d)$', arg.lower())
+            if m:
+                val, unit = int(m.group(1)), m.group(2)
+                multipliers = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}
+                duration_sec = val * multipliers[unit]
+                duration_str = f"{val}{'giây' if unit=='s' else 'phút' if unit=='m' else 'giờ' if unit=='h' else 'ngày'}"
+                time_arg = arg
+                break
+        reason_parts = [a for a in (args or []) if a != time_arg and a != str(target_id)]
+        reason = " ".join(reason_parts) or "Không có lý do"
+        from telegram import ChatPermissions
+        until_date = None
+        if duration_sec:
+            until_date = datetime.utcnow() + timedelta(seconds=duration_sec)
+        try:
+            await context.bot.restrict_chat_member(
+                chat_id=chat_id, user_id=target_id,
+                permissions=ChatPermissions(can_send_messages=False),
+                until_date=until_date
+            )
+            mod_log(chat_id, user_id, target_id, "mute", reason, duration_str)
+            await update.message.reply_text(
+                f"🔇 *ĐÃ TẮT TIẾNG*\n━━━━━━━━━━━━━━━━\n\n"
+                f"👤 User: `{target_id}`\n"
+                f"⏱ Thời gian: {duration_str}\n"
+                f"📝 Lý do: {reason}\n"
+                f"🕐 {format_vn_time()}", parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Lỗi mute: {e}")
+
+    async def mod_unmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/unmute [reply/user_id] — Bật tiếng lại"""
+        if not await mod_check_admin(update): return
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+        target_id, _ = await mod_get_target(update, context)
+        if not target_id:
+            await update.message.reply_text("❌ Reply vào tin nhắn người cần unmute"); return
+        from telegram import ChatPermissions
+        try:
+            await context.bot.restrict_chat_member(
+                chat_id=chat_id, user_id=target_id,
+                permissions=ChatPermissions(
+                    can_send_messages=True, can_send_media_messages=True,
+                    can_send_other_messages=True, can_add_web_page_previews=True
+                )
+            )
+            mod_log(chat_id, user_id, target_id, "unmute")
+            await update.message.reply_text(f"🔊 Đã bật tiếng `{target_id}`", parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Lỗi unmute: {e}")
+
+    # ==================== HỆ THỐNG CẢNH CÁO (WARN) ====================
+
+    async def mod_warn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/warn [reply/user_id] [lý do] — Cảnh cáo thành viên"""
+        if not await mod_check_admin(update): return
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+        target_id, target_name = await mod_get_target(update, context)
+        if not target_id:
+            await update.message.reply_text("❌ Reply vào tin nhắn người cần warn"); return
+        reason = " ".join(context.args[1:]) if context.args and len(context.args) > 1 else \
+                 " ".join(context.args) if context.args and not update.message.reply_to_message else "Không có lý do"
+        # Lấy config warn
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT max_warns, action, mute_duration FROM mod_warn_config WHERE group_id=?", (chat_id,))
+        cfg = c.fetchone() or (3, 'mute', 3600)
+        max_warns, action, mute_dur = cfg
+        # Thêm warn
+        c.execute('''INSERT INTO mod_warns (group_id, user_id, reason, warned_by, created_at)
+                     VALUES (?, ?, ?, ?, ?)''',
+                  (chat_id, target_id, reason, user_id, get_vn_time().strftime("%Y-%m-%d %H:%M:%S")))
+        # Đếm tổng warn
+        c.execute("SELECT COUNT(*) FROM mod_warns WHERE group_id=? AND user_id=?", (chat_id, target_id))
+        total_warns = c.fetchone()[0]
+        conn.commit(); conn.close()
+        mod_log(chat_id, user_id, target_id, "warn", reason, f"{total_warns}/{max_warns}")
+        msg = (f"⚠️ *CẢNH CÁO*\n━━━━━━━━━━━━━━━━\n\n"
+               f"👤 User: `{target_id}`\n"
+               f"📝 Lý do: {reason}\n"
+               f"🔢 Cảnh cáo: *{total_warns}*/{max_warns}\n")
+        # Kiểm tra đạt max warn
+        if total_warns >= max_warns:
+            msg += f"\n🚨 *ĐẠT GIỚI HẠN! Đang thực hiện: {action.upper()}*\n"
+            try:
+                if action == 'ban':
+                    await context.bot.ban_chat_member(chat_id=chat_id, user_id=target_id)
+                    mod_log(chat_id, user_id, target_id, "auto_ban", f"Đạt {max_warns} warns")
+                elif action == 'kick':
+                    await context.bot.ban_chat_member(chat_id=chat_id, user_id=target_id)
+                    await context.bot.unban_chat_member(chat_id=chat_id, user_id=target_id)
+                    mod_log(chat_id, user_id, target_id, "auto_kick", f"Đạt {max_warns} warns")
+                elif action == 'mute':
+                    from telegram import ChatPermissions
+                    until = datetime.utcnow() + timedelta(seconds=mute_dur)
+                    await context.bot.restrict_chat_member(
+                        chat_id=chat_id, user_id=target_id,
+                        permissions=ChatPermissions(can_send_messages=False),
+                        until_date=until)
+                    mod_log(chat_id, user_id, target_id, "auto_mute", f"Đạt {max_warns} warns")
+            except Exception as e:
+                msg += f"\n❌ Lỗi thực hiện action: {e}\n"
+            # Reset warns sau khi xử lý
+            conn2 = sqlite3.connect(DB_PATH)
+            c2 = conn2.cursor()
+            c2.execute("DELETE FROM mod_warns WHERE group_id=? AND user_id=?", (chat_id, target_id))
+            conn2.commit(); conn2.close()
+        msg += f"\n🕐 {format_vn_time()}"
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+    async def mod_unwarn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/unwarn [reply/user_id] — Xóa 1 cảnh cáo"""
+        if not await mod_check_admin(update): return
+        chat_id = update.effective_chat.id
+        target_id, _ = await mod_get_target(update, context)
+        if not target_id:
+            await update.message.reply_text("❌ Reply vào tin nhắn người cần unwarn"); return
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''DELETE FROM mod_warns WHERE id = (
+                     SELECT id FROM mod_warns WHERE group_id=? AND user_id=? ORDER BY created_at DESC LIMIT 1)''',
+                  (chat_id, target_id))
+        c.execute("SELECT COUNT(*) FROM mod_warns WHERE group_id=? AND user_id=?", (chat_id, target_id))
+        remaining = c.fetchone()[0]
+        conn.commit(); conn.close()
+        await update.message.reply_text(
+            f"✅ Đã xóa 1 cảnh cáo của `{target_id}`\nCòn lại: *{remaining}* cảnh cáo",
+            parse_mode=ParseMode.MARKDOWN)
+
+    async def mod_warns_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/warns [reply/user_id] — Xem số cảnh cáo"""
+        chat_id = update.effective_chat.id
+        target_id, _ = await mod_get_target(update, context)
+        if not target_id:
+            target_id = update.effective_user.id
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT max_warns FROM mod_warn_config WHERE group_id=?", (chat_id,))
+        cfg = c.fetchone()
+        max_warns = cfg[0] if cfg else 3
+        c.execute("SELECT reason, created_at FROM mod_warns WHERE group_id=? AND user_id=? ORDER BY created_at DESC",
+                  (chat_id, target_id))
+        warns = c.fetchall(); conn.close()
+        if not warns:
+            await update.message.reply_text(f"✅ User `{target_id}` chưa có cảnh cáo nào.",
+                                             parse_mode=ParseMode.MARKDOWN); return
+        msg = f"⚠️ *CẢNH CÁO CỦA* `{target_id}`\n━━━━━━━━━━━━━━━━\n\n"
+        msg += f"Tổng: *{len(warns)}*/{max_warns}\n\n"
+        for i, (reason, at) in enumerate(warns, 1):
+            msg += f"{i}. {reason} _{at[:10]}_\n"
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+    async def mod_setwarn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/setwarn [max] [action: ban/kick/mute] — Cấu hình hệ thống warn"""
+        if not await mod_check_admin(update): return
+        chat_id = update.effective_chat.id
+        if not context.args or len(context.args) < 2:
+            await update.message.reply_text(
+                "📖 Cách dùng: `/setwarn [số] [ban/kick/mute]`\n"
+                "Ví dụ: `/setwarn 3 mute`", parse_mode=ParseMode.MARKDOWN); return
+        try:
+            max_w = int(context.args[0])
+            action = context.args[1].lower()
+            if action not in ['ban', 'kick', 'mute']:
+                raise ValueError
+        except:
+            await update.message.reply_text("❌ Sai cú pháp! action phải là: ban, kick, hoặc mute"); return
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''INSERT OR REPLACE INTO mod_warn_config (group_id, max_warns, action)
+                     VALUES (?, ?, ?)''', (chat_id, max_w, action))
+        conn.commit(); conn.close()
+        await update.message.reply_text(
+            f"✅ Đã cấu hình warns:\n🔢 Tối đa: *{max_w}* cảnh cáo\n⚡ Hành động: *{action.upper()}*",
+            parse_mode=ParseMode.MARKDOWN)
+
+    # ==================== CAPTCHA ====================
+
+    async def mod_captcha_join(update: Update, context: ContextTypes.DEFAULT_TYPE, new_member):
+        """Gửi CAPTCHA cho thành viên mới"""
+        chat_id = update.effective_chat.id
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT enabled, captcha_type, timeout_sec FROM mod_captcha_config WHERE group_id=?", (chat_id,))
+        cfg = c.fetchone(); conn.close()
+        if not cfg or not cfg[0]:
+            return  # CAPTCHA tắt
+        captcha_type, timeout = cfg[1], cfg[2]
+        import random, math
+        if captcha_type == 'button':
+            # CAPTCHA nút bấm đơn giản
+            keyboard = [[InlineKeyboardButton(
+                "✅ Tôi không phải bot - Nhấn để xác nhận",
+                callback_data=f"mod_captcha_{chat_id}_{new_member.id}"
+            )]]
+            msg = await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"👋 Chào mừng {new_member.first_name}!\n\n"
+                     f"⚠️ Vui lòng nhấn nút bên dưới trong *{timeout}* giây để xác nhận bạn không phải bot.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            # Tắt tiếng user cho đến khi xác nhận
+            from telegram import ChatPermissions
+            try:
+                await context.bot.restrict_chat_member(
+                    chat_id=chat_id, user_id=new_member.id,
+                    permissions=ChatPermissions(can_send_messages=False)
+                )
+            except: pass
+            # Lưu pending
+            expires = (get_vn_time() + timedelta(seconds=timeout)).strftime("%Y-%m-%d %H:%M:%S")
+            conn2 = sqlite3.connect(DB_PATH)
+            c2 = conn2.cursor()
+            c2.execute('''INSERT OR REPLACE INTO mod_captcha_pending (group_id, user_id, answer, expires_at, message_id)
+                          VALUES (?, ?, ?, ?, ?)''', (chat_id, new_member.id, "confirmed", expires, msg.message_id))
+            conn2.commit(); conn2.close()
+            # Schedule timeout kick
+            context.application.create_task(
+                _mod_captcha_timeout(context, chat_id, new_member.id, msg.message_id, timeout)
+            )
+        elif captcha_type == 'math':
+            a, b = random.randint(1, 10), random.randint(1, 10)
+            answer = str(a + b)
+            buttons = [str(a + b), str(a * b), str(abs(a - b)), str(a + b + 1)]
+            random.shuffle(buttons)
+            keyboard = [[InlineKeyboardButton(
+                btn, callback_data=f"mod_captcha_{chat_id}_{new_member.id}_{btn}"
+            ) for btn in buttons[:2]],
+            [InlineKeyboardButton(
+                btn, callback_data=f"mod_captcha_{chat_id}_{new_member.id}_{btn}"
+            ) for btn in buttons[2:]]]
+            msg = await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"🔢 CAPTCHA cho {new_member.first_name}\n\n"
+                     f"❓ Bao nhiêu là *{a} + {b}* = ?\n"
+                     f"⏱ Trả lời trong {timeout} giây",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            from telegram import ChatPermissions
+            try:
+                await context.bot.restrict_chat_member(
+                    chat_id=chat_id, user_id=new_member.id,
+                    permissions=ChatPermissions(can_send_messages=False)
+                )
+            except: pass
+            expires = (get_vn_time() + timedelta(seconds=timeout)).strftime("%Y-%m-%d %H:%M:%S")
+            conn2 = sqlite3.connect(DB_PATH)
+            c2 = conn2.cursor()
+            c2.execute('''INSERT OR REPLACE INTO mod_captcha_pending (group_id, user_id, answer, expires_at, message_id)
+                          VALUES (?, ?, ?, ?, ?)''', (chat_id, new_member.id, answer, expires, msg.message_id))
+            conn2.commit(); conn2.close()
+            context.application.create_task(
+                _mod_captcha_timeout(context, chat_id, new_member.id, msg.message_id, timeout)
+            )
+
+    async def _mod_captcha_timeout(context, chat_id, user_id, msg_id, timeout):
+        """Kick user nếu không xác nhận CAPTCHA trong timeout"""
+        await asyncio.sleep(timeout)
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT user_id FROM mod_captcha_pending WHERE group_id=? AND user_id=?", (chat_id, user_id))
+        still_pending = c.fetchone(); conn.close()
+        if still_pending:
+            try:
+                await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
+                await context.bot.unban_chat_member(chat_id=chat_id, user_id=user_id)
+                await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                await context.bot.send_message(chat_id=chat_id,
+                    text=f"⏱ User `{user_id}` đã bị kick do không xác nhận CAPTCHA.",
+                    parse_mode=ParseMode.MARKDOWN)
+            except: pass
+            conn2 = sqlite3.connect(DB_PATH)
+            c2 = conn2.cursor()
+            c2.execute("DELETE FROM mod_captcha_pending WHERE group_id=? AND user_id=?", (chat_id, user_id))
+            conn2.commit(); conn2.close()
+
+    async def mod_setcaptcha_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/setcaptcha [on/off] [button/math] — Cấu hình CAPTCHA"""
+        if not await mod_check_admin(update): return
+        chat_id = update.effective_chat.id
+        if not context.args:
+            await update.message.reply_text(
+                "📖 Cách dùng:\n`/setcaptcha on button` — Bật CAPTCHA nút bấm\n"
+                "`/setcaptcha on math` — Bật CAPTCHA toán học\n"
+                "`/setcaptcha off` — Tắt CAPTCHA", parse_mode=ParseMode.MARKDOWN); return
+        enabled = 1 if context.args[0].lower() == 'on' else 0
+        ctype = context.args[1].lower() if len(context.args) > 1 else 'button'
+        if ctype not in ['button', 'math']:
+            ctype = 'button'
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''INSERT OR REPLACE INTO mod_captcha_config (group_id, enabled, captcha_type)
+                     VALUES (?, ?, ?)''', (chat_id, enabled, ctype))
+        conn.commit(); conn.close()
+        status = "BẬT" if enabled else "TẮT"
+        await update.message.reply_text(
+            f"✅ CAPTCHA *{status}*" + (f" — Loại: *{ctype}*" if enabled else ""),
+            parse_mode=ParseMode.MARKDOWN)
+
+    # ==================== ANTI-FLOOD ====================
+
+    async def mod_check_flood(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+        """Kiểm tra flood, return True nếu bị flood"""
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT enabled, max_msgs, interval_sec, action FROM mod_flood_config WHERE group_id=?", (chat_id,))
+        cfg = c.fetchone(); conn.close()
+        if not cfg or not cfg[0]:
+            return False
+        _, max_msgs, interval_sec, action = cfg
+        key = (chat_id, user_id)
+        now = time.time()
+        if key not in _flood_tracker:
+            _flood_tracker[key] = []
+        # Xóa timestamps cũ
+        _flood_tracker[key] = [t for t in _flood_tracker[key] if now - t < interval_sec]
+        _flood_tracker[key].append(now)
+        if len(_flood_tracker[key]) >= max_msgs:
+            _flood_tracker[key] = []
+            try:
+                if action == 'ban':
+                    await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
+                    mod_log(chat_id, 0, user_id, "auto_ban_flood")
+                elif action == 'kick':
+                    await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
+                    await context.bot.unban_chat_member(chat_id=chat_id, user_id=user_id)
+                    mod_log(chat_id, 0, user_id, "auto_kick_flood")
+                else:  # mute
+                    from telegram import ChatPermissions
+                    until = datetime.utcnow() + timedelta(seconds=300)
+                    await context.bot.restrict_chat_member(
+                        chat_id=chat_id, user_id=user_id,
+                        permissions=ChatPermissions(can_send_messages=False),
+                        until_date=until)
+                    mod_log(chat_id, 0, user_id, "auto_mute_flood")
+                await update.message.reply_text(
+                    f"🌊 `{user_id}` bị {action} do gửi tin quá nhanh!",
+                    parse_mode=ParseMode.MARKDOWN)
+            except Exception as e:
+                logger.error(f"❌ Flood action error: {e}")
+            return True
+        return False
+
+    async def mod_setflood_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/setflood [on/off] [max_msgs] [interval_sec] [action] — Cấu hình anti-flood"""
+        if not await mod_check_admin(update): return
+        chat_id = update.effective_chat.id
+        if not context.args:
+            await update.message.reply_text(
+                "📖 Cách dùng:\n`/setflood on 5 5 mute` — Bật, max 5 tin/5 giây → mute\n"
+                "`/setflood off` — Tắt", parse_mode=ParseMode.MARKDOWN); return
+        enabled = 1 if context.args[0].lower() == 'on' else 0
+        max_m = int(context.args[1]) if len(context.args) > 1 else 5
+        interval = int(context.args[2]) if len(context.args) > 2 else 5
+        action = context.args[3].lower() if len(context.args) > 3 else 'mute'
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''INSERT OR REPLACE INTO mod_flood_config (group_id, enabled, max_msgs, interval_sec, action)
+                     VALUES (?, ?, ?, ?, ?)''', (chat_id, enabled, max_m, interval, action))
+        conn.commit(); conn.close()
+        if enabled:
+            await update.message.reply_text(
+                f"✅ Anti-flood *BẬT*\n📨 Max: *{max_m}* tin/{interval}s → *{action}*",
+                parse_mode=ParseMode.MARKDOWN)
+        else:
+            await update.message.reply_text("✅ Anti-flood *TẮT*", parse_mode=ParseMode.MARKDOWN)
+
+    # ==================== CHÀO MỪNG ====================
+
+    async def mod_setwelcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/setwelcome [nội dung] — Đặt tin nhắn chào mừng tùy chỉnh
+        Biến: {name} {id} {group} {count}"""
+        if not await mod_check_admin(update): return
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+        if not context.args:
+            await update.message.reply_text(
+                "📖 Cách dùng: `/setwelcome [nội dung]`\n\n"
+                "*Biến có thể dùng:*\n"
+                "`{name}` — Tên thành viên\n"
+                "`{id}` — ID thành viên\n"
+                "`{group}` — Tên nhóm\n"
+                "`{count}` — Số thành viên\n\n"
+                "Ví dụ: `/setwelcome Chào {name}! Bạn là thành viên thứ {count} 🎉`",
+                parse_mode=ParseMode.MARKDOWN); return
+        msg_text = " ".join(context.args)
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''INSERT OR REPLACE INTO mod_welcome (group_id, message, enabled, set_by, updated_at)
+                     VALUES (?, ?, 1, ?, ?)''',
+                  (chat_id, msg_text, user_id, get_vn_time().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit(); conn.close()
+        await update.message.reply_text(
+            f"✅ *Đã đặt tin chào mừng!*\n\n*Preview:*\n{msg_text.replace('{name}','Nguyễn Văn A').replace('{id}','123456').replace('{group}', update.effective_chat.title or 'Nhóm').replace('{count}','100')}",
+            parse_mode=ParseMode.MARKDOWN)
+
+    async def mod_welcome_off_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/welcomeoff — Tắt chào mừng"""
+        if not await mod_check_admin(update): return
+        chat_id = update.effective_chat.id
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("UPDATE mod_welcome SET enabled=0 WHERE group_id=?", (chat_id,))
+        conn.commit(); conn.close()
+        await update.message.reply_text("✅ Đã tắt tin chào mừng.")
+
+    async def mod_send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE, member):
+        """Gửi tin chào mừng tùy chỉnh"""
+        chat_id = update.effective_chat.id
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT message, enabled FROM mod_welcome WHERE group_id=?", (chat_id,))
+        row = c.fetchone(); conn.close()
+        if not row or not row[1]:
+            return  # Không có hoặc tắt
+        try:
+            chat = update.effective_chat
+            count = await context.bot.get_chat_member_count(chat_id)
+            msg = row[0].replace('{name}', member.first_name or "Bạn") \
+                        .replace('{id}', str(member.id)) \
+                        .replace('{group}', chat.title or "nhóm") \
+                        .replace('{count}', str(count))
+            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            logger.error(f"❌ mod_send_welcome: {e}")
+
+    # ==================== NỘI QUY ====================
+
+    async def mod_setrules_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/setrules [nội quy] — Đặt nội quy nhóm"""
+        if not await mod_check_admin(update): return
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+        if not context.args:
+            await update.message.reply_text("📖 Cách dùng: `/setrules [nội dung nội quy]`",
+                                             parse_mode=ParseMode.MARKDOWN); return
+        rules_text = " ".join(context.args)
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''INSERT OR REPLACE INTO mod_rules (group_id, rules, set_by, updated_at)
+                     VALUES (?, ?, ?, ?)''',
+                  (chat_id, rules_text, user_id, get_vn_time().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit(); conn.close()
+        await update.message.reply_text("✅ Đã cập nhật nội quy nhóm!\nDùng /rules để xem.")
+
+    async def mod_rules_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/rules — Xem nội quy nhóm"""
+        chat_id = update.effective_chat.id
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT rules FROM mod_rules WHERE group_id=?", (chat_id,))
+        row = c.fetchone(); conn.close()
+        if not row:
+            await update.message.reply_text("❌ Nhóm này chưa có nội quy!\nAdmin dùng /setrules để đặt."); return
+        await update.message.reply_text(
+            f"📋 *NỘI QUY NHÓM*\n━━━━━━━━━━━━━━━━\n\n{row[0]}\n\n🕐 {format_vn_time()}",
+            parse_mode=ParseMode.MARKDOWN)
+
+    # ==================== LỌC TỪ KHÓA (FILTERS) ====================
+
+    async def mod_filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/filter [từ khóa] [reply/nội dung] — Thêm bộ lọc tự động"""
+        if not await mod_check_admin(update): return
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+        if not context.args:
+            await update.message.reply_text(
+                "📖 Cách dùng:\n"
+                "`/filter [từ khóa] [nội dung trả lời]`\n"
+                "Hoặc reply vào tin nhắn: `/filter [từ khóa]`\n\n"
+                "Ví dụ: `/filter xin chào Chào mừng bạn!`\n"
+                "Để xóa: `/unfilter [từ khóa]`",
+                parse_mode=ParseMode.MARKDOWN); return
+        keyword = context.args[0].lower()
+        if update.message.reply_to_message:
+            reply_text = update.message.reply_to_message.text or ""
+        else:
+            reply_text = " ".join(context.args[1:]) if len(context.args) > 1 else ""
+        action = "delete" if not reply_text else "reply"
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''INSERT OR REPLACE INTO mod_filters (group_id, keyword, action, reply, added_by, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?)''',
+                  (chat_id, keyword, action, reply_text, user_id,
+                   get_vn_time().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit(); conn.close()
+        await update.message.reply_text(
+            f"✅ *Đã thêm filter:*\n🔍 Từ khóa: `{keyword}`\n"
+            f"⚡ Hành động: {'Trả lời' if action=='reply' else 'Xóa tin nhắn'}"
+            + (f"\n💬 Nội dung: {reply_text}" if reply_text else ""),
+            parse_mode=ParseMode.MARKDOWN)
+
+    async def mod_unfilter_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/unfilter [từ khóa] — Xóa bộ lọc"""
+        if not await mod_check_admin(update): return
+        chat_id = update.effective_chat.id
+        if not context.args:
+            await update.message.reply_text("📖 Cách dùng: `/unfilter [từ khóa]`",
+                                             parse_mode=ParseMode.MARKDOWN); return
+        keyword = context.args[0].lower()
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("DELETE FROM mod_filters WHERE group_id=? AND keyword=?", (chat_id, keyword))
+        deleted = c.rowcount; conn.commit(); conn.close()
+        if deleted:
+            await update.message.reply_text(f"✅ Đã xóa filter `{keyword}`", parse_mode=ParseMode.MARKDOWN)
+        else:
+            await update.message.reply_text(f"❌ Không tìm thấy filter `{keyword}`", parse_mode=ParseMode.MARKDOWN)
+
+    async def mod_filters_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/filters — Xem danh sách bộ lọc"""
+        chat_id = update.effective_chat.id
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT keyword, action, reply FROM mod_filters WHERE group_id=? ORDER BY keyword", (chat_id,))
+        rows = c.fetchall(); conn.close()
+        if not rows:
+            await update.message.reply_text("❌ Nhóm này chưa có filter nào!"); return
+        msg = f"🔍 *DANH SÁCH FILTER* ({len(rows)} filter)\n━━━━━━━━━━━━━━━━\n\n"
+        for kw, action, reply in rows:
+            msg += f"• `{kw}` → {'💬 '+reply[:30] if reply else '🗑 Xóa tin'}\n"
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+    async def mod_check_filters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+        """Kiểm tra tin nhắn có chứa từ khóa filter không, return True nếu đã xử lý"""
+        if not update.message or not update.message.text:
+            return False
+        chat_id = update.effective_chat.id
+        text = update.message.text.lower()
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT keyword, action, reply FROM mod_filters WHERE group_id=?", (chat_id,))
+        filters = c.fetchall(); conn.close()
+        for keyword, action, reply in filters:
+            if keyword in text:
+                try:
+                    if action == 'delete':
+                        await update.message.delete()
+                    elif action == 'reply' and reply:
+                        await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
+                except: pass
+                return True
+        return False
+
+    # ==================== LỆNH TÙY CHỈNH (CUSTOM COMMANDS) ====================
+
+    async def mod_addcmd_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/addcmd [lệnh] [nội dung] — Thêm lệnh tùy chỉnh"""
+        if not await mod_check_admin(update): return
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+        if not context.args or len(context.args) < 2:
+            await update.message.reply_text(
+                "📖 Cách dùng: `/addcmd [lệnh] [nội dung]`\n"
+                "Ví dụ: `/addcmd fb Link FB: facebook.com/nhom`",
+                parse_mode=ParseMode.MARKDOWN); return
+        cmd = context.args[0].lower().replace('/', '')
+        response = " ".join(context.args[1:])
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''INSERT OR REPLACE INTO mod_commands (group_id, command, response, added_by, created_at)
+                     VALUES (?, ?, ?, ?, ?)''',
+                  (chat_id, cmd, response, user_id, get_vn_time().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit(); conn.close()
+        await update.message.reply_text(
+            f"✅ Đã thêm lệnh `/{cmd}`\nThử ngay: `/{cmd}`",
+            parse_mode=ParseMode.MARKDOWN)
+
+    async def mod_delcmd_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/delcmd [lệnh] — Xóa lệnh tùy chỉnh"""
+        if not await mod_check_admin(update): return
+        chat_id = update.effective_chat.id
+        if not context.args:
+            await update.message.reply_text("📖 Cách dùng: `/delcmd [lệnh]`",
+                                             parse_mode=ParseMode.MARKDOWN); return
+        cmd = context.args[0].lower().replace('/', '')
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("DELETE FROM mod_commands WHERE group_id=? AND command=?", (chat_id, cmd))
+        deleted = c.rowcount; conn.commit(); conn.close()
+        if deleted:
+            await update.message.reply_text(f"✅ Đã xóa lệnh `/{cmd}`", parse_mode=ParseMode.MARKDOWN)
+        else:
+            await update.message.reply_text(f"❌ Không tìm thấy lệnh `/{cmd}`", parse_mode=ParseMode.MARKDOWN)
+
+    async def mod_cmds_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/cmds — Xem danh sách lệnh tùy chỉnh"""
+        chat_id = update.effective_chat.id
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT command, response FROM mod_commands WHERE group_id=? ORDER BY command", (chat_id,))
+        rows = c.fetchall(); conn.close()
+        if not rows:
+            await update.message.reply_text("❌ Nhóm này chưa có lệnh tùy chỉnh nào!"); return
+        msg = f"⚡ *LỆNH TÙY CHỈNH* ({len(rows)} lệnh)\n━━━━━━━━━━━━━━━━\n\n"
+        for cmd, resp in rows:
+            msg += f"• `/{cmd}` — {resp[:40]}{'...' if len(resp)>40 else ''}\n"
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+    async def mod_check_custom_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+        """Kiểm tra lệnh tùy chỉnh trong tin nhắn"""
+        if not update.message or not update.message.text:
+            return False
+        chat_id = update.effective_chat.id
+        text = update.message.text.strip()
+        if not text.startswith('/'):
+            return False
+        cmd = text.split()[0][1:].split('@')[0].lower()
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT response FROM mod_commands WHERE group_id=? AND command=?", (chat_id, cmd))
+        row = c.fetchone(); conn.close()
+        if row:
+            await update.message.reply_text(row[0], parse_mode=ParseMode.MARKDOWN)
+            return True
+        return False
+
+    # ==================== PURGE ====================
+
+    async def mod_purge_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/purge — Reply vào tin nhắn đầu tiên cần xóa → xóa từ đó đến hiện tại"""
+        if not await mod_check_admin(update): return
+        if not update.message.reply_to_message:
+            await update.message.reply_text("❌ Reply vào tin nhắn đầu tiên muốn xóa!"); return
+        chat_id = update.effective_chat.id
+        start_id = update.message.reply_to_message.message_id
+        end_id = update.message.message_id
+        deleted = 0
+        failed = 0
+        for msg_id in range(start_id, end_id + 1):
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                deleted += 1
+            except:
+                failed += 1
+        mod_log(chat_id, update.effective_user.id, 0, "purge", f"Xóa {deleted} tin nhắn")
+        notice = await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"🧹 Đã xóa *{deleted}* tin nhắn.\n🕐 {format_vn_time()}",
+            parse_mode=ParseMode.MARKDOWN)
+        await asyncio.sleep(5)
+        try:
+            await notice.delete()
+        except: pass
+
+    async def mod_spurge_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/spurge — Xóa không để lại thông báo"""
+        if not await mod_check_admin(update): return
+        if not update.message.reply_to_message:
+            await update.message.reply_text("❌ Reply vào tin nhắn đầu tiên muốn xóa!"); return
+        chat_id = update.effective_chat.id
+        start_id = update.message.reply_to_message.message_id
+        end_id = update.message.message_id
+        for msg_id in range(start_id, end_id + 1):
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+            except: pass
+        mod_log(chat_id, update.effective_user.id, 0, "spurge")
+
+    # ==================== NHẬT KÝ ADMIN (LOGS) ====================
+
+    async def mod_logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/adminlogs — Xem nhật ký hành động admin"""
+        if not await mod_check_admin(update): return
+        chat_id = update.effective_chat.id
+        limit = int(context.args[0]) if context.args else 20
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''SELECT action_by, target_user, action, reason, created_at
+                     FROM mod_logs WHERE group_id=? ORDER BY created_at DESC LIMIT ?''',
+                  (chat_id, limit))
+        rows = c.fetchall(); conn.close()
+        if not rows:
+            await update.message.reply_text("📋 Chưa có hành động nào được ghi lại."); return
+        msg = f"📋 *NHẬT KÝ ADMIN* (mới nhất {len(rows)})\n━━━━━━━━━━━━━━━━\n\n"
+        action_icons = {
+            'ban': '🚫', 'unban': '✅', 'kick': '👢', 'mute': '🔇',
+            'unmute': '🔊', 'warn': '⚠️', 'purge': '🧹',
+            'auto_ban_flood': '🌊🚫', 'auto_mute_flood': '🌊🔇'
+        }
+        for action_by, target, action, reason, at in rows:
+            icon = action_icons.get(action, '📌')
+            msg += f"{icon} `{action_by}` → `{target}` | *{action}*"
+            if reason:
+                msg += f" — {reason[:30]}"
+            msg += f" _{at[11:16]}_\n"
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+    # ==================== BÁO CÁO VI PHẠM (REPORT) ====================
+
+    async def mod_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/report [lý do] — Báo cáo tin nhắn (reply vào tin cần báo cáo)"""
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+        if not update.message.reply_to_message:
+            await update.message.reply_text("❌ Reply vào tin nhắn muốn báo cáo!"); return
+        target = update.message.reply_to_message.from_user
+        target_msg_id = update.message.reply_to_message.message_id
+        reason = " ".join(context.args) if context.args else "Không có lý do"
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''INSERT INTO mod_reports (group_id, reporter_id, target_user, message_id, reason, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?)''',
+                  (chat_id, user_id, target.id, target_msg_id, reason,
+                   get_vn_time().strftime("%Y-%m-%d %H:%M:%S")))
+        report_id = c.lastrowid; conn.commit(); conn.close()
+        # Xác nhận với người báo cáo
+        await update.message.reply_text(
+            f"✅ *Đã ghi nhận báo cáo #{report_id}*\nAdmin sẽ xem xét sớm nhất.",
+            parse_mode=ParseMode.MARKDOWN)
+        # Thông báo cho admin (cố gắng ping admin trong nhóm)
+        try:
+            keyboard = [[
+                InlineKeyboardButton("🚫 Ban", callback_data=f"mod_rpt_ban_{target.id}_{report_id}"),
+                InlineKeyboardButton("🔇 Mute", callback_data=f"mod_rpt_mute_{target.id}_{report_id}"),
+                InlineKeyboardButton("✅ Bỏ qua", callback_data=f"mod_rpt_ignore_{report_id}"),
+            ]]
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"🚨 *BÁO CÁO VI PHẠM #{report_id}*\n━━━━━━━━━━━━━━━━\n\n"
+                     f"👤 Người báo cáo: `{user_id}`\n"
+                     f"🎯 Bị báo cáo: `{target.id}` ({target.first_name})\n"
+                     f"📝 Lý do: {reason}\n\n"
+                     f"⚠️ @admin Vui lòng xử lý!",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                reply_to_message_id=target_msg_id
+            )
+        except Exception as e:
+            logger.error(f"❌ Report notify error: {e}")
+
+    # ==================== FEDERATION (LIÊN MINH) ====================
+
+    async def mod_newfed_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/newfed [tên] — Tạo liên minh chống spam mới"""
+        user_id = update.effective_user.id
+        if not context.args:
+            await update.message.reply_text("📖 Cách dùng: `/newfed [tên liên minh]`",
+                                             parse_mode=ParseMode.MARKDOWN); return
+        import uuid
+        fed_name = " ".join(context.args)
+        fed_id = str(uuid.uuid4())[:8].upper()
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''INSERT INTO mod_federations (fed_id, fed_name, owner_id, created_at)
+                     VALUES (?, ?, ?, ?)''',
+                  (fed_id, fed_name, user_id, get_vn_time().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit(); conn.close()
+        await update.message.reply_text(
+            f"🏛 *LIÊN MINH MỚI*\n━━━━━━━━━━━━━━━━\n\n"
+            f"🏷 Tên: *{fed_name}*\n"
+            f"🆔 ID: `{fed_id}`\n\n"
+            f"Thêm nhóm vào liên minh: `/joinfed {fed_id}`\n"
+            f"Ban user toàn liên minh: `/fban {fed_id} [user_id]`",
+            parse_mode=ParseMode.MARKDOWN)
+
+    async def mod_joinfed_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/joinfed [fed_id] — Thêm nhóm vào liên minh"""
+        if not await mod_check_admin(update): return
+        chat_id = update.effective_chat.id
+        if not context.args:
+            await update.message.reply_text("📖 Cách dùng: `/joinfed [fed_id]`",
+                                             parse_mode=ParseMode.MARKDOWN); return
+        fed_id = context.args[0].upper()
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT fed_name FROM mod_federations WHERE fed_id=?", (fed_id,))
+        fed = c.fetchone()
+        if not fed:
+            conn.close()
+            await update.message.reply_text(f"❌ Không tìm thấy liên minh `{fed_id}`",
+                                             parse_mode=ParseMode.MARKDOWN); return
+        c.execute('''INSERT OR REPLACE INTO mod_fed_members (fed_id, group_id, joined_at)
+                     VALUES (?, ?, ?)''',
+                  (fed_id, chat_id, get_vn_time().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit(); conn.close()
+        await update.message.reply_text(
+            f"✅ Đã tham gia liên minh *{fed[0]}* (`{fed_id}`)\n"
+            f"User bị fban trong liên minh sẽ tự động bị ban tại nhóm này.",
+            parse_mode=ParseMode.MARKDOWN)
+
+    async def mod_leavefed_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/leavefed — Rời liên minh"""
+        if not await mod_check_admin(update): return
+        chat_id = update.effective_chat.id
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("DELETE FROM mod_fed_members WHERE group_id=?", (chat_id,))
+        conn.commit(); conn.close()
+        await update.message.reply_text("✅ Đã rời khỏi liên minh.")
+
+    async def mod_fban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/fban [fed_id] [user_id] [lý do] — Ban user khỏi toàn liên minh"""
+        user_id = update.effective_user.id
+        if not context.args or len(context.args) < 2:
+            await update.message.reply_text(
+                "📖 Cách dùng: `/fban [fed_id] [user_id] [lý do]`",
+                parse_mode=ParseMode.MARKDOWN); return
+        fed_id = context.args[0].upper()
+        try:
+            target_id = int(context.args[1])
+        except:
+            await update.message.reply_text("❌ user_id phải là số!"); return
+        # Kiểm tra quyền: phải là owner của fed
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT owner_id, fed_name FROM mod_federations WHERE fed_id=?", (fed_id,))
+        fed = c.fetchone()
+        if not fed:
+            conn.close()
+            await update.message.reply_text(f"❌ Không tìm thấy liên minh `{fed_id}`",
+                                             parse_mode=ParseMode.MARKDOWN); return
+        if fed[0] != user_id and not is_owner(user_id):
+            conn.close()
+            await update.message.reply_text("❌ Chỉ owner liên minh mới fban được!"); return
+        reason = " ".join(context.args[2:]) or "Không có lý do"
+        c.execute('''INSERT OR REPLACE INTO mod_fed_bans (fed_id, user_id, reason, banned_by, banned_at)
+                     VALUES (?, ?, ?, ?, ?)''',
+                  (fed_id, target_id, reason, user_id, get_vn_time().strftime("%Y-%m-%d %H:%M:%S")))
+        # Lấy tất cả nhóm trong liên minh
+        c.execute("SELECT group_id FROM mod_fed_members WHERE fed_id=?", (fed_id,))
+        groups = c.fetchall(); conn.commit(); conn.close()
+        banned = 0
+        for (gid,) in groups:
+            try:
+                await context.bot.ban_chat_member(chat_id=gid, user_id=target_id)
+                banned += 1
+            except: pass
+        await update.message.reply_text(
+            f"🏛 *FBAN THỰC HIỆN*\n━━━━━━━━━━━━━━━━\n\n"
+            f"👤 User: `{target_id}`\n"
+            f"🏷 Liên minh: *{fed[1]}*\n"
+            f"📝 Lý do: {reason}\n"
+            f"🚫 Banned ở: *{banned}*/{len(groups)} nhóm\n"
+            f"🕐 {format_vn_time()}", parse_mode=ParseMode.MARKDOWN)
+
+    async def mod_funban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/funban [fed_id] [user_id] — Gỡ fban"""
+        user_id = update.effective_user.id
+        if not context.args or len(context.args) < 2:
+            await update.message.reply_text("📖 Cách dùng: `/funban [fed_id] [user_id]`",
+                                             parse_mode=ParseMode.MARKDOWN); return
+        fed_id = context.args[0].upper()
+        try:
+            target_id = int(context.args[1])
+        except:
+            await update.message.reply_text("❌ user_id phải là số!"); return
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("DELETE FROM mod_fed_bans WHERE fed_id=? AND user_id=?", (fed_id, target_id))
+        c.execute("SELECT group_id FROM mod_fed_members WHERE fed_id=?", (fed_id,))
+        groups = c.fetchall(); conn.commit(); conn.close()
+        unbanned = 0
+        for (gid,) in groups:
+            try:
+                await context.bot.unban_chat_member(chat_id=gid, user_id=target_id)
+                unbanned += 1
+            except: pass
+        await update.message.reply_text(
+            f"✅ Đã gỡ fban `{target_id}` ở *{unbanned}* nhóm.",
+            parse_mode=ParseMode.MARKDOWN)
+
+    async def mod_fedinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/fedinfo [fed_id] — Xem thông tin liên minh"""
+        if not context.args:
+            await update.message.reply_text("📖 Cách dùng: `/fedinfo [fed_id]`",
+                                             parse_mode=ParseMode.MARKDOWN); return
+        fed_id = context.args[0].upper()
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT fed_name, owner_id, created_at FROM mod_federations WHERE fed_id=?", (fed_id,))
+        fed = c.fetchone()
+        if not fed:
+            conn.close()
+            await update.message.reply_text(f"❌ Không tìm thấy liên minh `{fed_id}`",
+                                             parse_mode=ParseMode.MARKDOWN); return
+        c.execute("SELECT COUNT(*) FROM mod_fed_members WHERE fed_id=?", (fed_id,))
+        group_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM mod_fed_bans WHERE fed_id=?", (fed_id,))
+        ban_count = c.fetchone()[0]
+        conn.close()
+        await update.message.reply_text(
+            f"🏛 *THÔNG TIN LIÊN MINH*\n━━━━━━━━━━━━━━━━\n\n"
+            f"🏷 Tên: *{fed[0]}*\n"
+            f"🆔 ID: `{fed_id}`\n"
+            f"👑 Owner: `{fed[1]}`\n"
+            f"🏘 Số nhóm: *{group_count}*\n"
+            f"🚫 Đang fban: *{ban_count}* users\n"
+            f"📅 Tạo: {fed[2][:10]}",
+            parse_mode=ParseMode.MARKDOWN)
+
+    # ==================== CALLBACK HANDLER CHO MODERATION ====================
+
+    async def handle_mod_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Xử lý callbacks của moderation system"""
+        query = update.callback_query
+        await query.answer()
+        user_id = query.from_user.id
+        data = query.data
+        chat_id = query.message.chat.id
+
+        # CAPTCHA confirm (button type)
+        if data.startswith("mod_captcha_"):
+            parts = data.split("_")
+            # mod_captcha_{chat_id}_{user_id} hoặc mod_captcha_{chat_id}_{user_id}_{answer}
+            try:
+                cap_chat = int(parts[2])
+                cap_user = int(parts[3])
+                user_answer = parts[4] if len(parts) > 4 else "confirmed"
+            except:
+                return
+            if user_id != cap_user:
+                await query.answer("❌ CAPTCHA này không phải của bạn!", show_alert=True); return
+            # Kiểm tra đáp án
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT answer, message_id FROM mod_captcha_pending WHERE group_id=? AND user_id=?",
+                      (cap_chat, cap_user))
+            pending = c.fetchone()
+            if not pending:
+                await query.answer("⏱ CAPTCHA đã hết hạn!", show_alert=True)
+                conn.close(); return
+            correct_answer, msg_id = pending
+            if user_answer == correct_answer or correct_answer == "confirmed":
+                # Đúng → bật tiếng lại
+                from telegram import ChatPermissions
+                try:
+                    await context.bot.restrict_chat_member(
+                        chat_id=cap_chat, user_id=cap_user,
+                        permissions=ChatPermissions(
+                            can_send_messages=True, can_send_media_messages=True,
+                            can_send_other_messages=True, can_add_web_page_previews=True
+                        )
+                    )
+                except: pass
+                c.execute("DELETE FROM mod_captcha_pending WHERE group_id=? AND user_id=?", (cap_chat, cap_user))
+                conn.commit(); conn.close()
+                try:
+                    await context.bot.delete_message(chat_id=cap_chat, message_id=msg_id)
+                except: pass
+                await context.bot.send_message(cap_chat,
+                    f"✅ `{cap_user}` đã xác nhận CAPTCHA thành công!", parse_mode=ParseMode.MARKDOWN)
+            else:
+                # Sai → kick
+                c.execute("DELETE FROM mod_captcha_pending WHERE group_id=? AND user_id=?", (cap_chat, cap_user))
+                conn.commit(); conn.close()
+                try:
+                    await context.bot.ban_chat_member(chat_id=cap_chat, user_id=cap_user)
+                    await context.bot.unban_chat_member(chat_id=cap_chat, user_id=cap_user)
+                    await context.bot.delete_message(chat_id=cap_chat, message_id=msg_id)
+                except: pass
+                await query.answer("❌ Sai đáp án! Bạn đã bị kick.", show_alert=True)
+
+        # Report action
+        elif data.startswith("mod_rpt_"):
+            if not mod_is_admin(chat_id, user_id):
+                await query.answer("❌ Chỉ admin mới xử lý được!", show_alert=True); return
+            parts = data.split("_")
+            action = parts[2]  # ban/mute/ignore
+            if action == "ignore":
+                report_id = int(parts[3])
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute("UPDATE mod_reports SET status='ignored' WHERE id=?", (report_id,))
+                conn.commit(); conn.close()
+                await safe_edit_message(query, f"✅ Báo cáo #{report_id} đã được bỏ qua.")
+            else:
+                target_id = int(parts[3])
+                report_id = int(parts[4])
+                try:
+                    if action == "ban":
+                        await context.bot.ban_chat_member(chat_id=chat_id, user_id=target_id)
+                        mod_log(chat_id, user_id, target_id, "ban", f"Từ báo cáo #{report_id}")
+                        await safe_edit_message(query, f"🚫 Đã ban user `{target_id}` (báo cáo #{report_id})")
+                    elif action == "mute":
+                        from telegram import ChatPermissions
+                        until = datetime.utcnow() + timedelta(hours=1)
+                        await context.bot.restrict_chat_member(
+                            chat_id=chat_id, user_id=target_id,
+                            permissions=ChatPermissions(can_send_messages=False),
+                            until_date=until)
+                        mod_log(chat_id, user_id, target_id, "mute", f"Từ báo cáo #{report_id}", "1h")
+                        await safe_edit_message(query, f"🔇 Đã mute 1h user `{target_id}` (báo cáo #{report_id})")
+                    conn2 = sqlite3.connect(DB_PATH)
+                    c2 = conn2.cursor()
+                    c2.execute("UPDATE mod_reports SET status='resolved' WHERE id=?", (report_id,))
+                    conn2.commit(); conn2.close()
+                except Exception as e:
+                    await query.answer(f"❌ Lỗi: {e}", show_alert=True)
+
+    # ==================== TÍCH HỢP VÀO new_chat_members & handle_message ====================
+    # Các hàm này sẽ được gọi từ handler hiện có
+
+    async def mod_on_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE, member):
+        """Gọi khi có thành viên mới: chạy CAPTCHA và welcome"""
+        await mod_captcha_join(update, context, member)
+        if not mg_is_cross_banned(update.effective_chat.id, member.id):
+            await mod_send_welcome(update, context, member)
+
+    async def mod_on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+        """Gọi từ handle_message: kiểm tra flood, filter, custom cmd
+           Return True nếu tin nhắn đã được xử lý (không cần xử lý tiếp)"""
+        if not update.message or not update.message.text:
+            return False
+        chat_type = update.effective_chat.type
+        if chat_type not in ['group', 'supergroup']:
+            return False
+        # 1. Check flood
+        if await mod_check_flood(update, context):
+            return True
+        # 2. Check filters
+        if await mod_check_filters(update, context):
+            return True
+        # 3. Check custom commands
+        if await mod_check_custom_command(update, context):
+            return True
+        return False
+
+    # ==================== FED CHECK KHI USER JOIN ====================
+
+    async def mod_check_fed_ban(context, chat_id, user_id) -> bool:
+        """Kiểm tra user có bị fban không, return True nếu bị ban"""
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT fed_id FROM mod_fed_members WHERE group_id=?", (chat_id,))
+            feds = c.fetchall()
+            for (fed_id,) in feds:
+                c.execute("SELECT reason FROM mod_fed_bans WHERE fed_id=? AND user_id=?", (fed_id, user_id))
+                ban = c.fetchone()
+                if ban:
+                    conn.close()
+                    await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
+                    await context.bot.send_message(chat_id,
+                        f"🚫 `{user_id}` bị tự động ban do nằm trong fban list (lý do: {ban[0]})",
+                        parse_mode=ParseMode.MARKDOWN)
+                    return True
+            conn.close()
+        except Exception as e:
+            logger.error(f"❌ mod_check_fed_ban: {e}")
+        return False
+
+
 
     # ==================== SMART STARTUP ====================
     def smart_startup():
@@ -10923,6 +12370,41 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             # === MULTI-GROUP SYSTEM HANDLERS ===
             app.add_handler(CommandHandler("setmaster", mg_setmaster_command))
             app.add_handler(CommandHandler("masterinfo", mg_masterinfo_command))
+
+            # ── MODERATION COMMANDS ──────────────────────────
+            app.add_handler(CommandHandler("ban", mod_ban_command))
+            app.add_handler(CommandHandler("unban", mod_unban_command))
+            app.add_handler(CommandHandler("kick", mod_kick_command))
+            app.add_handler(CommandHandler("mute", mod_mute_command))
+            app.add_handler(CommandHandler("unmute", mod_unmute_command))
+            app.add_handler(CommandHandler("warn", mod_warn_command))
+            app.add_handler(CommandHandler("unwarn", mod_unwarn_command))
+            app.add_handler(CommandHandler("warns", mod_warns_command))
+            app.add_handler(CommandHandler("setwarn", mod_setwarn_command))
+            app.add_handler(CommandHandler("setcaptcha", mod_setcaptcha_command))
+            app.add_handler(CommandHandler("setflood", mod_setflood_command))
+            app.add_handler(CommandHandler("setwelcome", mod_setwelcome_command))
+            app.add_handler(CommandHandler("welcomeoff", mod_welcome_off_command))
+            app.add_handler(CommandHandler("setrules", mod_setrules_command))
+            app.add_handler(CommandHandler("rules", mod_rules_command))
+            app.add_handler(CommandHandler("filter", mod_filter_command))
+            app.add_handler(CommandHandler("unfilter", mod_unfilter_command))
+            app.add_handler(CommandHandler("filters", mod_filters_list_command))
+            app.add_handler(CommandHandler("addcmd", mod_addcmd_command))
+            app.add_handler(CommandHandler("delcmd", mod_delcmd_command))
+            app.add_handler(CommandHandler("cmds", mod_cmds_list_command))
+            app.add_handler(CommandHandler("purge", mod_purge_command))
+            app.add_handler(CommandHandler("spurge", mod_spurge_command))
+            app.add_handler(CommandHandler("adminlogs", mod_logs_command))
+            app.add_handler(CommandHandler("report", mod_report_command))
+            app.add_handler(CommandHandler("newfed", mod_newfed_command))
+            app.add_handler(CommandHandler("joinfed", mod_joinfed_command))
+            app.add_handler(CommandHandler("leavefed", mod_leavefed_command))
+            app.add_handler(CommandHandler("fban", mod_fban_command))
+            app.add_handler(CommandHandler("funban", mod_funban_command))
+            app.add_handler(CommandHandler("fedinfo", mod_fedinfo_command))
+            # Callback handler cho moderation
+            app.add_handler(CallbackQueryHandler(handle_mod_callback, pattern="^mod_"))
             app.add_handler(CommandHandler("addchild", mg_addchild_command))
             app.add_handler(CommandHandler("removechild", mg_removechild_command))
             app.add_handler(CommandHandler("features", mg_features_command))
