@@ -122,7 +122,7 @@ async def auto_delete_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
         logger.error(f"❌ Lỗi xóa tin nhắn tự động: {e}")
             
 # ==================== OWNER CONFIGURATION ====================
-OWNER_ID = 1164334777
+OWNER_ID = 6737175223
 OWNER_USERNAME = "adm"
 
 def is_owner(user_id):
