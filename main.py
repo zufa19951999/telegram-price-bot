@@ -122,7 +122,7 @@ async def auto_delete_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
         logger.error(f"❌ Lỗi xóa tin nhắn tự động: {e}")
             
 # ==================== OWNER CONFIGURATION ====================
-OWNER_ID = 6737175223
+OWNER_ID = 1164334777
 OWNER_USERNAME = "adm"
 
 def is_owner(user_id):
@@ -10224,6 +10224,19 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             await update.message.reply_text("❌ Chỉ owner bot mới dùng lệnh này!"); return
         if chat.type not in ['group', 'supergroup']:
             await update.message.reply_text("❌ Lệnh này chỉ dùng trong nhóm!"); return
+        # Kiểm tra nếu nhóm đang là nhóm CON của master khác
+        existing_master = mg_get_master_of_child(chat.id)
+        if existing_master:
+            await update.message.reply_text(
+                f"❌ Nhóm này đang là nhóm CON của master {existing_master}!\n"
+                "Dùng /removechild ở nhóm tổng trước."
+            ); return
+        # Nếu đã là master rồi thì thông báo
+        if mg_is_master(chat.id):
+            await update.message.reply_text(
+                "⚠️ Nhóm này đã là nhóm tổng rồi!\n"
+                "Dùng /masterinfo để xem thông tin."
+            ); return
         group_name = chat.title or f"Group {chat.id}"
         if mg_set_master(chat.id, group_name, user_id):
             await update.message.reply_text(
@@ -10398,17 +10411,26 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         if mg_cross_ban(chat_id, target_id, user_id, reason):
             children = mg_get_children(chat_id)
             kicked = 0
+            # Kick khỏi nhóm tổng
+            try:
+                await context.bot.ban_chat_member(chat_id=chat_id, user_id=target_id)
+                kicked += 1
+                logger.info(f"🚫 Kicked {target_id} from master {chat_id}")
+            except Exception as e:
+                logger.warning(f"⚠️ Không kick được {target_id} khỏi nhóm tổng: {e}")
+            # Kick khỏi tất cả nhóm con
             for child_id, _, _, _ in children:
                 try:
                     await context.bot.ban_chat_member(chat_id=child_id, user_id=target_id)
                     kicked += 1
                 except Exception as e:
                     logger.warning(f"⚠️ Không kick được {target_id} khỏi {child_id}: {e}")
+            total_groups = len(children) + 1  # +1 nhóm tổng
             await update.message.reply_text(
                 f"🚫 *ĐÃ BAN XUYÊN NHÓM*\n━━━━━━━━━━━━━━━━\n\n"
                 f"👤 User ID: `{target_id}`\n"
                 f"📝 Lý do: {escape_markdown(reason)}\n"
-                f"👢 Kicked: *{kicked}*/{len(children)} nhóm con\n\n"
+                f"👢 Kicked: *{kicked}*/{total_groups} nhóm (tổng + con)\n\n"
                 f"Gỡ ban: `/crossunban {target_id}`\n🕐 {format_vn_time()}",
                 parse_mode=ParseMode.MARKDOWN)
         else:
@@ -10510,11 +10532,14 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             return
 
         elif data.startswith("mg_toggle_") and not data.startswith("mg_toggle_group_"):
-            # mg_toggle_{group_id}_{feature_key}
-            parts = data[len("mg_toggle_"):].split("_", 1)
+            # mg_toggle_{group_id}_{feature_key}  (group_id có thể âm)
+            import re as _re
+            raw = data[len("mg_toggle_"):]
+            m = _re.match(r'^(-?\d+)_(.+)$', raw)
             try:
-                group_id = int(parts[0])
-                feature_key = parts[1]
+                if not m: raise ValueError("parse failed")
+                group_id = int(m.group(1))
+                feature_key = m.group(2)
             except (ValueError, IndexError):
                 await query.answer("❌ Lỗi dữ liệu!", show_alert=True); return
             if not is_owner(user_id):
@@ -10524,9 +10549,12 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             await _mg_send_features_panel(query, group_id, user_id)
 
         elif data.startswith("mg_preset_"):
-            parts = data[len("mg_preset_"):].split("_")
+            import re as _re
+            raw = data[len("mg_preset_"):]
+            m = _re.match(r'^(-?\d+)_(\d+)$', raw)
             try:
-                group_id = int(parts[0]); level = int(parts[1])
+                if not m: raise ValueError("parse failed")
+                group_id = int(m.group(1)); level = int(m.group(2))
             except (ValueError, IndexError):
                 await query.answer("❌ Lỗi!", show_alert=True); return
             if not is_owner(user_id):
@@ -10567,7 +10595,10 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                                     reply_markup=InlineKeyboardMarkup(keyboard))
 
         elif data.startswith("mg_toggle_group_"):
-            group_id = int(data[len("mg_toggle_group_"):])
+            try:
+                group_id = int(data[len("mg_toggle_group_"):])
+            except ValueError:
+                await query.answer("❌ Lỗi group_id!", show_alert=True); return
             await _mg_send_features_panel(query, group_id, user_id)
 
         elif data == "mg_add_child_guide":
