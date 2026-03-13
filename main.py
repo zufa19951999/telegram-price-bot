@@ -10269,10 +10269,10 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         if children:
             msg += "*📋 DANH SÁCH NHÓM CON:*\n"
             for cid, cname, level, created_at in children:
-                msg += f"├ {escape_markdown(cname)} \\(`{cid}`\\)\n"
+                msg += f"├ {cname.replace(chr(96),chr(39))} ({cid})\n"
                 msg += f"│  └ {level_labels.get(level, f'Lv{level}')} — {created_at[:10]}\n"
         else:
-            msg += "⚠️ Chưa có nhóm con nào\\!\n"
+            msg += "⚠️ Chưa có nhóm con nào!\n"
         msg += f"\n🕐 {format_vn_time()}"
         keyboard = [
             [InlineKeyboardButton("➕ Thêm nhóm con", callback_data="mg_add_child_guide"),
@@ -10280,7 +10280,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             [InlineKeyboardButton("📢 Broadcast", callback_data=f"mg_broadcast_panel_{master_id}"),
              InlineKeyboardButton("🎛️ Tính năng", callback_data=f"mg_features_{master_id}")],
         ]
-        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN_V2,
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN,
                                          reply_markup=InlineKeyboardMarkup(keyboard))
 
     async def mg_addchild_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -10292,14 +10292,14 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         if not mg_is_master(chat_id):
             await update.message.reply_text(
                 "❌ Nhóm này chưa phải nhóm tổng\\!\nDùng `/setmaster` trước\\.",
-                parse_mode=ParseMode.MARKDOWN_V2); return
+                parse_mode=ParseMode.MARKDOWN); return
         args = context.args
         if not args or len(args) < 2:
             await update.message.reply_text(
                 "📖 *Cách dùng:*\n`/addchild [group\\_id] [level] [tên nhóm]`\n\n"
                 "*Ví dụ:*\n`/addchild \\-1001234567890 2 Crypto Group`\n\n"
                 "*Cấp độ:*\n`0` Bị động  `1` Cơ bản  `2` Nâng cao  `3` Đầy đủ",
-                parse_mode=ParseMode.MARKDOWN_V2); return
+                parse_mode=ParseMode.MARKDOWN); return
         try:
             child_id = int(args[0])
             level = int(args[1])
@@ -10307,7 +10307,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             child_name = " ".join(args[2:]) if len(args) > 2 else f"Group {child_id}"
         except ValueError:
             await update.message.reply_text("❌ Sai tham số! group\\_id phải là số, level từ 0\\-3",
-                                             parse_mode=ParseMode.MARKDOWN_V2); return
+                                             parse_mode=ParseMode.MARKDOWN); return
         if mg_add_child(chat_id, child_id, child_name, level, user_id):
             level_labels = {0: "🔒 Bị động", 1: "🔓 Cơ bản", 2: "🔓 Nâng cao", 3: "🔓 Đầy đủ"}
             await update.message.reply_text(
@@ -10317,7 +10317,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                 f"🎯 Cấp độ: {level_labels.get(level)}\n"
                 f"🎛️ Tính năng bật: *{len(AUTONOMY_PRESETS.get(level,[]))}*/{len(FEATURE_CATALOG)}\n\n"
                 f"Dùng `/features {child_id}` để tùy chỉnh thêm\\.\n🕐 {format_vn_time()}",
-                parse_mode=ParseMode.MARKDOWN_V2)
+                parse_mode=ParseMode.MARKDOWN)
         else:
             await update.message.reply_text("❌ Lỗi thêm nhóm con!")
 
@@ -10339,7 +10339,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         if mg_remove_child(chat_id, child_id):
             await update.message.reply_text(
                 f"✅ Đã xóa nhóm `{child_id}` khỏi hệ thống\\!\n🕐 {format_vn_time()}",
-                parse_mode=ParseMode.MARKDOWN_V2)
+                parse_mode=ParseMode.MARKDOWN)
         else:
             await update.message.reply_text("❌ Lỗi xóa nhóm con!")
 
@@ -10481,14 +10481,14 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         if not bans:
             await update.message.reply_text(
                 f"✅ *DANH SÁCH BAN — TRỐNG*\n\nKhông có user nào bị ban\\.\n🕐 {format_vn_time()}",
-                parse_mode=ParseMode.MARKDOWN_V2); return
+                parse_mode=ParseMode.MARKDOWN); return
         msg = f"🚫 *DANH SÁCH BAN XUYÊN NHÓM*\n━━━━━━━━━━━━━━━━\n\nTổng: *{len(bans)}* user\n\n"
         for i, (bid, _, reason, bat) in enumerate(bans[:20], 1):
             msg += f"{i}\\. `{bid}` — {escape_markdown(reason or 'Không có lý do')} _{bat[:10]}_\n"
         if len(bans) > 20:
             msg += f"\n_\\.\\.\\. và {len(bans)-20} user khác_"
         msg += f"\n\n🕐 {format_vn_time()}"
-        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
     async def mg_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/broadcast [tin nhắn] — Gửi thông báo tới tất cả nhóm con"""
