@@ -7864,13 +7864,14 @@ try:
         
         logger.info(f"📨 Tin nhắn từ user {user_id} Group ID: {chat_id} trong {chat_type}: '{text}'")
         
-        # TRONG GROUP: Kiểm tra quyền trước khi xử lý
+        # TRONG GROUP: Moderation chạy TRƯỚC check quyền
+        # (flood/filter/custom cmd áp dụng cho tất cả mọi người)
         if chat_type in ['group', 'supergroup']:
+            if await mod_on_message(update, ctx):
+                return
+            # Sau đó mới check quyền cho các tính năng bot
             if not check_permission(chat_id, user_id, 'view'):
                 logger.info(f"⛔ User {user_id} không có quyền trong group, bỏ qua")
-                return
-            # Moderation: flood / filter / custom commands
-            if await mod_on_message(update, ctx):
                 return
         
         # Xử lý tính toán nếu có
@@ -11354,6 +11355,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
     # Flood tracking trong RAM
     _flood_tracker = {}  # {(group_id, user_id): [timestamps]}
+    _flood_config_cache = {}  # {group_id: (enabled, max_msgs, interval_sec, action, cached_at)}
 
     # ==================== MODERATION: HELPERS ====================
 
@@ -11834,22 +11836,45 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         """Kiểm tra flood, return True nếu bị flood"""
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT enabled, max_msgs, interval_sec, action FROM mod_flood_config WHERE group_id=?", (chat_id,))
-        cfg = c.fetchone(); conn.close()
-        if not cfg or not cfg[0]:
-            return False
-        _, max_msgs, interval_sec, action = cfg
-        key = (chat_id, user_id)
+
+        # Lấy config từ cache RAM (TTL 60s), tránh query DB mỗi tin nhắn
         now = time.time()
+        cached = _flood_config_cache.get(chat_id)
+        if cached and now - cached[4] < 60:
+            enabled, max_msgs, interval_sec, action = cached[:4]
+        else:
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute("SELECT enabled, max_msgs, interval_sec, action FROM mod_flood_config WHERE group_id=?", (chat_id,))
+                cfg = c.fetchone()
+                conn.close()
+                if cfg:
+                    enabled, max_msgs, interval_sec, action = cfg
+                    _flood_config_cache[chat_id] = (enabled, max_msgs, interval_sec, action, now)
+                else:
+                    _flood_config_cache[chat_id] = (0, 5, 5, 'mute', now)
+                    return False
+            except Exception as e:
+                logger.error(f"❌ mod_check_flood DB error: {e}")
+                return False
+
+        if not enabled:
+            return False
+
+        key = (chat_id, user_id)
         if key not in _flood_tracker:
             _flood_tracker[key] = []
-        # Xóa timestamps cũ
+
+        # Xóa timestamps cũ ngoài cửa sổ thời gian
         _flood_tracker[key] = [t for t in _flood_tracker[key] if now - t < interval_sec]
         _flood_tracker[key].append(now)
+
+        logger.debug(f"🌊 Flood check {user_id}@{chat_id}: {len(_flood_tracker[key])}/{max_msgs} trong {interval_sec}s")
+
         if len(_flood_tracker[key]) >= max_msgs:
             _flood_tracker[key] = []
+            logger.info(f"🌊 FLOOD DETECTED: {user_id} @ {chat_id} → {action}")
             try:
                 if action == 'ban':
                     await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
@@ -11867,7 +11892,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                         until_date=until)
                     mod_log(chat_id, 0, user_id, "auto_mute_flood")
                 await update.message.reply_text(
-                    f"🌊 `{user_id}` bị {action} do gửi tin quá nhanh!",
+                    f"🌊 Người dùng `{user_id}` bị *{action}* do gửi tin quá nhanh\\!",
                     parse_mode=ParseMode.MARKDOWN)
             except Exception as e:
                 logger.error(f"❌ Flood action error: {e}")
@@ -11891,6 +11916,8 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         c.execute('''INSERT OR REPLACE INTO mod_flood_config (group_id, enabled, max_msgs, interval_sec, action)
                      VALUES (?, ?, ?, ?, ?)''', (chat_id, enabled, max_m, interval, action))
         conn.commit(); conn.close()
+        # Xóa cache để áp dụng ngay
+        _flood_config_cache.pop(chat_id, None)
         if enabled:
             await update.message.reply_text(
                 f"✅ Anti-flood *BẬT*\n📨 Max: *{max_m}* tin/{interval}s → *{action}*",
@@ -12769,6 +12796,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             new_val = 0 if (row and row[0]) else 1
             c.execute("INSERT OR REPLACE INTO mod_flood_config (group_id, enabled, max_msgs, interval_sec, action) VALUES (?, ?, COALESCE((SELECT max_msgs FROM mod_flood_config WHERE group_id=?),5), COALESCE((SELECT interval_sec FROM mod_flood_config WHERE group_id=?),5), COALESCE((SELECT action FROM mod_flood_config WHERE group_id=?),'mute'))", (cid, new_val, cid, cid, cid))
             conn.commit(); conn.close()
+            _flood_config_cache.pop(cid, None)
             await _mod_panel_flood(query, cid); return
 
         if data.startswith("mod_flood_max_"):
@@ -12784,6 +12812,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                 new_val = max(2, cur + (1 if op == 'inc' else -1))
                 c.execute("INSERT OR REPLACE INTO mod_flood_config (group_id, enabled, max_msgs, interval_sec, action) VALUES (?, COALESCE((SELECT enabled FROM mod_flood_config WHERE group_id=?),0), ?, COALESCE((SELECT interval_sec FROM mod_flood_config WHERE group_id=?),5), COALESCE((SELECT action FROM mod_flood_config WHERE group_id=?),'mute'))", (cid, cid, new_val, cid, cid))
                 conn.commit(); conn.close()
+                _flood_config_cache.pop(cid, None)
                 await _mod_panel_flood(query, cid); return
 
         if data.startswith("mod_flood_int_"):
@@ -12799,6 +12828,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                 new_val = max(2, cur + (1 if op == 'inc' else -1))
                 c.execute("INSERT OR REPLACE INTO mod_flood_config (group_id, enabled, max_msgs, interval_sec, action) VALUES (?, COALESCE((SELECT enabled FROM mod_flood_config WHERE group_id=?),0), COALESCE((SELECT max_msgs FROM mod_flood_config WHERE group_id=?),5), ?, COALESCE((SELECT action FROM mod_flood_config WHERE group_id=?),'mute'))", (cid, cid, cid, new_val, cid))
                 conn.commit(); conn.close()
+                _flood_config_cache.pop(cid, None)
                 await _mod_panel_flood(query, cid); return
 
         if data.startswith("mod_flood_act_"):
@@ -12810,6 +12840,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                 c = conn.cursor()
                 c.execute("INSERT OR REPLACE INTO mod_flood_config (group_id, enabled, max_msgs, interval_sec, action) VALUES (?, COALESCE((SELECT enabled FROM mod_flood_config WHERE group_id=?),0), COALESCE((SELECT max_msgs FROM mod_flood_config WHERE group_id=?),5), COALESCE((SELECT interval_sec FROM mod_flood_config WHERE group_id=?),5), ?)", (cid, cid, cid, cid, action))
                 conn.commit(); conn.close()
+                _flood_config_cache.pop(cid, None)
                 await _mod_panel_flood(query, cid); return
 
         # ── WARN CONTROLS ────────────────────────────────────────────────
@@ -13011,15 +13042,37 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         chat_type = update.effective_chat.type
         if chat_type not in ['group', 'supergroup']:
             return False
-        # 1. Check flood
-        if await mod_check_flood(update, context):
-            return True
-        # 2. Check filters
-        if await mod_check_filters(update, context):
-            return True
-        # 3. Check custom commands
-        if await mod_check_custom_command(update, context):
-            return True
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+
+        # Owner/co-owner không bị flood check
+        if not is_owner(user_id):
+            # 1. Check flood — chỉ khi tính năng anti_spam bật
+            try:
+                if mg_has_feature(chat_id, 'anti_spam'):
+                    if await mod_check_flood(update, context):
+                        return True
+            except Exception:
+                if await mod_check_flood(update, context):
+                    return True
+
+            # 2. Check filters — chỉ khi tính năng filter_kw bật
+            try:
+                if mg_has_feature(chat_id, 'filter_kw'):
+                    if await mod_check_filters(update, context):
+                        return True
+            except Exception:
+                if await mod_check_filters(update, context):
+                    return True
+
+            # 3. Check custom commands — luôn chạy nếu có
+            if await mod_check_custom_command(update, context):
+                return True
+        else:
+            # Owner vẫn trigger custom commands
+            if await mod_check_custom_command(update, context):
+                return True
+
         return False
 
     # ==================== FED CHECK KHI USER JOIN ====================
