@@ -6718,29 +6718,22 @@ try:
             try:
                 conn_m = sqlite3.connect(DB_PATH)
                 c_m = conn_m.cursor()
-                # Kiểm tra trong mod_logs xem user có đang bị mute không
-                c_m.execute('''SELECT extra FROM mod_logs 
-                               WHERE group_id=? AND target_user=? AND action IN ('mute','auto_mute','auto_mute_flood')
-                               ORDER BY created_at DESC LIMIT 1''', (chat_id, new_member.id))
-                mute_log = c_m.fetchone()
-                # Kiểm tra có unmute chưa
-                c_m.execute('''SELECT id FROM mod_logs
-                               WHERE group_id=? AND target_user=? AND action='unmute'
-                               AND created_at > (SELECT created_at FROM mod_logs 
-                                                 WHERE group_id=? AND target_user=? 
-                                                 AND action IN ('mute','auto_mute','auto_mute_flood')
-                                                 ORDER BY created_at DESC LIMIT 1)''',
-                             (chat_id, new_member.id, chat_id, new_member.id))
-                unmuted = c_m.fetchone()
+                # Lấy action cuối cùng liên quan mute/unmute của user
+                c_m.execute('''SELECT action FROM mod_logs
+                               WHERE group_id=? AND target_user=?
+                               AND action IN ('mute','auto_mute','auto_mute_flood','unmute')
+                               ORDER BY created_at DESC LIMIT 1''',
+                             (chat_id, new_member.id))
+                last_action = c_m.fetchone()
                 conn_m.close()
 
-                if mute_log and not unmuted:
+                # Nếu action cuối là mute (chưa được unmute) → re-apply
+                if last_action and last_action[0] in ('mute', 'auto_mute', 'auto_mute_flood'):
                     from telegram import ChatPermissions
-                    # Re-apply mute vĩnh viễn (until_date=None = permanent)
                     await ctx.bot.restrict_chat_member(
                         chat_id=chat_id, user_id=new_member.id,
                         permissions=ChatPermissions(can_send_messages=False))
-                    logger.info(f"🔇 Re-applied mute cho {new_member.id} sau khi rejoin {chat_id}")
+                    logger.info(f"🔇 Re-applied mute cho {new_member.id} khi rejoin {chat_id}")
                     try:
                         msg = await update.message.reply_text(
                             f"🔇 [{escape_markdown(new_member.first_name)}](tg://user?id={new_member.id}) vẫn đang bị mute\\!",
@@ -13308,21 +13301,48 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                 conn.close(); return
             correct_answer, msg_id = pending
             if user_answer == correct_answer or correct_answer == "confirmed":
-                # Đúng → bật tiếng lại
+                # Đúng → kiểm tra user có đang bị mute không trước khi restore
                 from telegram import ChatPermissions
-                try:
-                    await context.bot.restrict_chat_member(
-                        chat_id=cap_chat, user_id=cap_user,
-                        permissions=ChatPermissions(can_send_messages=True)
-                    )
-                except: pass
+                # Lấy action cuối cùng của user trong nhóm này
+                c.execute('''SELECT action FROM mod_logs
+                             WHERE group_id=? AND target_user=?
+                             AND action IN ('mute','auto_mute','auto_mute_flood','unmute')
+                             ORDER BY created_at DESC LIMIT 1''', (cap_chat, cap_user))
+                last_mod = c.fetchone()
+                is_muted = last_mod and last_mod[0] in ('mute', 'auto_mute', 'auto_mute_flood')
+
                 c.execute("DELETE FROM mod_captcha_pending WHERE group_id=? AND user_id=?", (cap_chat, cap_user))
                 conn.commit(); conn.close()
                 try:
                     await context.bot.delete_message(chat_id=cap_chat, message_id=msg_id)
                 except: pass
-                await context.bot.send_message(cap_chat,
-                    f"✅ `{cap_user}` đã xác nhận CAPTCHA thành công!", parse_mode=ParseMode.MARKDOWN)
+
+                if is_muted:
+                    # User đang bị mute → giữ nguyên mute, không restore
+                    try:
+                        await context.bot.restrict_chat_member(
+                            chat_id=cap_chat, user_id=cap_user,
+                            permissions=ChatPermissions(can_send_messages=False))
+                    except: pass
+                    msg = await context.bot.send_message(
+                        cap_chat,
+                        f"🔇 `{cap_user}` đã xác nhận CAPTCHA nhưng vẫn đang bị mute\\!",
+                        parse_mode=ParseMode.MARKDOWN)
+                    asyncio.create_task(auto_delete_message(context, cap_chat, msg.message_id, 10))
+                else:
+                    # Không bị mute → restore quyền bình thường
+                    try:
+                        chat_info = await context.bot.get_chat(cap_chat)
+                        default_perms = chat_info.permissions if chat_info.permissions else ChatPermissions(can_send_messages=True)
+                        await context.bot.restrict_chat_member(
+                            chat_id=cap_chat, user_id=cap_user,
+                            permissions=default_perms)
+                    except: pass
+                    msg = await context.bot.send_message(
+                        cap_chat,
+                        f"✅ `{cap_user}` đã xác nhận CAPTCHA thành công\\!",
+                        parse_mode=ParseMode.MARKDOWN)
+                    asyncio.create_task(auto_delete_message(context, cap_chat, msg.message_id, 10))
             else:
                 # Sai → kick
                 c.execute("DELETE FROM mod_captcha_pending WHERE group_id=? AND user_id=?", (cap_chat, cap_user))
