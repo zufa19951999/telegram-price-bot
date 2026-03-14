@@ -11682,6 +11682,9 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                 chat_id=target_chat_id, user_id=target_id,
                 permissions=default_perms)
             mod_log(target_chat_id, operator_id, target_id, "unmute")
+            # Reset flood state để user bị track lại từ đầu
+            _flood_tracker.pop((target_chat_id, target_id), None)
+            _flood_warned.pop((target_chat_id, target_id), None)
             suffix = f"\n📌 Nhóm: `{target_chat_id}`" if from_master else ""
             await update.message.reply_text(
                 f"🔊 Đã gỡ mute cho `{target_id}`{suffix}\n🕐 {format_vn_time()}",
