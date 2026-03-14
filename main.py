@@ -11995,7 +11995,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         _flood_tracker[key] = [t for t in _flood_tracker[key] if now - t < interval_sec]
         _flood_tracker[key].append(now)
 
-        logger.debug(f"🌊 Flood check {user_id}@{chat_id}: {len(_flood_tracker[key])}/{max_msgs} trong {interval_sec}s")
+        logger.info(f"🌊 Flood check {user_id}@{chat_id}: {len(_flood_tracker[key])}/{max_msgs} trong {interval_sec}s | enabled={enabled}")
 
         if len(_flood_tracker[key]) >= max_msgs:
             _flood_tracker[key] = []
@@ -13235,30 +13235,20 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         chat_type = update.effective_chat.type
         if chat_type not in ['group', 'supergroup']:
             return False
-        chat_id = update.effective_chat.id
         user_id = update.effective_user.id
 
         # Owner/co-owner không bị flood check
         if not is_owner(user_id):
-            # 1. Check flood — chỉ khi tính năng anti_spam bật
-            try:
-                if mg_has_feature(chat_id, 'anti_spam'):
-                    if await mod_check_flood(update, context):
-                        return True
-            except Exception:
-                if await mod_check_flood(update, context):
-                    return True
+            # 1. Flood — chạy độc lập, chỉ cần /setflood on
+            #    Không phụ thuộc vào hệ thống multi-group feature
+            if await mod_check_flood(update, context):
+                return True
 
-            # 2. Check filters — chỉ khi tính năng filter_kw bật
-            try:
-                if mg_has_feature(chat_id, 'filter_kw'):
-                    if await mod_check_filters(update, context):
-                        return True
-            except Exception:
-                if await mod_check_filters(update, context):
-                    return True
+            # 2. Filter từ khóa — chạy độc lập, chỉ cần có /filter đã setup
+            if await mod_check_filters(update, context):
+                return True
 
-            # 3. Check custom commands — luôn chạy nếu có
+            # 3. Custom commands
             if await mod_check_custom_command(update, context):
                 return True
         else:
