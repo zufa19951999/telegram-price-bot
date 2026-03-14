@@ -11689,10 +11689,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         try:
             await context.bot.restrict_chat_member(
                 chat_id=chat_id, user_id=target_id,
-                permissions=ChatPermissions(
-                    can_send_messages=True, can_send_media_messages=True,
-                    can_send_other_messages=True, can_add_web_page_previews=True
-                )
+                permissions=ChatPermissions(can_send_messages=True)
             )
             mod_log(chat_id, user_id, target_id, "unmute")
             await update.message.reply_text(f"🔊 Đã bật tiếng `{target_id}`", parse_mode=ParseMode.MARKDOWN)
@@ -12024,12 +12021,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                     until = datetime.utcnow() + timedelta(seconds=mute_duration)
                     await context.bot.restrict_chat_member(
                         chat_id=chat_id, user_id=user_id,
-                        permissions=ChatPermissions(
-                            can_send_messages=False,
-                            can_send_media_messages=False,
-                            can_send_polls=False,
-                            can_send_other_messages=False,
-                        ),
+                        permissions=ChatPermissions(can_send_messages=False),
                         until_date=until)
                     mod_log(chat_id, 0, user_id, "auto_mute_flood")
                     # Tính thời gian hiển thị
@@ -13157,10 +13149,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                 try:
                     await context.bot.restrict_chat_member(
                         chat_id=cap_chat, user_id=cap_user,
-                        permissions=ChatPermissions(
-                            can_send_messages=True, can_send_media_messages=True,
-                            can_send_other_messages=True, can_add_web_page_previews=True
-                        )
+                        permissions=ChatPermissions(can_send_messages=True)
                     )
                 except: pass
                 c.execute("DELETE FROM mod_captcha_pending WHERE group_id=? AND user_id=?", (cap_chat, cap_user))
