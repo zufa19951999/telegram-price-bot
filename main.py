@@ -10733,9 +10733,9 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         master_id = mg_get_master_of_child(target_id)
         if not is_owner(user_id) and not mg_is_master(chat_id) and chat_id != master_id:
             await update.message.reply_text("❌ Không có quyền!"); return
-        await _mg_send_features_panel(update, target_id, user_id)
+        await _mg_send_features_panel(update, target_id, user_id, from_command=True)
 
-    async def _mg_send_features_panel(update_or_query, target_group_id, user_id):
+    async def _mg_send_features_panel(update_or_query, target_group_id, user_id, from_command=False):
         features = mg_get_features(target_group_id)
         categories = {}
         for key, meta in FEATURE_CATALOG.items():
@@ -10766,9 +10766,11 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                f"Đang bật: *{enabled_count}*/{len(FEATURE_CATALOG)}\n\n"
                f"Nhấn để bật/tắt:")
         markup = InlineKeyboardMarkup(keyboard)
-        if hasattr(update_or_query, 'message'):
+        if from_command:
+            # Gọi từ lệnh /features → reply tin mới
             await update_or_query.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
         else:
+            # Gọi từ callback (tick toggle/preset) → edit tin cũ, KHÔNG tạo tin mới
             await safe_edit_message(update_or_query, msg, reply_markup=markup)
 
     async def mg_crossban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
