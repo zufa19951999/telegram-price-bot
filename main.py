@@ -6662,10 +6662,23 @@ try:
         except Exception as e:
             await msg.edit_text(f"❌ Lỗi: {e}")
 
+    async def left_chat_member(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Xóa thông báo hệ thống khi user thoát nhóm"""
+        try:
+            asyncio.create_task(auto_delete_message(ctx, update.effective_chat.id, update.message.message_id, 3))
+        except Exception:
+            pass
+
     @auto_update_user
     async def new_chat_members(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         chat_id = update.effective_chat.id
         bot_id = ctx.bot.id
+
+        # Xóa thông báo hệ thống "X đã vào nhóm" sau 3 giây
+        try:
+            asyncio.create_task(auto_delete_message(ctx, chat_id, update.message.message_id, 3))
+        except Exception:
+            pass
 
         for new_member in update.message.new_chat_members:
             await update_user_info_async(new_member)
@@ -12270,23 +12283,40 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         conn.commit(); conn.close()
         await update.message.reply_text("✅ Đã tắt tin chào mừng.")
 
+    _welcome_msg_ids = {}  # {group_id: message_id} — lưu tin chào mừng cuối cùng mỗi nhóm
+
     async def mod_send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE, member):
-        """Gửi tin chào mừng tùy chỉnh"""
+        """Gửi tin chào mừng, xóa tin cũ nếu có, tự xóa sau 30 giây"""
         chat_id = update.effective_chat.id
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("SELECT message, enabled FROM mod_welcome WHERE group_id=?", (chat_id,))
         row = c.fetchone(); conn.close()
         if not row or not row[1]:
-            return  # Không có hoặc tắt
+            return
         try:
             chat = update.effective_chat
             count = await context.bot.get_chat_member_count(chat_id)
-            msg = row[0].replace('{name}', member.first_name or "Bạn") \
-                        .replace('{id}', str(member.id)) \
-                        .replace('{group}', chat.title or "nhóm") \
-                        .replace('{count}', str(count))
-            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+            msg_text = row[0].replace('{name}', member.first_name or "Bạn") \
+                             .replace('{id}', str(member.id)) \
+                             .replace('{group}', chat.title or "nhóm") \
+                             .replace('{count}', str(count))
+
+            # Xóa tin chào mừng cũ nếu có (user khác vừa vào trước đó)
+            old_msg_id = _welcome_msg_ids.get(chat_id)
+            if old_msg_id:
+                try:
+                    await context.bot.delete_message(chat_id=chat_id, message_id=old_msg_id)
+                except Exception:
+                    pass
+
+            # Gửi tin chào mừng mới
+            sent = await update.message.reply_text(msg_text, parse_mode=ParseMode.MARKDOWN)
+            _welcome_msg_ids[chat_id] = sent.message_id
+
+            # Tự xóa sau 30 giây
+            asyncio.create_task(auto_delete_message(context, chat_id, sent.message_id, 30))
+
         except Exception as e:
             logger.error(f"❌ mod_send_welcome: {e}")
 
@@ -13773,6 +13803,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             app.add_handler(CommandHandler("sells", sells_command))
             app.add_handler(CommandHandler("addsell", addsell_command))
             app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_chat_members))
+            app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, left_chat_member))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
             app.add_handler(CallbackQueryHandler(handle_sell_confirmation, pattern="^(confirm_sell_|cancel_sell)"))
             app.add_handler(CallbackQueryHandler(handle_callback))
@@ -13850,3 +13881,4 @@ except Exception as e:
     logger.critical(f"💥 LỖI NGHIÊM TRỌNG: {e}", exc_info=True)
     time.sleep(10)
     os.execv(sys.executable, ['python'] + sys.argv)
+
