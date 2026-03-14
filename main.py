@@ -11486,7 +11486,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             logger.error(f"❌ mod_init_tables: {e}")
 
     # Flood tracking trong RAM
-    _flood_tracker = {}       # {(group_id, user_id): [timestamps]}
+    _flood_tracker = {}       # {(group_id, user_id): [(timestamp, message_id)]}
     _flood_config_cache = {}  # {group_id: (enabled, max_msgs, interval_sec, action, mute_duration, cached_at)}
     _flood_warned = {}        # {(group_id, user_id): warned_at} — đã cảnh báo lần 1
 
@@ -12079,25 +12079,35 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         if key not in _flood_tracker:
             _flood_tracker[key] = []
 
-        # Xóa timestamps cũ ngoài cửa sổ thời gian
-        _flood_tracker[key] = [t for t in _flood_tracker[key] if now - t < interval_sec]
-        _flood_tracker[key].append(now)
+        # Xóa entries cũ ngoài cửa sổ thời gian, giữ lại (timestamp, msg_id)
+        msg_id = update.message.message_id
+        _flood_tracker[key] = [(t, mid) for t, mid in _flood_tracker[key] if now - t < interval_sec]
+        count = len(_flood_tracker[key])  # Số tin TRƯỚC khi thêm tin này
+        _flood_tracker[key].append((now, msg_id))
 
-        count = len(_flood_tracker[key])
-        logger.info(f"🌊 Flood check {user_id}@{chat_id}: {count}/{max_msgs} trong {interval_sec}s")
+        logger.info(f"🌊 Flood check {user_id}@{chat_id}: {count+1}/{max_msgs} trong {interval_sec}s")
 
-        # ── BƯỚC 1: Cảnh báo lần 1 khi đạt ngưỡng ──────────────────────
+        # Hàm xóa tất cả tin trong cửa sổ thời gian
+        async def delete_all_flood_msgs():
+            for _, mid in _flood_tracker.get(key, []):
+                try:
+                    await context.bot.delete_message(chat_id=chat_id, message_id=mid)
+                except Exception:
+                    pass
+
+        # Chưa vượt ngưỡng → cho qua
+        if count < max_msgs - 1:
+            return False
+
         warn_key = (chat_id, user_id)
         already_warned = warn_key in _flood_warned and now - _flood_warned[warn_key] < 30
 
-        if count >= max_msgs and not already_warned:
-            # Lần đầu vượt ngưỡng → cảnh báo, KHÔNG reset đếm
-            # Chỉ đánh dấu đã warn — tin tiếp theo vượt ngưỡng sẽ bị xử lý ngay
+        # ── BƯỚC 1: Đạt ngưỡng lần đầu → xóa tất cả + cảnh báo ─────────
+        if not already_warned:
             _flood_warned[warn_key] = now
-            try:
-                await update.message.delete()
-            except Exception:
-                pass
+            # Xóa tất cả tin nhắn của user trong 5 giây
+            await delete_all_flood_msgs()
+            _flood_tracker[key] = []
             try:
                 warn_msg = await update.effective_chat.send_message(
                     f"⚠️ [{update.effective_user.first_name}](tg://user?id={user_id}) Chậm thôi bạn ơi\\! "
@@ -12108,52 +12118,52 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                 logger.error(f"❌ Flood warning error: {e}")
             return True
 
-        # ── BƯỚC 2: Đã cảnh báo, vẫn gửi thêm tin → xử lý ngay ─────────
-        if count >= max_msgs and already_warned:
-            _flood_tracker[key] = []
-            _flood_warned.pop(warn_key, None)
-            logger.info(f"🌊 FLOOD ACTION: {user_id} @ {chat_id} → {action} ({mute_duration}s)")
-            try:
-                try:
-                    await update.message.delete()
-                except Exception:
-                    pass
-                if action == 'ban':
-                    await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
-                    mod_log(chat_id, 0, user_id, "auto_ban_flood")
-                    msg = await update.effective_chat.send_message(
-                        f"🚫 [{update.effective_user.first_name}](tg://user?id={user_id}) bị *ban* do tiếp tục spam\\!",
-                        parse_mode=ParseMode.MARKDOWN)
-                    asyncio.create_task(auto_delete_message(context, chat_id, msg.message_id, 10))
-                elif action == 'kick':
-                    await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
-                    await context.bot.unban_chat_member(chat_id=chat_id, user_id=user_id)
-                    mod_log(chat_id, 0, user_id, "auto_kick_flood")
-                    msg = await update.effective_chat.send_message(
-                        f"👢 [{update.effective_user.first_name}](tg://user?id={user_id}) bị *kick* do tiếp tục spam\\!",
-                        parse_mode=ParseMode.MARKDOWN)
-                    asyncio.create_task(auto_delete_message(context, chat_id, msg.message_id, 10))
-                else:  # mute
-                    from telegram import ChatPermissions
-                    until = datetime.utcnow() + timedelta(seconds=mute_duration)
-                    await context.bot.restrict_chat_member(
-                        chat_id=chat_id, user_id=user_id,
-                        permissions=ChatPermissions(can_send_messages=False),
-                        until_date=until)
-                    mod_log(chat_id, 0, user_id, "auto_mute_flood")
-                    if mute_duration < 60:
-                        dur_text = f"{mute_duration} giây"
-                    elif mute_duration < 3600:
-                        dur_text = f"{mute_duration // 60} phút"
-                    else:
-                        dur_text = f"{mute_duration // 3600} giờ"
-                    msg = await update.effective_chat.send_message(
-                        f"🔇 [{update.effective_user.first_name}](tg://user?id={user_id}) bị *mute {dur_text}* do tiếp tục spam\\!",
-                        parse_mode=ParseMode.MARKDOWN)
-                    asyncio.create_task(auto_delete_message(context, chat_id, msg.message_id, 10))
-            except Exception as e:
-                logger.error(f"❌ Flood action error: {e}")
-            return True
+        # ── BƯỚC 2: Đã cảnh báo vẫn spam → xóa tất cả + xử lý ──────────
+        await delete_all_flood_msgs()
+        _flood_tracker[key] = []
+        _flood_warned.pop(warn_key, None)
+        logger.info(f"🌊 FLOOD ACTION: {user_id} @ {chat_id} → {action} ({mute_duration}s)")
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        try:
+            if action == 'ban':
+                await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
+                mod_log(chat_id, 0, user_id, "auto_ban_flood")
+                msg = await update.effective_chat.send_message(
+                    f"🚫 [{update.effective_user.first_name}](tg://user?id={user_id}) bị *ban* do tiếp tục spam\\!",
+                    parse_mode=ParseMode.MARKDOWN)
+                asyncio.create_task(auto_delete_message(context, chat_id, msg.message_id, 10))
+            elif action == 'kick':
+                await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
+                await context.bot.unban_chat_member(chat_id=chat_id, user_id=user_id)
+                mod_log(chat_id, 0, user_id, "auto_kick_flood")
+                msg = await update.effective_chat.send_message(
+                    f"👢 [{update.effective_user.first_name}](tg://user?id={user_id}) bị *kick* do tiếp tục spam\\!",
+                    parse_mode=ParseMode.MARKDOWN)
+                asyncio.create_task(auto_delete_message(context, chat_id, msg.message_id, 10))
+            else:  # mute
+                from telegram import ChatPermissions
+                until = datetime.utcnow() + timedelta(seconds=mute_duration)
+                await context.bot.restrict_chat_member(
+                    chat_id=chat_id, user_id=user_id,
+                    permissions=ChatPermissions(can_send_messages=False),
+                    until_date=until)
+                mod_log(chat_id, 0, user_id, "auto_mute_flood")
+                if mute_duration < 60:
+                    dur_text = f"{mute_duration} giây"
+                elif mute_duration < 3600:
+                    dur_text = f"{mute_duration // 60} phút"
+                else:
+                    dur_text = f"{mute_duration // 3600} giờ"
+                msg = await update.effective_chat.send_message(
+                    f"🔇 [{update.effective_user.first_name}](tg://user?id={user_id}) bị *mute {dur_text}* do tiếp tục spam\\!",
+                    parse_mode=ParseMode.MARKDOWN)
+                asyncio.create_task(auto_delete_message(context, chat_id, msg.message_id, 10))
+        except Exception as e:
+            logger.error(f"❌ Flood action error: {e}")
+        return True
 
         return False
 
