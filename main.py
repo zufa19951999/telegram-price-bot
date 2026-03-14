@@ -11498,26 +11498,271 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             logger.error(f"❌ mod_log: {e}")
 
     def mod_is_admin(group_id, user_id):
-        """Kiểm tra user có quyền mod trong nhóm không:
-        - Owner bot / co-owner
-        - Group owner (đã /setupgroup)
-        - Có quyền manage trong bảng permissions
-        Lưu ý: admin Telegram thực sự được check async trong mod_check_admin
-        """
+        """Kiểm tra user có quyền mod trong nhóm không"""
         return (is_owner(user_id)
                 or is_group_owner(group_id, user_id)
                 or check_permission(group_id, user_id, 'manage'))
+
+    async def mod_resolve_target_group(update: Update, context, require_master=True):
+        """
+        Parse group_id từ args khi thao tác từ nhóm tổng.
+        Cú pháp: /lệnh [group_id] [user_id/reply] [...]
+        - Nếu đang trong nhóm tổng và args[0] là số âm → đó là group_id của nhóm con
+        - Nếu đang trong nhóm bình thường → target_chat_id = chat hiện tại
+        Returns: (target_chat_id, remaining_args, from_master)
+        """
+        chat_id = update.effective_chat.id
+        args = list(context.args) if context.args else []
+        is_master = mg_is_master(chat_id)
+
+        # Nếu đang trong nhóm tổng và arg đầu tiên là group_id (số âm)
+        if is_master and args and args[0].lstrip('-').isdigit() and args[0].startswith('-'):
+            target_chat_id = int(args[0])
+            remaining = args[1:]
+            return target_chat_id, remaining, True
+
+        # Không phải nhóm tổng hoặc không có group_id → thao tác tại chỗ
+        return chat_id, args, False
+
+    async def mod_ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/ban [group_id] [reply/user_id] [lý do]"""
+        if not await mod_check_admin(update, 'kick_mute'): return
+        operator_id = update.effective_user.id
+
+        target_chat_id, args, from_master = await mod_resolve_target_group(update, context)
+        context.args = args
+
+        target_id, _ = await mod_get_target(update, context)
+        if not target_id:
+            await update.message.reply_text(
+                "❌ Cách dùng:\n"
+                "• Trong nhóm: `/ban [user_id] [lý do]`\n"
+                "• Từ nhóm tổng: `/ban [group_id] [user_id] [lý do]`",
+                parse_mode=ParseMode.MARKDOWN); return
+
+        reason = " ".join(a for a in args if a != str(target_id)) or "Không có lý do"
+        try:
+            await context.bot.ban_chat_member(chat_id=target_chat_id, user_id=target_id)
+            mod_log(target_chat_id, operator_id, target_id, "ban", reason)
+            suffix = f"\n📌 Nhóm: `{target_chat_id}`" if from_master else ""
+            await update.message.reply_text(
+                f"🚫 *ĐÃ BAN*\n━━━━━━━━━━━━━━━━\n\n"
+                f"👤 User: `{target_id}`\n"
+                f"📝 Lý do: {reason}\n"
+                f"👮 Admin: {update.effective_user.first_name}"
+                f"{suffix}\n🕐 {format_vn_time()}", parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Lỗi ban: {e}")
+
+    async def mod_unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/unban [group_id] [user_id]"""
+        if not await mod_check_admin(update, 'kick_mute'): return
+        operator_id = update.effective_user.id
+
+        target_chat_id, args, from_master = await mod_resolve_target_group(update, context)
+        context.args = args
+
+        target_id, _ = await mod_get_target(update, context)
+        if not target_id:
+            await update.message.reply_text(
+                "❌ Cách dùng:\n"
+                "• Trong nhóm: `/unban [user_id]`\n"
+                "• Từ nhóm tổng: `/unban [group_id] [user_id]`",
+                parse_mode=ParseMode.MARKDOWN); return
+        try:
+            await context.bot.unban_chat_member(chat_id=target_chat_id, user_id=target_id)
+            mod_log(target_chat_id, operator_id, target_id, "unban")
+            suffix = f"\n📌 Nhóm: `{target_chat_id}`" if from_master else ""
+            await update.message.reply_text(
+                f"✅ Đã gỡ ban `{target_id}`{suffix}\n🕐 {format_vn_time()}",
+                parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Lỗi unban: {e}")
+
+    async def mod_kick_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/kick [group_id] [reply/user_id] [lý do]"""
+        if not await mod_check_admin(update, 'kick_mute'): return
+        operator_id = update.effective_user.id
+
+        target_chat_id, args, from_master = await mod_resolve_target_group(update, context)
+        context.args = args
+
+        target_id, _ = await mod_get_target(update, context)
+        if not target_id:
+            await update.message.reply_text(
+                "❌ Cách dùng:\n"
+                "• Trong nhóm: `/kick [user_id] [lý do]`\n"
+                "• Từ nhóm tổng: `/kick [group_id] [user_id] [lý do]`",
+                parse_mode=ParseMode.MARKDOWN); return
+        reason = " ".join(a for a in args if a != str(target_id)) or "Không có lý do"
+        try:
+            await context.bot.ban_chat_member(chat_id=target_chat_id, user_id=target_id)
+            await context.bot.unban_chat_member(chat_id=target_chat_id, user_id=target_id)
+            mod_log(target_chat_id, operator_id, target_id, "kick", reason)
+            suffix = f"\n📌 Nhóm: `{target_chat_id}`" if from_master else ""
+            await update.message.reply_text(
+                f"👢 *ĐÃ KICK*\n\n👤 User: `{target_id}`\n📝 Lý do: {reason}"
+                f"{suffix}\n🕐 {format_vn_time()}",
+                parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Lỗi kick: {e}")
+
+    async def mod_mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/mute [group_id] [reply/user_id] [thời gian: 1h/30m/2d] [lý do]"""
+        if not await mod_check_admin(update, 'kick_mute'): return
+        operator_id = update.effective_user.id
+
+        target_chat_id, args, from_master = await mod_resolve_target_group(update, context)
+        context.args = args
+
+        target_id, _ = await mod_get_target(update, context)
+        if not target_id:
+            await update.message.reply_text(
+                "❌ Cách dùng:\n"
+                "• Trong nhóm: `/mute [user_id] [thời gian] [lý do]`\n"
+                "• Từ nhóm tổng: `/mute [group_id] [user_id] [thời gian] [lý do]`\n\n"
+                "Ví dụ: `/mute 30m Spam` hoặc `/mute -100123 456 1h Spam`",
+                parse_mode=ParseMode.MARKDOWN); return
+
+        # Parse thời gian
+        import re as _re
+        duration_sec = None
+        duration_str = "vĩnh viễn"
+        time_arg = None
+        for arg in (args or []):
+            m = _re.match(r'^(\d+)(s|m|h|d)$', arg.lower())
+            if m:
+                val, unit = int(m.group(1)), m.group(2)
+                multipliers = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}
+                duration_sec = val * multipliers[unit]
+                duration_str = f"{val}{'giây' if unit=='s' else 'phút' if unit=='m' else 'giờ' if unit=='h' else 'ngày'}"
+                time_arg = arg
+                break
+        reason_parts = [a for a in (args or []) if a != time_arg and a != str(target_id)]
+        reason = " ".join(reason_parts) or "Không có lý do"
+
+        from telegram import ChatPermissions
+        until_date = datetime.utcnow() + timedelta(seconds=duration_sec) if duration_sec else None
+        try:
+            await context.bot.restrict_chat_member(
+                chat_id=target_chat_id, user_id=target_id,
+                permissions=ChatPermissions(can_send_messages=False),
+                until_date=until_date)
+            mod_log(target_chat_id, operator_id, target_id, "mute", reason, duration_str)
+            suffix = f"\n📌 Nhóm: `{target_chat_id}`" if from_master else ""
+            await update.message.reply_text(
+                f"🔇 *ĐÃ TẮT TIẾNG*\n━━━━━━━━━━━━━━━━\n\n"
+                f"👤 User: `{target_id}`\n"
+                f"⏱ Thời gian: {duration_str}\n"
+                f"📝 Lý do: {reason}"
+                f"{suffix}\n🕐 {format_vn_time()}", parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Lỗi mute: {e}")
+
+    async def mod_unmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/unmute [group_id] [reply/user_id]"""
+        if not await mod_check_admin(update, 'kick_mute'): return
+        operator_id = update.effective_user.id
+
+        target_chat_id, args, from_master = await mod_resolve_target_group(update, context)
+        context.args = args
+
+        target_id, _ = await mod_get_target(update, context)
+        if not target_id:
+            await update.message.reply_text(
+                "❌ Cách dùng:\n"
+                "• Trong nhóm: `/unmute [user_id]`\n"
+                "• Từ nhóm tổng: `/unmute [group_id] [user_id]`",
+                parse_mode=ParseMode.MARKDOWN); return
+        from telegram import ChatPermissions
+        try:
+            chat = await context.bot.get_chat(target_chat_id)
+            default_perms = chat.permissions if chat.permissions else ChatPermissions(can_send_messages=True)
+            await context.bot.restrict_chat_member(
+                chat_id=target_chat_id, user_id=target_id,
+                permissions=default_perms)
+            mod_log(target_chat_id, operator_id, target_id, "unmute")
+            suffix = f"\n📌 Nhóm: `{target_chat_id}`" if from_master else ""
+            await update.message.reply_text(
+                f"🔊 Đã gỡ mute cho `{target_id}`{suffix}\n🕐 {format_vn_time()}",
+                parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Lỗi unmute: {e}")
+
+    async def mod_warn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/warn [group_id] [reply/user_id] [lý do]"""
+        if not await mod_check_admin(update, 'kick_mute'): return
+        operator_id = update.effective_user.id
+
+        target_chat_id, args, from_master = await mod_resolve_target_group(update, context)
+        context.args = args
+
+        target_id, target_name = await mod_get_target(update, context)
+        if not target_id:
+            await update.message.reply_text(
+                "❌ Cách dùng:\n"
+                "• Trong nhóm: `/warn [user_id] [lý do]`\n"
+                "• Từ nhóm tổng: `/warn [group_id] [user_id] [lý do]`",
+                parse_mode=ParseMode.MARKDOWN); return
+
+        reason = " ".join(a for a in args if a != str(target_id)) or "Không có lý do"
+
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT max_warns, action, mute_duration FROM mod_warn_config WHERE group_id=?", (target_chat_id,))
+        cfg = c.fetchone() or (3, 'mute', 3600)
+        max_warns, action, mute_dur = cfg
+        c.execute('''INSERT INTO mod_warns (group_id, user_id, reason, warned_by, created_at)
+                     VALUES (?, ?, ?, ?, ?)''',
+                  (target_chat_id, target_id, reason, operator_id, get_vn_time().strftime("%Y-%m-%d %H:%M:%S")))
+        c.execute("SELECT COUNT(*) FROM mod_warns WHERE group_id=? AND user_id=?", (target_chat_id, target_id))
+        total_warns = c.fetchone()[0]
+        conn.commit(); conn.close()
+        mod_log(target_chat_id, operator_id, target_id, "warn", reason, f"{total_warns}/{max_warns}")
+
+        suffix = f"\n📌 Nhóm: `{target_chat_id}`" if from_master else ""
+        msg = (f"⚠️ *CẢNH CÁO*\n━━━━━━━━━━━━━━━━\n\n"
+               f"👤 User: `{target_id}`\n"
+               f"📝 Lý do: {reason}\n"
+               f"🔢 Cảnh cáo: *{total_warns}*/{max_warns}"
+               f"{suffix}\n")
+
+        if total_warns >= max_warns:
+            msg += f"\n🚨 *ĐẠT GIỚI HẠN! Đang thực hiện: {action.upper()}*\n"
+            try:
+                if action == 'ban':
+                    await context.bot.ban_chat_member(chat_id=target_chat_id, user_id=target_id)
+                    mod_log(target_chat_id, operator_id, target_id, "auto_ban", f"Đạt {max_warns} warns")
+                elif action == 'kick':
+                    await context.bot.ban_chat_member(chat_id=target_chat_id, user_id=target_id)
+                    await context.bot.unban_chat_member(chat_id=target_chat_id, user_id=target_id)
+                    mod_log(target_chat_id, operator_id, target_id, "auto_kick", f"Đạt {max_warns} warns")
+                elif action == 'mute':
+                    from telegram import ChatPermissions
+                    until = datetime.utcnow() + timedelta(seconds=mute_dur)
+                    await context.bot.restrict_chat_member(
+                        chat_id=target_chat_id, user_id=target_id,
+                        permissions=ChatPermissions(can_send_messages=False),
+                        until_date=until)
+                    mod_log(target_chat_id, operator_id, target_id, "auto_mute", f"Đạt {max_warns} warns")
+            except Exception as e:
+                msg += f"\n❌ Lỗi: {e}\n"
+            conn2 = sqlite3.connect(DB_PATH)
+            c2 = conn2.cursor()
+            c2.execute("DELETE FROM mod_warns WHERE group_id=? AND user_id=?", (target_chat_id, target_id))
+            conn2.commit(); conn2.close()
+
+        msg += f"🕐 {format_vn_time()}"
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
     async def mod_check_admin(update: Update, feature_key: str = None) -> bool:
         """Trả về True nếu tính năng bật VÀ user là admin, ngược lại reply lỗi"""
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
 
-        # Owner bot / co-owner vượt qua mọi check
         if is_owner(user_id):
             return True
 
-        # Check tính năng có được bật không
         if feature_key:
             try:
                 if not mg_has_feature(chat_id, feature_key):
@@ -11534,17 +11779,14 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                         f"Tính năng *{fname}* hiện không được bật trong nhóm này.\n\n"
                         f"👑 Liên hệ quản trị viên nhóm tổng để bật tính năng.\n\n"
                         f"🕐 {format_vn_time()}",
-                        parse_mode=ParseMode.MARKDOWN
-                    )
+                        parse_mode=ParseMode.MARKDOWN)
                     return False
             except Exception:
                 pass
 
-        # Check quyền trong DB (owner nhóm, manage permission)
         if mod_is_admin(chat_id, user_id):
             return True
 
-        # Check admin Telegram thực sự (async — gọi Telegram API)
         try:
             member = await update.effective_chat.get_member(user_id)
             if member.status in ['administrator', 'creator']:
@@ -11570,192 +11812,6 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                 if uid:
                     return uid, username
         return None, None
-
-    # ==================== BAN / MUTE / KICK / WARN ====================
-
-    async def mod_ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """/ban [reply/user_id] [lý do] — Cấm thành viên vĩnh viễn"""
-        if not await mod_check_admin(update, 'kick_mute'): return
-        chat_id = update.effective_chat.id
-        user_id = update.effective_user.id
-        target_id, target_name = await mod_get_target(update, context)
-        if not target_id:
-            await update.message.reply_text("❌ Reply vào tin nhắn người cần ban hoặc dùng /ban [user_id]")
-            return
-        reason = " ".join(context.args[1:]) if context.args and len(context.args) > 1 else \
-                 " ".join(context.args) if context.args and not update.message.reply_to_message else "Không có lý do"
-        try:
-            await context.bot.ban_chat_member(chat_id=chat_id, user_id=target_id)
-            mod_log(chat_id, user_id, target_id, "ban", reason)
-            await update.message.reply_text(
-                f"🚫 *ĐÃ BAN*\n━━━━━━━━━━━━━━━━\n\n"
-                f"👤 User: `{target_id}`\n"
-                f"📝 Lý do: {reason}\n"
-                f"👮 Admin: {update.effective_user.first_name}\n"
-                f"🕐 {format_vn_time()}", parse_mode=ParseMode.MARKDOWN)
-        except Exception as e:
-            await update.message.reply_text(f"❌ Lỗi ban: {e}")
-
-    async def mod_unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """/unban [user_id] — Gỡ ban"""
-        if not await mod_check_admin(update, 'kick_mute'): return
-        chat_id = update.effective_chat.id
-        user_id = update.effective_user.id
-        target_id, target_name = await mod_get_target(update, context)
-        if not target_id:
-            await update.message.reply_text("❌ Dùng /unban [user_id]"); return
-        try:
-            await context.bot.unban_chat_member(chat_id=chat_id, user_id=target_id)
-            mod_log(chat_id, user_id, target_id, "unban")
-            await update.message.reply_text(f"✅ Đã gỡ ban `{target_id}`", parse_mode=ParseMode.MARKDOWN)
-        except Exception as e:
-            await update.message.reply_text(f"❌ Lỗi unban: {e}")
-
-    async def mod_kick_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """/kick [reply/user_id] [lý do] — Đuổi thành viên (có thể quay lại)"""
-        if not await mod_check_admin(update, 'kick_mute'): return
-        chat_id = update.effective_chat.id
-        user_id = update.effective_user.id
-        target_id, target_name = await mod_get_target(update, context)
-        if not target_id:
-            await update.message.reply_text("❌ Reply vào tin nhắn người cần kick"); return
-        reason = " ".join(context.args[1:]) if context.args and len(context.args) > 1 else "Không có lý do"
-        try:
-            await context.bot.ban_chat_member(chat_id=chat_id, user_id=target_id)
-            await context.bot.unban_chat_member(chat_id=chat_id, user_id=target_id)
-            mod_log(chat_id, user_id, target_id, "kick", reason)
-            await update.message.reply_text(
-                f"👢 *ĐÃ KICK*\n\n👤 User: `{target_id}`\n📝 Lý do: {reason}\n🕐 {format_vn_time()}",
-                parse_mode=ParseMode.MARKDOWN)
-        except Exception as e:
-            await update.message.reply_text(f"❌ Lỗi kick: {e}")
-
-    async def mod_mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """/mute [reply/user_id] [thời gian: 1h/30m/2d] [lý do] — Tắt tiếng"""
-        if not await mod_check_admin(update, 'kick_mute'): return
-        chat_id = update.effective_chat.id
-        user_id = update.effective_user.id
-        target_id, target_name = await mod_get_target(update, context)
-        if not target_id:
-            await update.message.reply_text(
-                "❌ Cách dùng: `/mute [reply/user_id] [thời gian] [lý do]`\n"
-                "Ví dụ: `/mute 30m Spam` hoặc reply + `/mute 2h`",
-                parse_mode=ParseMode.MARKDOWN); return
-        # Parse thời gian
-        duration_sec = None
-        duration_str = "vĩnh viễn"
-        args = context.args if not update.message.reply_to_message else context.args
-        time_arg = None
-        for arg in (args or []):
-            import re as _re
-            m = _re.match(r'^(\d+)(s|m|h|d)$', arg.lower())
-            if m:
-                val, unit = int(m.group(1)), m.group(2)
-                multipliers = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}
-                duration_sec = val * multipliers[unit]
-                duration_str = f"{val}{'giây' if unit=='s' else 'phút' if unit=='m' else 'giờ' if unit=='h' else 'ngày'}"
-                time_arg = arg
-                break
-        reason_parts = [a for a in (args or []) if a != time_arg and a != str(target_id)]
-        reason = " ".join(reason_parts) or "Không có lý do"
-        from telegram import ChatPermissions
-        until_date = None
-        if duration_sec:
-            until_date = datetime.utcnow() + timedelta(seconds=duration_sec)
-        try:
-            await context.bot.restrict_chat_member(
-                chat_id=chat_id, user_id=target_id,
-                permissions=ChatPermissions(can_send_messages=False),
-                until_date=until_date
-            )
-            mod_log(chat_id, user_id, target_id, "mute", reason, duration_str)
-            await update.message.reply_text(
-                f"🔇 *ĐÃ TẮT TIẾNG*\n━━━━━━━━━━━━━━━━\n\n"
-                f"👤 User: `{target_id}`\n"
-                f"⏱ Thời gian: {duration_str}\n"
-                f"📝 Lý do: {reason}\n"
-                f"🕐 {format_vn_time()}", parse_mode=ParseMode.MARKDOWN)
-        except Exception as e:
-            await update.message.reply_text(f"❌ Lỗi mute: {e}")
-
-    async def mod_unmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """/unmute [reply/user_id] — Bật tiếng lại"""
-        if not await mod_check_admin(update, 'kick_mute'): return
-        chat_id = update.effective_chat.id
-        user_id = update.effective_user.id
-        target_id, _ = await mod_get_target(update, context)
-        if not target_id:
-            await update.message.reply_text("❌ Reply vào tin nhắn người cần unmute"); return
-        from telegram import ChatPermissions
-        try:
-            await context.bot.restrict_chat_member(
-                chat_id=chat_id, user_id=target_id,
-                permissions=ChatPermissions(can_send_messages=True)
-            )
-            mod_log(chat_id, user_id, target_id, "unmute")
-            await update.message.reply_text(f"🔊 Đã bật tiếng `{target_id}`", parse_mode=ParseMode.MARKDOWN)
-        except Exception as e:
-            await update.message.reply_text(f"❌ Lỗi unmute: {e}")
-
-    # ==================== HỆ THỐNG CẢNH CÁO (WARN) ====================
-
-    async def mod_warn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """/warn [reply/user_id] [lý do] — Cảnh cáo thành viên"""
-        if not await mod_check_admin(update, 'kick_mute'): return
-        chat_id = update.effective_chat.id
-        user_id = update.effective_user.id
-        target_id, target_name = await mod_get_target(update, context)
-        if not target_id:
-            await update.message.reply_text("❌ Reply vào tin nhắn người cần warn"); return
-        reason = " ".join(context.args[1:]) if context.args and len(context.args) > 1 else \
-                 " ".join(context.args) if context.args and not update.message.reply_to_message else "Không có lý do"
-        # Lấy config warn
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT max_warns, action, mute_duration FROM mod_warn_config WHERE group_id=?", (chat_id,))
-        cfg = c.fetchone() or (3, 'mute', 3600)
-        max_warns, action, mute_dur = cfg
-        # Thêm warn
-        c.execute('''INSERT INTO mod_warns (group_id, user_id, reason, warned_by, created_at)
-                     VALUES (?, ?, ?, ?, ?)''',
-                  (chat_id, target_id, reason, user_id, get_vn_time().strftime("%Y-%m-%d %H:%M:%S")))
-        # Đếm tổng warn
-        c.execute("SELECT COUNT(*) FROM mod_warns WHERE group_id=? AND user_id=?", (chat_id, target_id))
-        total_warns = c.fetchone()[0]
-        conn.commit(); conn.close()
-        mod_log(chat_id, user_id, target_id, "warn", reason, f"{total_warns}/{max_warns}")
-        msg = (f"⚠️ *CẢNH CÁO*\n━━━━━━━━━━━━━━━━\n\n"
-               f"👤 User: `{target_id}`\n"
-               f"📝 Lý do: {reason}\n"
-               f"🔢 Cảnh cáo: *{total_warns}*/{max_warns}\n")
-        # Kiểm tra đạt max warn
-        if total_warns >= max_warns:
-            msg += f"\n🚨 *ĐẠT GIỚI HẠN! Đang thực hiện: {action.upper()}*\n"
-            try:
-                if action == 'ban':
-                    await context.bot.ban_chat_member(chat_id=chat_id, user_id=target_id)
-                    mod_log(chat_id, user_id, target_id, "auto_ban", f"Đạt {max_warns} warns")
-                elif action == 'kick':
-                    await context.bot.ban_chat_member(chat_id=chat_id, user_id=target_id)
-                    await context.bot.unban_chat_member(chat_id=chat_id, user_id=target_id)
-                    mod_log(chat_id, user_id, target_id, "auto_kick", f"Đạt {max_warns} warns")
-                elif action == 'mute':
-                    from telegram import ChatPermissions
-                    until = datetime.utcnow() + timedelta(seconds=mute_dur)
-                    await context.bot.restrict_chat_member(
-                        chat_id=chat_id, user_id=target_id,
-                        permissions=ChatPermissions(can_send_messages=False),
-                        until_date=until)
-                    mod_log(chat_id, user_id, target_id, "auto_mute", f"Đạt {max_warns} warns")
-            except Exception as e:
-                msg += f"\n❌ Lỗi thực hiện action: {e}\n"
-            # Reset warns sau khi xử lý
-            conn2 = sqlite3.connect(DB_PATH)
-            c2 = conn2.cursor()
-            c2.execute("DELETE FROM mod_warns WHERE group_id=? AND user_id=?", (chat_id, target_id))
-            conn2.commit(); conn2.close()
-        msg += f"\n🕐 {format_vn_time()}"
-        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
     async def mod_unwarn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/unwarn [reply/user_id] — Xóa 1 cảnh cáo"""
