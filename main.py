@@ -915,6 +915,19 @@ try:
 
             conn.commit()
             logger.info(f"✅ Database initialized with sell_history + multi-group tables")
+
+            # Migration: thêm cột mute_duration vào mod_flood_config nếu chưa có
+            c.execute("PRAGMA table_info(mod_flood_config)")
+            flood_cols = [col[1] for col in c.fetchall()]
+            if 'mute_duration' not in flood_cols and flood_cols:
+                c.execute("ALTER TABLE mod_flood_config ADD COLUMN mute_duration INTEGER DEFAULT 300")
+                logger.info("✅ Migration: thêm cột mute_duration vào mod_flood_config")
+
+            # Migration: tạo bảng co_owners nếu chưa có
+            c.execute('''CREATE TABLE IF NOT EXISTS co_owners
+                         (user_id INTEGER PRIMARY KEY, username TEXT, added_by INTEGER, added_at TEXT)''')
+
+            conn.commit()
             return True
         except Exception as e:
             logger.error(f"❌ Lỗi database: {e}")
@@ -3635,30 +3648,73 @@ try:
     @auto_update_user
     async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        chat_type = update.effective_chat.type
         lang = get_lang(user_id)
-        
-        if update.effective_chat.type in ['group', 'supergroup']:
-            if lang == 'ZH':
-                welcome_msg = ("🚀 *加密货币与支出管理机器人*\n\n"
-                               "🤖 机器人已就绪！\n\n"
-                               "*群组命令:*\n"
-                               "• `/s btc eth` - 查看价格\n"
-                               "• `/usdt` - USDT/VND汇率\n"
-                               "• `/buy btc 0.5 40000` - 购买\n"
-                               "• `/sell btc 0.2` - 出售\n\n"
-                               "📱 *向下滑动显示菜单*\n"
-                               f"🕐 {format_vn_time()}")
+        owner = is_owner(user_id)
+
+        if chat_type in ['group', 'supergroup']:
+            # Lấy tính năng đang bật của nhóm này
+            def feat(key):
+                if owner: return True
+                try: return mg_has_feature(chat_id, key)
+                except: return True
+
+            # Xây dựng danh sách lệnh theo tính năng bật
+            lines = []
+            if feat('crypto_view'):
+                lines.append("• `/s btc eth` — Xem giá coin")
+                lines.append("• `/usdt` — Tỷ giá USDT/VND")
+            if feat('crypto_buy'):
+                lines.append("• `/buy btc 0.5 40000` — Mua coin")
+            if feat('crypto_sell'):
+                lines.append("• `/sell btc 0.2` — Bán coin")
+            if feat('crypto_port'):
+                lines.append("• `/view` — Xem danh mục đầu tư")
+            if feat('crypto_profit'):
+                lines.append("• `/stats` — Thống kê lợi nhuận")
+            if feat('crypto_alert'):
+                lines.append("• `/alert BTC above 50000` — Cảnh báo giá")
+            if feat('expense_add'):
+                lines.append("• `tn 500k` / `ct 1 50k` — Ghi thu/chi")
+            if feat('expense_view'):
+                lines.append("• `/balance` — Cân đối thu chi")
+            if feat('kick_mute') and check_permission(chat_id, user_id, 'manage'):
+                lines.append("• `/mod` — Quản lý nhóm")
+
+            if not lines:
+                lines.append("• `/s btc` — Xem giá coin (lệnh công khai)")
+
+            cmd_text = "\n".join(lines)
+
+            # Kiểm tra nhóm có thuộc hệ thống không
+            is_master = mg_is_master(chat_id)
+            master_id = mg_get_master_of_child(chat_id)
+            if is_master:
+                group_role = "🏢 *Nhóm tổng*"
+            elif master_id:
+                group_role = "📌 *Nhóm con*"
             else:
-                welcome_msg = ("🚀 *ĐẦU TƯ COIN & QUẢN LÝ CHI TIÊU*\n\n"
-                               "🤖 Bot đã sẵn sàng!\n\n"
-                               "*Các lệnh trong nhóm:*\n"
-                               "• `/s btc eth` - Xem giá coin\n"
-                               "• `/usdt` - Tỷ giá USDT/VND\n"
-                               "• `/buy btc 0.5 40000` - Mua coin\n"
-                               "• `/sell btc 0.2` - Bán coin\n\n"
-                               "📱 *Vuốt xuống để hiện menu*\n"
-                               f"🕐 {format_vn_time()}")
-            await update.message.reply_text(welcome_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=get_main_keyboard(user_id))
+                group_role = ""
+
+            if lang == 'ZH':
+                welcome_msg = (
+                    f"🚀 *加密货币与支出管理机器人*\n"
+                    f"{'  ' + group_role if group_role else ''}\n\n"
+                    f"*本群可用命令:*\n{cmd_text}\n\n"
+                    f"📱 *向下滑动显示菜单*\n"
+                    f"🕐 {format_vn_time()}"
+                )
+            else:
+                welcome_msg = (
+                    f"🚀 *ĐẦU TƯ COIN & QUẢN LÝ CHI TIÊU*\n"
+                    + (f"{group_role}\n" if group_role else "") +
+                    f"\n*Lệnh khả dụng trong nhóm này:*\n{cmd_text}\n\n"
+                    f"📱 *Vuốt xuống để hiện menu*\n"
+                    f"🕐 {format_vn_time()}"
+                )
+            await update.message.reply_text(welcome_msg, parse_mode=ParseMode.MARKDOWN,
+                                             reply_markup=get_main_keyboard(user_id))
         else:
             if lang == 'ZH':
                 welcome_msg = ("🚀 *加密货币与支出管理机器人*\n\n"
@@ -3678,11 +3734,13 @@ try:
                                "• Ghi chép thu/chi\n• Đa tiền tệ\n• Quản lý ngân sách\n• Báo cáo ngày/tháng/năm\n\n"
                                f"🕐 *Hiện tại:* `{format_vn_time()}`\n\n"
                                "👇 *Chọn chức năng bên dưới*")
-            await update.message.reply_text(welcome_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=get_main_keyboard(user_id))
+            await update.message.reply_text(welcome_msg, parse_mode=ParseMode.MARKDOWN,
+                                             reply_markup=get_main_keyboard(user_id))
 
     @auto_update_user
     async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("👇 *Chọn chức năng bên dưới*", parse_mode=ParseMode.MARKDOWN, reply_markup=get_main_keyboard())
+        await update.message.reply_text("👇 *Chọn chức năng bên dưới*", parse_mode=ParseMode.MARKDOWN,
+                                        reply_markup=get_main_keyboard(update.effective_user.id))
 
     @auto_update_user
     async def hide_keyboard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -3723,32 +3781,73 @@ try:
     async def help_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
-        
+        chat_type = update.effective_chat.type
+        owner = is_owner(user_id)
+
+        def feat(key):
+            if owner or chat_type == 'private': return True
+            try: return mg_has_feature(chat_id, key)
+            except: return True
+
+        def perm(p):
+            if owner or chat_type == 'private': return True
+            return check_permission(chat_id, user_id, p)
+
+        sections = []
+
+        # Crypto
+        crypto_lines = []
+        if feat('crypto_view'):
+            crypto_lines += ["• `/s btc eth sol` — Xem giá coin", "• `/usdt` — Tỷ giá USDT/VND"]
+        if feat('crypto_buy') and perm('edit'):
+            crypto_lines += ["• `/buy btc 0.5 40000` — Mua coin", "• `/edit [id] [sl] [giá]` — Sửa giao dịch", "• `/del [id]` — Xóa giao dịch"]
+        if feat('crypto_sell') and perm('edit'):
+            crypto_lines += ["• `/sell btc 0.2` — Bán coin", "• `/sells` — Lịch sử bán"]
+        if feat('crypto_port') and perm('view'):
+            crypto_lines.append("• `/view` — Xem danh mục đầu tư")
+        if feat('crypto_profit') and perm('view'):
+            crypto_lines.append("• `/stats` — Thống kê lợi nhuận")
+        if feat('crypto_alert') and perm('view'):
+            crypto_lines += ["• `/alert BTC above 50000` — Đặt cảnh báo giá", "• `/alerts` — Xem danh sách cảnh báo"]
+        if feat('crypto_export') and perm('view'):
+            crypto_lines.append("• `/export` — Xuất báo cáo crypto")
+        if crypto_lines:
+            sections.append("*💰 ĐẦU TƯ COIN:*\n" + "\n".join(crypto_lines))
+
+        # Chi tiêu
+        expense_lines = []
+        if feat('expense_add') and perm('edit'):
+            expense_lines += ["• `tn 500k nguồn` — Thêm thu nhập", "• `dm Ăn uống 3tr` — Tạo danh mục", "• `ct 1 50k ghi chú` — Thêm chi tiêu", "• `ds` — Xem giao dịch gần đây"]
+        if feat('expense_view') and perm('view'):
+            expense_lines.append("• `/balance` — Xem cân đối thu chi")
+        if feat('expense_export') and perm('view'):
+            expense_lines.append("• `/export_expense` — Xuất báo cáo thu chi")
+        if expense_lines:
+            sections.append("*💸 QUẢN LÝ CHI TIÊU:*\n" + "\n".join(expense_lines))
+
+        # Moderation
+        mod_lines = []
+        if feat('kick_mute') and perm('manage'):
+            mod_lines += ["• `/ban /kick /mute /warn` — Xử lý thành viên", "• `/mod` — Bảng điều khiển nhóm"]
+        if feat('filter_kw') and perm('manage'):
+            mod_lines.append("• `/filter [từ] [phản hồi]` — Lọc từ khóa")
+        if feat('welcome') and perm('manage'):
+            mod_lines.append("• `/setwelcome [nội dung]` — Tin chào mừng")
+        if feat('anti_spam') and perm('manage'):
+            mod_lines.append("• `/setflood on 5 5 mute 300` — Chống spam")
+        if mod_lines:
+            sections.append("*🛡️ QUẢN LÝ NHÓM:*\n" + "\n".join(mod_lines))
+
+        # Chung
+        general_lines = ["• `/myperm` — Kiểm tra quyền của bạn", "• `/getid` — Lấy ID", "• `/lang vi/zh` — Đổi ngôn ngữ"]
+        if perm('manage'):
+            general_lines += ["• `/grant @user view/edit/full` — Cấp quyền", "• `/groupinfo` — Thông tin nhóm"]
+        sections.append("*⚙️ CHUNG:*\n" + "\n".join(general_lines))
+
         help_msg = "📘 *HƯỚNG DẪN SỬ DỤNG BOT*\n━━━━━━━━━━━━━━━━\n\n"
-        
-        help_msg += (
-            "*💰 ĐẦU TƯ COIN:*\n"
-            "• `/s btc eth` - Xem giá coin\n"
-            "• `/usdt` - Tỷ giá USDT/VND\n"
-            "• `/buy btc 0.5 40000` - Mua coin\n"
-            "• `/sell btc 0.2` - Bán coin\n"
-            "• `/alert BTC above 50000` - Cảnh báo giá\n\n"
-            
-            "*💸 QUẢN LÝ CHI TIÊU:*\n"
-            "• `tn 500000` - Thêm thu nhập\n"
-            "• `dm Ăn uống 3000000` - Tạo danh mục\n"
-            "• `ct 1 50000` - Thêm chi tiêu\n"
-            "• `ds` - Xem giao dịch gần đây\n"
-            "• `/balance` - Xem cân đối thu chi\n\n"
-            
-            "*🔐 QUẢN LÝ NHÓM:*\n"
-            "• `/grant @user view` - Cấp quyền xem\n"
-            "• `/myperm` - Kiểm tra quyền của bạn\n"
-            "• `/groupinfo` - Thông tin nhóm\n\n"
-            
-            f"🕐 {format_vn_time()}"
-        )
-        
+        help_msg += "\n\n".join(sections)
+        help_msg += f"\n\n🕐 {format_vn_time()}"
+
         await update.message.reply_text(help_msg, parse_mode=ParseMode.MARKDOWN)
 
     @auto_update_user
@@ -6558,13 +6657,38 @@ try:
 
     @auto_update_user
     async def new_chat_members(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        chat_id = update.effective_chat.id
+        bot_id = ctx.bot.id
+
         for new_member in update.message.new_chat_members:
             await update_user_info_async(new_member)
-            
+
+            # === BOT ĐƯỢC THÊM VÀO NHÓM MỚI ===
+            if new_member.id == bot_id:
+                chat = update.effective_chat
+                group_name = escape_markdown(chat.title or f"Group {chat_id}")
+                await update.message.reply_text(
+                    f"👋 Xin chào\\! Tôi đã sẵn sàng trong nhóm *{group_name}*\\!\n\n"
+                    f"*Để bắt đầu sử dụng, admin cần:*\n\n"
+                    f"*Bước 1* — Thiết lập nhóm:\n"
+                    f"→ `/setupgroup` \\(đặt bạn làm chủ sở hữu dữ liệu\\)\n\n"
+                    f"*Bước 2* — Cấp quyền cho thành viên:\n"
+                    f"→ `/grant @user view` — Xem dữ liệu\n"
+                    f"→ `/grant @user edit` — Thêm/sửa\n"
+                    f"→ `/grant @user full` — Toàn quyền\n\n"
+                    f"*Bước 3* — Kiểm tra:\n"
+                    f"→ `/groupinfo` — Xem thông tin nhóm\n"
+                    f"→ `/start` — Xem lệnh khả dụng\n\n"
+                    f"💡 *Lệnh công khai \\(không cần quyền\\):* `/s btc`\n\n"
+                    f"🆔 ID nhóm này: `{chat_id}`\n"
+                    f"🕐 {format_vn_time()}",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                logger.info(f"🤖 Bot được thêm vào nhóm mới: {chat_id} ({chat.title})")
+                continue
+
             if new_member.is_bot:
                 continue
-            
-            chat_id = update.effective_chat.id
 
             # === MULTI-GROUP: Tự động kick nếu bị cross-ban ===
             if mg_is_cross_banned(chat_id, new_member.id):
@@ -11295,7 +11419,8 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                 enabled INTEGER DEFAULT 0,
                 max_msgs INTEGER DEFAULT 5,
                 interval_sec INTEGER DEFAULT 5,
-                action TEXT DEFAULT 'mute'
+                action TEXT DEFAULT 'mute',
+                mute_duration INTEGER DEFAULT 300
             )''')
             # Anti-flood tracking (RAM only, không lưu DB)
             # CAPTCHA config
@@ -11837,23 +11962,23 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
 
-        # Lấy config từ cache RAM (TTL 60s), tránh query DB mỗi tin nhắn
+        # Lấy config từ cache RAM (TTL 60s)
         now = time.time()
         cached = _flood_config_cache.get(chat_id)
-        if cached and now - cached[4] < 60:
-            enabled, max_msgs, interval_sec, action = cached[:4]
+        if cached and now - cached[5] < 60:
+            enabled, max_msgs, interval_sec, action, mute_duration = cached[:5]
         else:
             try:
                 conn = sqlite3.connect(DB_PATH)
                 c = conn.cursor()
-                c.execute("SELECT enabled, max_msgs, interval_sec, action FROM mod_flood_config WHERE group_id=?", (chat_id,))
+                c.execute("SELECT enabled, max_msgs, interval_sec, action, COALESCE(mute_duration, 300) FROM mod_flood_config WHERE group_id=?", (chat_id,))
                 cfg = c.fetchone()
                 conn.close()
                 if cfg:
-                    enabled, max_msgs, interval_sec, action = cfg
-                    _flood_config_cache[chat_id] = (enabled, max_msgs, interval_sec, action, now)
+                    enabled, max_msgs, interval_sec, action, mute_duration = cfg
+                    _flood_config_cache[chat_id] = (enabled, max_msgs, interval_sec, action, mute_duration, now)
                 else:
-                    _flood_config_cache[chat_id] = (0, 5, 5, 'mute', now)
+                    _flood_config_cache[chat_id] = (0, 5, 5, 'mute', 300, now)
                     return False
             except Exception as e:
                 logger.error(f"❌ mod_check_flood DB error: {e}")
@@ -11866,7 +11991,6 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         if key not in _flood_tracker:
             _flood_tracker[key] = []
 
-        # Xóa timestamps cũ ngoài cửa sổ thời gian
         _flood_tracker[key] = [t for t in _flood_tracker[key] if now - t < interval_sec]
         _flood_tracker[key].append(now)
 
@@ -11874,53 +11998,80 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
         if len(_flood_tracker[key]) >= max_msgs:
             _flood_tracker[key] = []
-            logger.info(f"🌊 FLOOD DETECTED: {user_id} @ {chat_id} → {action}")
+            logger.info(f"🌊 FLOOD DETECTED: {user_id} @ {chat_id} → {action} ({mute_duration}s)")
             try:
                 if action == 'ban':
                     await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
                     mod_log(chat_id, 0, user_id, "auto_ban_flood")
+                    await update.message.reply_text(
+                        f"🌊 Người dùng `{user_id}` bị *ban* do spam\\!",
+                        parse_mode=ParseMode.MARKDOWN)
                 elif action == 'kick':
                     await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
                     await context.bot.unban_chat_member(chat_id=chat_id, user_id=user_id)
                     mod_log(chat_id, 0, user_id, "auto_kick_flood")
+                    await update.message.reply_text(
+                        f"🌊 Người dùng `{user_id}` bị *kick* do spam\\!",
+                        parse_mode=ParseMode.MARKDOWN)
                 else:  # mute
                     from telegram import ChatPermissions
-                    until = datetime.utcnow() + timedelta(seconds=300)
+                    until = datetime.utcnow() + timedelta(seconds=mute_duration)
                     await context.bot.restrict_chat_member(
                         chat_id=chat_id, user_id=user_id,
-                        permissions=ChatPermissions(can_send_messages=False),
+                        permissions=ChatPermissions(
+                            can_send_messages=False,
+                            can_send_media_messages=False,
+                            can_send_polls=False,
+                            can_send_other_messages=False,
+                        ),
                         until_date=until)
                     mod_log(chat_id, 0, user_id, "auto_mute_flood")
-                await update.message.reply_text(
-                    f"🌊 Người dùng `{user_id}` bị *{action}* do gửi tin quá nhanh\\!",
-                    parse_mode=ParseMode.MARKDOWN)
+                    # Tính thời gian hiển thị
+                    if mute_duration < 60:
+                        dur_text = f"{mute_duration} giây"
+                    elif mute_duration < 3600:
+                        dur_text = f"{mute_duration // 60} phút"
+                    else:
+                        dur_text = f"{mute_duration // 3600} giờ"
+                    await update.message.reply_text(
+                        f"🌊 Người dùng `{user_id}` bị *mute {dur_text}* do spam\\!",
+                        parse_mode=ParseMode.MARKDOWN)
             except Exception as e:
                 logger.error(f"❌ Flood action error: {e}")
             return True
         return False
 
     async def mod_setflood_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """/setflood [on/off] [max_msgs] [interval_sec] [action] — Cấu hình anti-flood"""
+        """/setflood [on/off] [max_msgs] [interval_sec] [action] [mute_sec] — Cấu hình anti-flood"""
         if not await mod_check_admin(update, 'anti_spam'): return
         chat_id = update.effective_chat.id
         if not context.args:
             await update.message.reply_text(
-                "📖 Cách dùng:\n`/setflood on 5 5 mute` — Bật, max 5 tin/5 giây → mute\n"
-                "`/setflood off` — Tắt", parse_mode=ParseMode.MARKDOWN); return
+                "📖 *Cách dùng:*\n"
+                "`/setflood on 5 5 mute 300` — max 5 tin/5s → mute 5 phút\n"
+                "`/setflood on 5 5 kick` — max 5 tin/5s → kick\n"
+                "`/setflood on 5 5 ban` — max 5 tin/5s → ban\n"
+                "`/setflood off` — Tắt\n\n"
+                "*Tham số mute\\_sec:* thời gian mute tính bằng giây\n"
+                "• 60 = 1 phút, 300 = 5 phút, 3600 = 1 giờ",
+                parse_mode=ParseMode.MARKDOWN); return
         enabled = 1 if context.args[0].lower() == 'on' else 0
         max_m = int(context.args[1]) if len(context.args) > 1 else 5
         interval = int(context.args[2]) if len(context.args) > 2 else 5
         action = context.args[3].lower() if len(context.args) > 3 else 'mute'
+        mute_dur = int(context.args[4]) if len(context.args) > 4 else 300
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute('''INSERT OR REPLACE INTO mod_flood_config (group_id, enabled, max_msgs, interval_sec, action)
-                     VALUES (?, ?, ?, ?, ?)''', (chat_id, enabled, max_m, interval, action))
+        c.execute('''INSERT OR REPLACE INTO mod_flood_config (group_id, enabled, max_msgs, interval_sec, action, mute_duration)
+                     VALUES (?, ?, ?, ?, ?, ?)''', (chat_id, enabled, max_m, interval, action, mute_dur))
         conn.commit(); conn.close()
-        # Xóa cache để áp dụng ngay
         _flood_config_cache.pop(chat_id, None)
         if enabled:
+            dur_text = f"{mute_dur}s" if action == 'mute' else ""
             await update.message.reply_text(
-                f"✅ Anti-flood *BẬT*\n📨 Max: *{max_m}* tin/{interval}s → *{action}*",
+                f"✅ Anti-flood *BẬT*\n"
+                f"📨 Max: *{max_m}* tin/{interval}s → *{action}*"
+                + (f" *{dur_text}*" if dur_text else ""),
                 parse_mode=ParseMode.MARKDOWN)
         else:
             await update.message.reply_text("✅ Anti-flood *TẮT*", parse_mode=ParseMode.MARKDOWN)
@@ -12538,10 +12689,16 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
     async def _mod_panel_flood(query, chat_id):
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("SELECT enabled, max_msgs, interval_sec, action FROM mod_flood_config WHERE group_id=?", (chat_id,))
-        cfg = c.fetchone() or (0, 5, 5, 'mute')
+        c.execute("SELECT enabled, max_msgs, interval_sec, action, COALESCE(mute_duration, 300) FROM mod_flood_config WHERE group_id=?", (chat_id,))
+        cfg = c.fetchone() or (0, 5, 5, 'mute', 300)
         conn.close()
-        enabled, max_m, interval, action = cfg
+        enabled, max_m, interval, action, mute_dur = cfg
+        if mute_dur < 60:
+            dur_text = f"{mute_dur}s"
+        elif mute_dur < 3600:
+            dur_text = f"{mute_dur // 60} phút"
+        else:
+            dur_text = f"{mute_dur // 3600} giờ"
         keyboard = [
             [InlineKeyboardButton(f"{'✅' if enabled else '⬜'} Bật Anti-flood", callback_data=f"mod_flood_toggle_{chat_id}")],
             [InlineKeyboardButton("➖", callback_data=f"mod_flood_max_{chat_id}_dec"),
@@ -12553,10 +12710,17 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             [InlineKeyboardButton(f"{'🔵' if action=='mute' else '⬜'} Mute", callback_data=f"mod_flood_act_{chat_id}_mute"),
              InlineKeyboardButton(f"{'🔵' if action=='kick' else '⬜'} Kick", callback_data=f"mod_flood_act_{chat_id}_kick"),
              InlineKeyboardButton(f"{'🔵' if action=='ban' else '⬜'} Ban", callback_data=f"mod_flood_act_{chat_id}_ban")],
-            [InlineKeyboardButton("🔙 Quay lai", callback_data=f"mod_menu_main_{chat_id}")],
         ]
+        if action == 'mute':
+            keyboard.append([
+                InlineKeyboardButton("➖", callback_data=f"mod_flood_dur_{chat_id}_dec"),
+                InlineKeyboardButton(f"Mute: {dur_text}", callback_data="mod_noop"),
+                InlineKeyboardButton("➕", callback_data=f"mod_flood_dur_{chat_id}_inc"),
+            ])
+        keyboard.append([InlineKeyboardButton("🔙 Quay lại", callback_data=f"mod_menu_main_{chat_id}")])
+        action_display = f"{action.upper()}" + (f" {dur_text}" if action == 'mute' else "")
         await safe_edit_message(query,
-            f"🌊 *ANTI-FLOOD*\nTrạng thái: {'🟢 BẬT' if enabled else '🔴 TẮT'}\nGiới hạn: *{max_m}* tin/{interval}s → *{action.upper()}*",
+            f"🌊 *ANTI-FLOOD*\nTrạng thái: {'🟢 BẬT' if enabled else '🔴 TẮT'}\nGiới hạn: *{max_m}* tin/{interval}s → *{action_display}*",
             reply_markup=InlineKeyboardMarkup(keyboard))
 
     async def _mod_panel_warn(query, chat_id):
@@ -12838,7 +13002,30 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                 cid, action = int(m.group(1)), m.group(2)
                 conn = sqlite3.connect(DB_PATH)
                 c = conn.cursor()
-                c.execute("INSERT OR REPLACE INTO mod_flood_config (group_id, enabled, max_msgs, interval_sec, action) VALUES (?, COALESCE((SELECT enabled FROM mod_flood_config WHERE group_id=?),0), COALESCE((SELECT max_msgs FROM mod_flood_config WHERE group_id=?),5), COALESCE((SELECT interval_sec FROM mod_flood_config WHERE group_id=?),5), ?)", (cid, cid, cid, cid, action))
+                c.execute("INSERT OR REPLACE INTO mod_flood_config (group_id, enabled, max_msgs, interval_sec, action, mute_duration) VALUES (?, COALESCE((SELECT enabled FROM mod_flood_config WHERE group_id=?),0), COALESCE((SELECT max_msgs FROM mod_flood_config WHERE group_id=?),5), COALESCE((SELECT interval_sec FROM mod_flood_config WHERE group_id=?),5), ?, COALESCE((SELECT mute_duration FROM mod_flood_config WHERE group_id=?),300))", (cid, cid, cid, cid, action, cid))
+                conn.commit(); conn.close()
+                _flood_config_cache.pop(cid, None)
+                await _mod_panel_flood(query, cid); return
+
+        if data.startswith("mod_flood_dur_"):
+            import re as _re
+            m = _re.match(r"mod_flood_dur_(-?\d+)_(inc|dec)", data)
+            if m:
+                cid, op = int(m.group(1)), m.group(2)
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute("SELECT mute_duration FROM mod_flood_config WHERE group_id=?", (cid,))
+                row = c.fetchone()
+                cur = row[0] if row else 300
+                # Bước nhảy: <60s thì +/-10s, <3600s thì +/-60s, còn lại +/-1800s
+                if cur < 60:
+                    step = 10
+                elif cur < 3600:
+                    step = 60
+                else:
+                    step = 1800
+                new_val = max(30, cur + (step if op == 'inc' else -step))
+                c.execute("INSERT OR REPLACE INTO mod_flood_config (group_id, enabled, max_msgs, interval_sec, action, mute_duration) VALUES (?, COALESCE((SELECT enabled FROM mod_flood_config WHERE group_id=?),0), COALESCE((SELECT max_msgs FROM mod_flood_config WHERE group_id=?),5), COALESCE((SELECT interval_sec FROM mod_flood_config WHERE group_id=?),5), COALESCE((SELECT action FROM mod_flood_config WHERE group_id=?),'mute'), ?)", (cid, cid, cid, cid, cid, new_val))
                 conn.commit(); conn.close()
                 _flood_config_cache.pop(cid, None)
                 await _mod_panel_flood(query, cid); return
