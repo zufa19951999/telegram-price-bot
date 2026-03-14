@@ -2495,58 +2495,127 @@ try:
 
     def get_invest_menu_keyboard(user_id=None, group_id=None, chat_type=None):
         lang = get_lang(user_id) if user_id else 'VI'
-        
-        if lang == 'ZH':
-            keyboard = [
-                [InlineKeyboardButton("₿ BTC", callback_data="price_BTC"),
-                 InlineKeyboardButton("Ξ ETH", callback_data="price_ETH"),
-                 InlineKeyboardButton("Ξ SOL", callback_data="price_SOL"),
-                 InlineKeyboardButton("💵 USDT", callback_data="price_USDT")],
-                [InlineKeyboardButton("📊 前10", callback_data="show_top10"),
-                 InlineKeyboardButton("📈 利润", callback_data="show_profit")],
-                [InlineKeyboardButton("✏️ 编辑/删除", callback_data="edit_transactions"),
-                 InlineKeyboardButton("📊 统计", callback_data="show_stats")],
-                [InlineKeyboardButton("🔔 价格提醒", callback_data="show_alerts"),
-                 InlineKeyboardButton("🔐 导出数据", callback_data="export_master")],
-                [InlineKeyboardButton("➕ 购买", callback_data="show_buy"),
-                 InlineKeyboardButton("➖ 出售", callback_data="show_sell")]
-            ]
-        else:
-            keyboard = [
-                [InlineKeyboardButton("₿ BTC", callback_data="price_BTC"),
-                 InlineKeyboardButton("Ξ ETH", callback_data="price_ETH"),
-                 InlineKeyboardButton("Ξ SOL", callback_data="price_SOL"),
-                 InlineKeyboardButton("💵 USDT", callback_data="price_USDT")],
-                [InlineKeyboardButton("📊 Top 10", callback_data="show_top10"),
-                 InlineKeyboardButton("📈 Lợi nhuận", callback_data="show_profit")],
-                [InlineKeyboardButton("✏️ Sửa/Xóa", callback_data="edit_transactions"),
-                 InlineKeyboardButton("📊 Thống kê", callback_data="show_stats")],
-                [InlineKeyboardButton("🔔 Cảnh báo giá", callback_data="show_alerts"),
-                 InlineKeyboardButton("🔐 Xuất dữ liệu", callback_data="export_master")],
-                [InlineKeyboardButton("➕ Mua coin", callback_data="show_buy"),
-                 InlineKeyboardButton("➖ Bán coin", callback_data="show_sell")]
-            ]
-        
-        # Thêm nút ADMIN nếu cần
-        if group_id and user_id:
-            if chat_type in ['group', 'supergroup'] and check_permission(group_id, user_id, 'view'):
-                admin_text = "👑 ADMIN" if lang == 'VI' else "👑 管理员"
-                keyboard.append([InlineKeyboardButton(admin_text, callback_data="admin_panel")])
-        
+        in_group = chat_type in ['group', 'supergroup'] and group_id
+        owner = is_owner(user_id) if user_id else False
+
+        def feat(key):
+            """Tính năng có bật không — owner luôn True, private luôn True"""
+            if owner or not in_group: return True
+            try: return mg_has_feature(group_id, key)
+            except: return True
+
+        def perm(p):
+            """User có quyền không — owner/private luôn True"""
+            if owner or not in_group: return True
+            return check_permission(group_id, user_id, p)
+
+        keyboard = []
+
+        # Hàng giá nhanh — chỉ hiện nếu crypto_view bật
+        if feat('crypto_view'):
+            if lang == 'ZH':
+                keyboard.append([
+                    InlineKeyboardButton("₿ BTC", callback_data="price_BTC"),
+                    InlineKeyboardButton("Ξ ETH", callback_data="price_ETH"),
+                    InlineKeyboardButton("Ξ SOL", callback_data="price_SOL"),
+                    InlineKeyboardButton("💵 USDT", callback_data="price_USDT"),
+                ])
+                keyboard.append([InlineKeyboardButton("📊 前10", callback_data="show_top10"),
+                                  InlineKeyboardButton("📈 利润", callback_data="show_profit") if feat('crypto_profit') and perm('view') else None])
+            else:
+                keyboard.append([
+                    InlineKeyboardButton("₿ BTC", callback_data="price_BTC"),
+                    InlineKeyboardButton("Ξ ETH", callback_data="price_ETH"),
+                    InlineKeyboardButton("Ξ SOL", callback_data="price_SOL"),
+                    InlineKeyboardButton("💵 USDT", callback_data="price_USDT"),
+                ])
+                row2 = [InlineKeyboardButton("📊 Top 10", callback_data="show_top10")]
+                if feat('crypto_profit') and perm('view'):
+                    row2.append(InlineKeyboardButton("📈 Lợi nhuận", callback_data="show_profit"))
+                keyboard.append(row2)
+
+        # Sửa/Xóa và Thống kê
+        row3 = []
+        if perm('edit') and (feat('crypto_buy') or feat('crypto_sell')):
+            row3.append(InlineKeyboardButton("✏️ Sửa/Xóa" if lang == 'VI' else "✏️ 编辑/删除", callback_data="edit_transactions"))
+        if feat('crypto_profit') and perm('view'):
+            row3.append(InlineKeyboardButton("📊 Thống kê" if lang == 'VI' else "📊 统计", callback_data="show_stats"))
+        if row3: keyboard.append(row3)
+
+        # Cảnh báo và Xuất dữ liệu
+        row4 = []
+        if feat('crypto_alert') and perm('view'):
+            row4.append(InlineKeyboardButton("🔔 Cảnh báo giá" if lang == 'VI' else "🔔 价格提醒", callback_data="show_alerts"))
+        if feat('crypto_export') and perm('view'):
+            row4.append(InlineKeyboardButton("🔐 Xuất dữ liệu" if lang == 'VI' else "🔐 导出数据", callback_data="export_master"))
+        if row4: keyboard.append(row4)
+
+        # Mua / Bán
+        row5 = []
+        if feat('crypto_buy') and perm('edit'):
+            row5.append(InlineKeyboardButton("➕ Mua coin" if lang == 'VI' else "➕ 购买", callback_data="show_buy"))
+        if feat('crypto_sell') and perm('edit'):
+            row5.append(InlineKeyboardButton("➖ Bán coin" if lang == 'VI' else "➖ 出售", callback_data="show_sell"))
+        if row5: keyboard.append(row5)
+
+        # Nút ADMIN
+        if in_group and user_id and perm('view'):
+            admin_text = "👑 ADMIN" if lang == 'VI' else "👑 管理员"
+            keyboard.append([InlineKeyboardButton(admin_text, callback_data="admin_panel")])
+
+        # Nếu không có nút nào (tất cả bị tắt/không quyền)
+        if not keyboard:
+            keyboard.append([InlineKeyboardButton("⛔ Không có tính năng nào được bật", callback_data="mg_noop")])
+
         return InlineKeyboardMarkup(keyboard)
 
-    def get_expense_menu_keyboard():
-        keyboard = [
-            [InlineKeyboardButton("💰 THU NHẬP", callback_data="expense_income_menu"),
-             InlineKeyboardButton("💸 CHI TIÊU", callback_data="expense_expense_menu")],
-            [InlineKeyboardButton("📋 DANH MỤC", callback_data="expense_categories"),
-             InlineKeyboardButton("⚖️ CÂN ĐỐI", callback_data="balance_month")],
-            [InlineKeyboardButton("📅 HÔM NAY", callback_data="expense_today"),
-             InlineKeyboardButton("📅 THÁNG NÀY", callback_data="expense_month")],
-            [InlineKeyboardButton("🔄 GẦN ĐÂY", callback_data="expense_recent"),
-             InlineKeyboardButton("🔐 Xuất báo cáo", callback_data="export_expense_menu")],  # <-- NÚT DUY NHẤT
-            [InlineKeyboardButton("🔙 VỀ MENU CHÍNH", callback_data="back_to_main")]
-        ]
+    def get_expense_menu_keyboard(user_id=None, group_id=None, chat_type=None):
+        in_group = chat_type in ['group', 'supergroup'] and group_id
+        owner = is_owner(user_id) if user_id else False
+
+        def feat(key):
+            if owner or not in_group: return True
+            try: return mg_has_feature(group_id, key)
+            except: return True
+
+        def perm(p):
+            if owner or not in_group: return True
+            return check_permission(group_id, user_id, p)
+
+        keyboard = []
+
+        # Thu nhập / Chi tiêu
+        row1 = []
+        if feat('expense_add') and perm('edit'):
+            row1.append(InlineKeyboardButton("💰 THU NHẬP", callback_data="expense_income_menu"))
+            row1.append(InlineKeyboardButton("💸 CHI TIÊU", callback_data="expense_expense_menu"))
+        if row1: keyboard.append(row1)
+
+        # Danh mục / Cân đối
+        row2 = []
+        if feat('expense_cat') and perm('edit'):
+            row2.append(InlineKeyboardButton("📋 DANH MỤC", callback_data="expense_categories"))
+        if feat('expense_view') and perm('view'):
+            row2.append(InlineKeyboardButton("⚖️ CÂN ĐỐI", callback_data="balance_month"))
+        if row2: keyboard.append(row2)
+
+        # Xem theo ngày / tháng
+        if feat('expense_view') and perm('view'):
+            keyboard.append([
+                InlineKeyboardButton("📅 HÔM NAY", callback_data="expense_today"),
+                InlineKeyboardButton("📅 THÁNG NÀY", callback_data="expense_month"),
+            ])
+            keyboard.append([InlineKeyboardButton("🔄 GẦN ĐÂY", callback_data="expense_recent")])
+
+        # Xuất báo cáo
+        if feat('expense_export') and perm('view'):
+            keyboard.append([InlineKeyboardButton("🔐 Xuất báo cáo", callback_data="export_expense_menu")])
+
+        keyboard.append([InlineKeyboardButton("🔙 VỀ MENU CHÍNH", callback_data="back_to_main")])
+
+        if len(keyboard) == 1:  # Chỉ còn nút quay lại
+            keyboard.insert(0, [InlineKeyboardButton("⛔ Không có tính năng nào được bật", callback_data="mg_noop")])
+
         return InlineKeyboardMarkup(keyboard)
 
     # ==================== COMMAND HANDLERS ====================
@@ -7838,7 +7907,7 @@ try:
             await update.message.reply_text(
                 f"💰 *QUẢN LÝ CHI TIÊU*\n━━━━━━━━━━━━━━━━\n\n🕐 {format_vn_time()}", 
                 parse_mode=ParseMode.MARKDOWN, 
-                reply_markup=get_expense_menu_keyboard()
+                reply_markup=get_expense_menu_keyboard(user_id, chat_id, chat_type)
             )
             return
 
@@ -7964,7 +8033,7 @@ try:
                     await query.edit_message_text("❌ Lỗi: Không thể tạo file CSV!")
                     return
                 
-                await query.edit_message_text(f"💰 *QUẢN LÝ CHI TIÊU*\n━━━━━━━━━━━━━━━━\n\n🕐 {format_vn_time()}", parse_mode=ParseMode.MARKDOWN, reply_markup=get_expense_menu_keyboard())
+                await query.edit_message_text(f"💰 *QUẢN LÝ CHI TIÊU*\n━━━━━━━━━━━━━━━━\n\n🕐 {format_vn_time()}", parse_mode=ParseMode.MARKDOWN, reply_markup=get_expense_menu_keyboard(user_id, query.message.chat.id, query.message.chat.type))
         except Exception as e:
             logger.error(f"❌ Lỗi export CSV: {e}", exc_info=True)
             await query.edit_message_text(
@@ -8697,7 +8766,7 @@ try:
             
             if data == "back_to_expense":
                 msg = f"💰 *QUẢN LÝ CHI TIÊU*\n━━━━━━━━━━━━━━━━\n\n🕐 {format_vn_time()}"
-                await safe_edit_message(query, msg, reply_markup=get_expense_menu_keyboard())
+                await safe_edit_message(query, msg, reply_markup=get_expense_menu_keyboard(uid, gid, chat_type))
                 return
             
             if data == "refresh_usdt":
