@@ -6714,6 +6714,43 @@ try:
             if await mod_check_fed_ban(ctx, chat_id, new_member.id):
                 continue
 
+            # === KIỂM TRA USER CÓ ĐANG BỊ MUTE KHÔNG (re-apply khi rejoin) ===
+            try:
+                conn_m = sqlite3.connect(DB_PATH)
+                c_m = conn_m.cursor()
+                # Kiểm tra trong mod_logs xem user có đang bị mute không
+                c_m.execute('''SELECT extra FROM mod_logs 
+                               WHERE group_id=? AND target_user=? AND action IN ('mute','auto_mute','auto_mute_flood')
+                               ORDER BY created_at DESC LIMIT 1''', (chat_id, new_member.id))
+                mute_log = c_m.fetchone()
+                # Kiểm tra có unmute chưa
+                c_m.execute('''SELECT id FROM mod_logs
+                               WHERE group_id=? AND target_user=? AND action='unmute'
+                               AND created_at > (SELECT created_at FROM mod_logs 
+                                                 WHERE group_id=? AND target_user=? 
+                                                 AND action IN ('mute','auto_mute','auto_mute_flood')
+                                                 ORDER BY created_at DESC LIMIT 1)''',
+                             (chat_id, new_member.id, chat_id, new_member.id))
+                unmuted = c_m.fetchone()
+                conn_m.close()
+
+                if mute_log and not unmuted:
+                    from telegram import ChatPermissions
+                    # Re-apply mute vĩnh viễn (until_date=None = permanent)
+                    await ctx.bot.restrict_chat_member(
+                        chat_id=chat_id, user_id=new_member.id,
+                        permissions=ChatPermissions(can_send_messages=False))
+                    logger.info(f"🔇 Re-applied mute cho {new_member.id} sau khi rejoin {chat_id}")
+                    try:
+                        msg = await update.message.reply_text(
+                            f"🔇 [{escape_markdown(new_member.first_name)}](tg://user?id={new_member.id}) vẫn đang bị mute\\!",
+                            parse_mode=ParseMode.MARKDOWN)
+                        asyncio.create_task(auto_delete_message(ctx, chat_id, msg.message_id, 10))
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.error(f"❌ Re-apply mute error: {e}")
+
             # === MODERATION: CAPTCHA + Welcome ===
             await mod_on_new_member(update, ctx, new_member)
 
@@ -11728,6 +11765,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         c.execute("SELECT COUNT(*) FROM mod_warns WHERE group_id=? AND user_id=?", (target_chat_id, target_id))
         total_warns = c.fetchone()[0]
         conn.commit(); conn.close()
+        logger.info(f"⚠️ Warn: user {target_id} @ {target_chat_id}: {total_warns}/{max_warns} ({action})")
         mod_log(target_chat_id, operator_id, target_id, "warn", reason, f"{total_warns}/{max_warns}")
 
         suffix = f"\n📌 Nhóm: `{target_chat_id}`" if from_master else ""
@@ -11749,11 +11787,9 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                     mod_log(target_chat_id, operator_id, target_id, "auto_kick", f"Đạt {max_warns} warns")
                 elif action == 'mute':
                     from telegram import ChatPermissions
-                    until = datetime.utcnow() + timedelta(seconds=mute_dur)
                     await context.bot.restrict_chat_member(
                         chat_id=target_chat_id, user_id=target_id,
-                        permissions=ChatPermissions(can_send_messages=False),
-                        until_date=until)
+                        permissions=ChatPermissions(can_send_messages=False))
                     mod_log(target_chat_id, operator_id, target_id, "auto_mute", f"Đạt {max_warns} warns")
             except Exception as e:
                 msg += f"\n❌ Lỗi: {e}\n"
