@@ -11998,11 +11998,11 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
         # ── BƯỚC 1: Cảnh báo lần 1 khi đạt ngưỡng ──────────────────────
         warn_key = (chat_id, user_id)
-        already_warned = warn_key in _flood_warned and now - _flood_warned[warn_key] < interval_sec * 3
+        already_warned = warn_key in _flood_warned and now - _flood_warned[warn_key] < 30
 
         if count >= max_msgs and not already_warned:
-            # Lần đầu vượt ngưỡng → cảnh báo, reset đếm
-            _flood_tracker[key] = []
+            # Lần đầu vượt ngưỡng → cảnh báo, KHÔNG reset đếm
+            # Chỉ đánh dấu đã warn — tin tiếp theo vượt ngưỡng sẽ bị xử lý ngay
             _flood_warned[warn_key] = now
             try:
                 await update.message.delete()
@@ -12013,13 +12013,12 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                     f"⚠️ [{update.effective_user.first_name}](tg://user?id={user_id}) Chậm thôi bạn ơi\\! "
                     f"Tiếp tục spam sẽ bị *{action}*\\.",
                     parse_mode=ParseMode.MARKDOWN)
-                # Tự xóa tin cảnh báo sau 5 giây
-                asyncio.create_task(auto_delete_message(context, chat_id, warn_msg.message_id, 5))
+                asyncio.create_task(auto_delete_message(context, chat_id, warn_msg.message_id, 100))
             except Exception as e:
                 logger.error(f"❌ Flood warning error: {e}")
             return True
 
-        # ── BƯỚC 2: Đã cảnh báo mà vẫn spam → xử lý ────────────────────
+        # ── BƯỚC 2: Đã cảnh báo, vẫn gửi thêm tin → xử lý ngay ─────────
         if count >= max_msgs and already_warned:
             _flood_tracker[key] = []
             _flood_warned.pop(warn_key, None)
@@ -12032,16 +12031,18 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                 if action == 'ban':
                     await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
                     mod_log(chat_id, 0, user_id, "auto_ban_flood")
-                    await update.effective_chat.send_message(
+                    msg = await update.effective_chat.send_message(
                         f"🚫 [{update.effective_user.first_name}](tg://user?id={user_id}) bị *ban* do tiếp tục spam\\!",
                         parse_mode=ParseMode.MARKDOWN)
+                    asyncio.create_task(auto_delete_message(context, chat_id, msg.message_id, 100))
                 elif action == 'kick':
                     await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
                     await context.bot.unban_chat_member(chat_id=chat_id, user_id=user_id)
                     mod_log(chat_id, 0, user_id, "auto_kick_flood")
-                    await update.effective_chat.send_message(
+                    msg = await update.effective_chat.send_message(
                         f"👢 [{update.effective_user.first_name}](tg://user?id={user_id}) bị *kick* do tiếp tục spam\\!",
                         parse_mode=ParseMode.MARKDOWN)
+                    asyncio.create_task(auto_delete_message(context, chat_id, msg.message_id, 100))
                 else:  # mute
                     from telegram import ChatPermissions
                     until = datetime.utcnow() + timedelta(seconds=mute_duration)
@@ -12056,9 +12057,10 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                         dur_text = f"{mute_duration // 60} phút"
                     else:
                         dur_text = f"{mute_duration // 3600} giờ"
-                    await update.effective_chat.send_message(
+                    msg = await update.effective_chat.send_message(
                         f"🔇 [{update.effective_user.first_name}](tg://user?id={user_id}) bị *mute {dur_text}* do tiếp tục spam\\!",
                         parse_mode=ParseMode.MARKDOWN)
+                    asyncio.create_task(auto_delete_message(context, chat_id, msg.message_id, 100))
             except Exception as e:
                 logger.error(f"❌ Flood action error: {e}")
             return True
@@ -12080,7 +12082,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                 "• 60 = 1 phút, 300 = 5 phút, 3600 = 1 giờ",
                 parse_mode=ParseMode.MARKDOWN); return
         enabled = 1 if context.args[0].lower() == 'on' else 0
-        max_m = int(context.args[1]) if len(context.args) > 1 else 5
+        max_m = int(context.args[1]) if len(context.args) > 1 else 3
         interval = int(context.args[2]) if len(context.args) > 2 else 5
         action = context.args[3].lower() if len(context.args) > 3 else 'mute'
         mute_dur = int(context.args[4]) if len(context.args) > 4 else 300
