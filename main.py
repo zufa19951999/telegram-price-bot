@@ -3045,21 +3045,45 @@ try:
     @auto_update_user
     async def getid_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
-        
+        chat = update.effective_chat
+
         msg = f"🔑 *THÔNG TIN ID*\n━━━━━━━━━━━━━━━━\n\n"
         msg += f"👤 *Bạn:*\n"
         msg += f"• ID: `{user.id}`\n"
         msg += f"• Username: @{user.username if user.username else 'None'}\n\n"
-        
+
+        if chat.type in ['group', 'supergroup']:
+            msg += f"💬 *Nhóm này:*\n"
+            msg += f"• ID: `{chat.id}`\n"
+            msg += f"• Tên: {escape_markdown(chat.title or '')}\n"
+            msg += f"• Loại: {'Supergroup' if chat.type == 'supergroup' else 'Group'}\n\n"
+
         if update.message.reply_to_message and update.message.reply_to_message.from_user:
             replied = update.message.reply_to_message.from_user
             msg += f"👥 *Người được reply:*\n"
             msg += f"• ID: `{replied.id}`\n"
-            msg += f"• Username: @{replied.username if replied.username else 'None'}\n"
-        
-        msg += f"\n💡 Dùng ID để grant: `/perm grant {user.id} view`"
-        
+            msg += f"• Username: @{replied.username if replied.username else 'None'}\n\n"
+
+        msg += f"💡 Dùng ID nhóm để setup: `/setupgroup` hoặc `/movemaster {chat.id}`"
+
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+    async def groupid_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """/groupid — Lấy ID nhóm hiện tại"""
+        chat = update.effective_chat
+        if chat.type not in ['group', 'supergroup']:
+            await update.message.reply_text(
+                "❌ Lệnh này chỉ dùng trong nhóm!\n\n"
+                f"💬 ID của bạn: `{update.effective_user.id}`",
+                parse_mode=ParseMode.MARKDOWN)
+            return
+        await update.message.reply_text(
+            f"💬 *ID NHÓM*\n━━━━━━━━━━━━━━━━\n\n"
+            f"• ID: `{chat.id}`\n"
+            f"• Tên: {escape_markdown(chat.title or '')}\n"
+            f"• Loại: {'Supergroup' if chat.type == 'supergroup' else 'Group'}\n\n"
+            f"🕐 {format_vn_time()}",
+            parse_mode=ParseMode.MARKDOWN)
 
     @auto_update_user
     async def sync_users_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -13201,6 +13225,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             app.add_handler(CommandHandler("whoami", whoami_command))
             app.add_handler(CommandHandler("permgrant", quick_grant_command))
             app.add_handler(CommandHandler("getid", getid_command))
+            app.add_handler(CommandHandler("groupid", groupid_command))
             app.add_handler(CommandHandler("syncusers", sync_users_command))
             app.add_handler(CommandHandler("view", view_portfolio_command))
             app.add_handler(CommandHandler("users", list_users_command))
