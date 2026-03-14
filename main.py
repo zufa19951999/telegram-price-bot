@@ -125,8 +125,32 @@ async def auto_delete_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
 OWNER_ID = 6737175223
 OWNER_USERNAME = "adm"
 
+# Co-owners: quyền ngang owner bot trong nhóm tổng, lưu DB
+CO_OWNERS = set()
+
 def is_owner(user_id):
+    """Owner chính hoặc co-owner đều pass"""
+    return user_id == OWNER_ID or user_id in CO_OWNERS
+
+def is_main_owner(user_id):
+    """Chỉ owner chính — dùng cho add/remove co-owner"""
     return user_id == OWNER_ID
+
+def load_co_owners():
+    global CO_OWNERS
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS co_owners
+                     (user_id INTEGER PRIMARY KEY, username TEXT, added_by INTEGER, added_at TEXT)''')
+        c.execute("SELECT user_id FROM co_owners")
+        rows = c.fetchall()
+        CO_OWNERS = {row[0] for row in rows}
+        conn.commit()
+        conn.close()
+        logger.info(f"✅ Loaded {len(CO_OWNERS)} co-owners: {CO_OWNERS}")
+    except Exception as e:
+        logger.error(f"❌ Lỗi load co-owners: {e}")
 
 # ==================== GROUP OWNER MANAGEMENT ====================
 GROUP_OWNERS = {}
@@ -509,6 +533,76 @@ def rate_limit(max_calls=30):
     return decorator
 
 # ==================== PERMISSION DECORATORS ====================
+
+# Map tên hàm → feature_key trong FEATURE_CATALOG
+# Dùng để check tính năng có bị tắt trong nhóm không
+_FUNC_FEATURE_MAP = {
+    # Crypto
+    's_command':              'crypto_view',
+    'usdt_command':           'crypto_view',
+    'view_portfolio_command': 'crypto_port',
+    'stats_command':          'crypto_profit',
+    'buy_command':            'crypto_buy',
+    'sell_command':           'crypto_sell',
+    'sells_command':          'crypto_sell',
+    'addsell_command':        'crypto_sell',
+    'edit_command':           'crypto_buy',
+    'delete_tx_command':      'crypto_buy',
+    'alert_command':          'crypto_alert',
+    'alerts_command':         'crypto_alert',
+    'export_master_command':  'crypto_export',
+    # Thu chi
+    'balance_command':        'expense_view',
+    'export_expense_command': 'expense_export',
+    # Moderation
+    'mod_ban_command':        'kick_mute',
+    'mod_unban_command':      'kick_mute',
+    'mod_kick_command':       'kick_mute',
+    'mod_mute_command':       'kick_mute',
+    'mod_unmute_command':     'kick_mute',
+    'mod_warn_command':       'kick_mute',
+    'mod_unwarn_command':     'kick_mute',
+    'mod_warns_command':      'kick_mute',
+    'mod_setwarn_command':    'kick_mute',
+    'mod_purge_command':      'del_msg',
+    'mod_spurge_command':     'del_msg',
+    'mod_filter_command':     'filter_kw',
+    'mod_unfilter_command':   'filter_kw',
+    'mod_filters_list_command': 'filter_kw',
+    'mod_setwelcome_command': 'welcome',
+    'mod_welcome_off_command':'welcome',
+    'mod_setflood_command':   'anti_spam',
+    'mod_report_command':     'kick_mute',
+}
+
+# Tên hiển thị cho người dùng khi bị chặn
+_FUNC_DISPLAY_MAP = {
+    's_command':              'xem giá coin',
+    'usdt_command':           'xem tỷ giá USDT',
+    'view_portfolio_command': 'xem portfolio',
+    'stats_command':          'xem thống kê lợi nhuận',
+    'buy_command':            'mua coin',
+    'sell_command':           'bán coin',
+    'sells_command':          'xem lịch sử bán',
+    'addsell_command':        'ghi lệnh bán',
+    'edit_command':           'sửa giao dịch',
+    'delete_tx_command':      'xóa giao dịch',
+    'alert_command':          'tạo cảnh báo giá',
+    'alerts_command':         'xem cảnh báo',
+    'export_master_command':  'xuất báo cáo crypto',
+    'balance_command':        'xem cân đối thu chi',
+    'export_expense_command': 'xuất báo cáo thu chi',
+    'mod_ban_command':        'ban thành viên',
+    'mod_kick_command':       'kick thành viên',
+    'mod_mute_command':       'mute thành viên',
+    'mod_warn_command':       'cảnh báo thành viên',
+    'mod_purge_command':      'xóa tin nhắn hàng loạt',
+    'mod_filter_command':     'lọc từ khóa',
+    'mod_setwelcome_command': 'cài tin chào mừng',
+    'mod_setflood_command':   'cài chống spam',
+    'mod_report_command':     'báo cáo vi phạm',
+}
+
 def require_permission(permission_type):
     def decorator(func):
         @wraps(func)
@@ -516,56 +610,57 @@ def require_permission(permission_type):
             user_id = update.effective_user.id
             chat_id = update.effective_chat.id
             chat_type = update.effective_chat.type
-            
-            # Owner bot luôn có quyền
+            func_name = func.__name__
+
+            # Owner bot luôn có quyền, không bị chặn bởi feature
             if is_owner(user_id):
                 return await func(update, context, *args, **kwargs)
-            
-            # PRIVATE CHAT: Ai cũng dùng được
+
+            # PRIVATE CHAT: Ai cũng dùng được, không check feature
             if chat_type == 'private':
                 return await func(update, context, *args, **kwargs)
-            
-            # TRONG GROUP: Kiểm tra quyền
+
+            # TRONG GROUP: kiểm tra 2 lớp
             if chat_type in ['group', 'supergroup']:
-                # ===== CHỈ LỆNH /s ĐƯỢC PUBLIC =====
-                func_name = func.__name__
-                
-                # LỆNH /s (s_command) - PUBLIC, KHÔNG CẦN QUYỀN
+                cmd_display = _FUNC_DISPLAY_MAP.get(func_name, 'này')
+
+                # --- Lớp 1: Tính năng có được bật cho nhóm này không? ---
+                feature_key = _FUNC_FEATURE_MAP.get(func_name)
+                if feature_key:
+                    try:
+                        # mg_has_feature nằm trong khối try lớn, gọi trực tiếp
+                        if not mg_has_feature(chat_id, feature_key):
+                            await update.message.reply_text(
+                                f"🚫 *TÍNH NĂNG BỊ TẮT*\n━━━━━━━━━━━━━━━━\n\n"
+                                f"Tính năng *{cmd_display}* hiện không được bật trong nhóm này.\n\n"
+                                f"👑 Liên hệ quản trị viên nhóm tổng để bật tính năng.\n\n"
+                                f"🕐 {format_vn_time()}",
+                                parse_mode=ParseMode.MARKDOWN
+                            )
+                            return
+                    except Exception:
+                        pass  # Nếu lỗi check feature thì bỏ qua, tiếp tục check permission
+
+                # --- Lớp 2: Lệnh /s public, không cần quyền ---
                 if func_name == 's_command':
                     return await func(update, context, *args, **kwargs)
-                # ===== KẾT THÚC =====
-                
-                # Các lệnh khác - kiểm tra quyền như cũ
+
+                # --- Lớp 3: Kiểm tra quyền user ---
                 if not check_permission(chat_id, user_id, permission_type):
-                    # Thông báo chi tiết hơn
-                    command_map = {
-                        'buy_command': 'mua coin',
-                        'sell_command': 'bán coin',
-                        'edit_command': 'sửa giao dịch',
-                        'delete_tx_command': 'xóa giao dịch',
-                        'alert_command': 'tạo cảnh báo',
-                        'alerts_command': 'xem cảnh báo',
-                        'stats_command': 'xem thống kê',
-                        'usdt_command': 'xem tỷ giá USDT',
-                        'export_master_command': 'xuất dữ liệu'
-                    }
-                    
-                    cmd_name = command_map.get(func_name, 'này')
-                    
                     await update.message.reply_text(
                         f"❌ *KHÔNG CÓ QUYỀN*\n━━━━━━━━━━━━━━━━\n\n"
-                        f"Bạn không có quyền sử dụng lệnh {cmd_name} trong nhóm.\n\n"
+                        f"Bạn không có quyền sử dụng lệnh *{cmd_display}* trong nhóm.\n\n"
                         f"💡 *Lệnh public duy nhất:* `/s btc` (xem giá coin)\n\n"
                         f"👑 Liên hệ chủ nhóm để được cấp quyền.\n\n"
-                        f"🕐 {format_vn_time()}", 
+                        f"🕐 {format_vn_time()}",
                         parse_mode=ParseMode.MARKDOWN
                     )
                     return
-                
+
                 return await func(update, context, *args, **kwargs)
-            
+
             return await func(update, context, *args, **kwargs)
-            
+
         return wrapper
     return decorator
 
@@ -576,17 +671,35 @@ def require_group_permission(permission_type):
             user_id = update.effective_user.id
             chat_id = update.effective_chat.id
             chat_type = update.effective_chat.type
-            
+            func_name = func.__name__
+
             # Owner bot luôn có quyền
             if is_owner(user_id):
                 return await func(update, context, *args, **kwargs)
-            
+
             # Lệnh này chỉ dùng trong group
             if chat_type not in ['group', 'supergroup']:
                 await update.message.reply_text("❌ Lệnh này chỉ dùng trong nhóm!")
                 return
-            
-            # Trong group, kiểm tra quyền
+
+            # --- Lớp 1: Tính năng có được bật không? ---
+            feature_key = _FUNC_FEATURE_MAP.get(func_name)
+            if feature_key:
+                try:
+                    if not mg_has_feature(chat_id, feature_key):
+                        cmd_display = _FUNC_DISPLAY_MAP.get(func_name, 'này')
+                        await update.message.reply_text(
+                            f"🚫 *TÍNH NĂNG BỊ TẮT*\n━━━━━━━━━━━━━━━━\n\n"
+                            f"Tính năng *{cmd_display}* hiện không được bật trong nhóm này.\n\n"
+                            f"👑 Liên hệ quản trị viên nhóm tổng để bật tính năng.\n\n"
+                            f"🕐 {format_vn_time()}",
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                        return
+                except Exception:
+                    pass
+
+            # --- Lớp 2: Kiểm tra quyền user ---
             if not check_permission(chat_id, user_id, permission_type):
                 await update.message.reply_text(
                     "❌ *KHÔNG CÓ QUYỀN THỰC HIỆN LỆNH NÀY*\n\n"
@@ -595,7 +708,7 @@ def require_group_permission(permission_type):
                     parse_mode=ParseMode.MARKDOWN
                 )
                 return
-            
+
             return await func(update, context, *args, **kwargs)
             
         return wrapper
@@ -2976,6 +3089,218 @@ try:
             await msg.edit_text(f"✅ *ĐỒNG BỘ THÀNH CÔNG*\n━━━━━━━━━━━━━━━━\n\n📊 Đã cập nhật: {count} admin\n👥 Tổng số: {len(admins)} thành viên\n\n🕐 {format_vn_time()}", parse_mode=ParseMode.MARKDOWN)
         except Exception as e:
             await msg.edit_text(f"❌ Lỗi: {e}")
+
+    # ==================== CO-OWNER COMMANDS ====================
+    async def addcoowner_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """/addcoowner @user — Thêm co-owner (chỉ owner chính)"""
+        user_id = update.effective_user.id
+        if not is_main_owner(user_id):
+            await update.message.reply_text("❌ Chỉ owner chính mới có thể thêm co-owner!")
+            return
+        if not ctx.args:
+            await update.message.reply_text(
+                "📖 *Cách dùng:* `/addcoowner @username hoặc user_id`\n\n"
+                "Co-owner có toàn bộ quyền như bạn trong nhóm tổng.",
+                parse_mode=ParseMode.MARKDOWN)
+            return
+        target_id = await resolve_user_id(ctx.args[0], ctx)
+        if not target_id:
+            await update.message.reply_text(f"❌ Không tìm thấy user `{ctx.args[0]}`\nYêu cầu họ nhắn tin cho bot trước!")
+            return
+        if target_id == OWNER_ID:
+            await update.message.reply_text("❌ Bạn đã là owner chính rồi!")
+            return
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            added_at = get_vn_time().strftime("%Y-%m-%d %H:%M:%S")
+            username = ctx.args[0].lstrip('@') if ctx.args[0].startswith('@') else None
+            c.execute('''INSERT OR REPLACE INTO co_owners (user_id, username, added_by, added_at)
+                         VALUES (?, ?, ?, ?)''', (target_id, username, user_id, added_at))
+            conn.commit()
+            conn.close()
+            CO_OWNERS.add(target_id)
+            display = f"@{username}" if username else f"User `{target_id}`"
+            await update.message.reply_text(
+                f"✅ *ĐÃ THÊM CO-OWNER*\n━━━━━━━━━━━━━━━━\n\n"
+                f"👤 {display}\n🆔 `{target_id}`\n\n"
+                f"Họ có toàn quyền trong nhóm tổng như bạn.\n🕐 {format_vn_time()}",
+                parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            logger.error(f"❌ addcoowner: {e}")
+            await update.message.reply_text("❌ Lỗi khi thêm co-owner!")
+
+    async def removecoowner_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """/removecoowner @user — Xóa co-owner (chỉ owner chính)"""
+        user_id = update.effective_user.id
+        if not is_main_owner(user_id):
+            await update.message.reply_text("❌ Chỉ owner chính mới có thể xóa co-owner!")
+            return
+        if not ctx.args:
+            await update.message.reply_text("📖 *Cách dùng:* `/removecoowner @username hoặc user_id`", parse_mode=ParseMode.MARKDOWN)
+            return
+        target_id = await resolve_user_id(ctx.args[0], ctx)
+        if not target_id:
+            try:
+                target_id = int(ctx.args[0])
+            except:
+                await update.message.reply_text("❌ Không tìm thấy user!")
+                return
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("DELETE FROM co_owners WHERE user_id = ?", (target_id,))
+            deleted = c.rowcount
+            conn.commit()
+            conn.close()
+            CO_OWNERS.discard(target_id)
+            if deleted:
+                await update.message.reply_text(
+                    f"✅ Đã xóa co-owner `{target_id}` khỏi hệ thống.\n🕐 {format_vn_time()}",
+                    parse_mode=ParseMode.MARKDOWN)
+            else:
+                await update.message.reply_text(f"⚠️ User `{target_id}` không phải co-owner.", parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            logger.error(f"❌ removecoowner: {e}")
+            await update.message.reply_text("❌ Lỗi khi xóa co-owner!")
+
+    async def listcoowners_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """/coowners — Xem danh sách co-owner"""
+        user_id = update.effective_user.id
+        if not is_main_owner(user_id):
+            await update.message.reply_text("❌ Chỉ owner chính mới xem được!")
+            return
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT user_id, username, added_at FROM co_owners ORDER BY added_at")
+            rows = c.fetchall()
+            conn.close()
+            if not rows:
+                await update.message.reply_text(
+                    f"👑 *CO-OWNER*\n━━━━━━━━━━━━━━━━\n\nChưa có co-owner nào.\nDùng `/addcoowner @user` để thêm.\n\n🕐 {format_vn_time()}",
+                    parse_mode=ParseMode.MARKDOWN)
+                return
+            msg = f"👑 *DANH SÁCH CO-OWNER* ({len(rows)})\n━━━━━━━━━━━━━━━━\n\n"
+            for uid, username, added_at in rows:
+                display = f"@{username}" if username else f"User {uid}"
+                msg += f"• {display} — `{uid}`\n  📅 {added_at[:10]}\n"
+            msg += f"\n🕐 {format_vn_time()}"
+            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Lỗi: {e}")
+
+    # ==================== MOVE MASTER GROUP ====================
+    async def movemaster_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """/movemaster [new_group_id] — Chuyển nhóm tổng sang nhóm khác (chỉ owner)"""
+        user_id = update.effective_user.id
+        if not is_main_owner(user_id):
+            await update.message.reply_text("❌ Chỉ owner chính mới có thể chuyển nhóm tổng!")
+            return
+        if not ctx.args:
+            await update.message.reply_text(
+                "📖 *Cách dùng:*\n`/movemaster [new\\_group\\_id]`\n\n"
+                "Ví dụ: `/movemaster \\-1001234567890`\n\n"
+                "⚠️ Nhóm tổng hiện tại sẽ bị gỡ, tất cả nhóm con được giữ nguyên.",
+                parse_mode=ParseMode.MARKDOWN)
+            return
+        try:
+            new_group_id = int(ctx.args[0])
+        except ValueError:
+            await update.message.reply_text("❌ group\\_id phải là số nguyên!", parse_mode=ParseMode.MARKDOWN)
+            return
+
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+
+            # Tìm nhóm tổng hiện tại
+            c.execute("SELECT group_id, group_name FROM master_groups LIMIT 1")
+            old_master = c.fetchone()
+            if not old_master:
+                conn.close()
+                await update.message.reply_text("⚠️ Chưa có nhóm tổng nào trong hệ thống!")
+                return
+
+            old_id, old_name = old_master
+            if old_id == new_group_id:
+                conn.close()
+                await update.message.reply_text("⚠️ Đó đã là nhóm tổng hiện tại rồi!")
+                return
+
+            # Kiểm tra new_group_id không phải đang là nhóm con
+            c.execute("SELECT child_group_id FROM group_hierarchy WHERE child_group_id = ?", (new_group_id,))
+            if c.fetchone():
+                conn.close()
+                await update.message.reply_text(
+                    f"❌ Nhóm `{new_group_id}` đang là nhóm con, không thể làm nhóm tổng!\n"
+                    "Dùng `/removechild` trước.", parse_mode=ParseMode.MARKDOWN)
+                return
+
+            # Thực hiện chuyển:
+            # 1. Lấy tên nhóm mới từ Telegram nếu được
+            new_name = f"Group {new_group_id}"
+            try:
+                chat_info = await ctx.bot.get_chat(new_group_id)
+                new_name = chat_info.title or new_name
+            except:
+                pass
+
+            # 2. Xóa master cũ
+            c.execute("DELETE FROM master_groups WHERE group_id = ?", (old_id,))
+
+            # 3. Insert master mới
+            c.execute('''INSERT OR REPLACE INTO master_groups (group_id, group_name, set_by, created_at)
+                         VALUES (?, ?, ?, ?)''',
+                      (new_group_id, new_name, user_id, get_vn_time().strftime("%Y-%m-%d %H:%M:%S")))
+
+            # 4. Cập nhật group_hierarchy: đổi master_group_id cũ → mới
+            c.execute("UPDATE group_hierarchy SET master_group_id = ? WHERE master_group_id = ?",
+                      (new_group_id, old_id))
+
+            # 5. Cập nhật cross_bans
+            c.execute("UPDATE cross_bans SET master_group_id = ? WHERE master_group_id = ?",
+                      (new_group_id, old_id))
+
+            # 6. Cập nhật broadcasts history
+            c.execute("UPDATE broadcasts SET master_group_id = ? WHERE master_group_id = ?",
+                      (new_group_id, old_id))
+
+            # 7. Cập nhật group_owners (data ownership)
+            c.execute("SELECT owner_id FROM group_owners WHERE group_id = ?", (old_id,))
+            old_owner_row = c.fetchone()
+            if old_owner_row:
+                c.execute('''INSERT OR REPLACE INTO group_owners (group_id, owner_id, created_at)
+                             VALUES (?, ?, ?)''',
+                          (new_group_id, old_owner_row[0], get_vn_time().strftime("%Y-%m-%d %H:%M:%S")))
+
+            conn.commit()
+            conn.close()
+
+            # Update RAM cache
+            if old_id in GROUP_OWNERS:
+                GROUP_OWNERS[new_group_id] = GROUP_OWNERS.pop(old_id)
+
+            logger.info(f"✅ Chuyển nhóm tổng: {old_id} → {new_group_id}")
+
+            # Báo kết quả
+            c2 = sqlite3.connect(DB_PATH)
+            cur = c2.cursor()
+            cur.execute("SELECT COUNT(*) FROM group_hierarchy WHERE master_group_id = ?", (new_group_id,))
+            child_count = cur.fetchone()[0]
+            c2.close()
+
+            await update.message.reply_text(
+                f"✅ *ĐÃ CHUYỂN NHÓM TỔNG*\n━━━━━━━━━━━━━━━━\n\n"
+                f"📤 Cũ: {escape_markdown(old_name)} (`{old_id}`)\n"
+                f"📥 Mới: {escape_markdown(new_name)} (`{new_group_id}`)\n"
+                f"👥 Nhóm con giữ nguyên: *{child_count}*\n\n"
+                f"⚠️ Hãy dùng `/setupgroup` trong nhóm mới để hoàn tất.\n🕐 {format_vn_time()}",
+                parse_mode=ParseMode.MARKDOWN)
+
+        except Exception as e:
+            logger.error(f"❌ movemaster: {e}")
+            await update.message.reply_text(f"❌ Lỗi chuyển nhóm tổng: {e}")
 
     @auto_update_user
     async def owner_panel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -10950,10 +11275,39 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         """Kiểm tra user có quyền manage trong nhóm không"""
         return is_owner(user_id) or check_permission(group_id, user_id, 'manage')
 
-    async def mod_check_admin(update: Update) -> bool:
-        """Trả về True nếu user là admin, ngược lại reply lỗi"""
+    async def mod_check_admin(update: Update, feature_key: str = None) -> bool:
+        """Trả về True nếu tính năng bật VÀ user là admin, ngược lại reply lỗi"""
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
+
+        # Owner bot vượt qua mọi check
+        if is_owner(user_id):
+            return True
+
+        # Check tính năng có được bật không
+        if feature_key:
+            try:
+                if not mg_has_feature(chat_id, feature_key):
+                    feature_names = {
+                        'kick_mute': 'Kick/Mute/Ban thành viên',
+                        'del_msg':   'Xóa tin nhắn hàng loạt',
+                        'filter_kw': 'Lọc từ khóa',
+                        'welcome':   'Tin chào mừng',
+                        'anti_spam': 'Chống spam/flood',
+                    }
+                    fname = feature_names.get(feature_key, feature_key)
+                    await update.message.reply_text(
+                        f"🚫 *TÍNH NĂNG BỊ TẮT*\n━━━━━━━━━━━━━━━━\n\n"
+                        f"Tính năng *{fname}* hiện không được bật trong nhóm này.\n\n"
+                        f"👑 Liên hệ quản trị viên nhóm tổng để bật tính năng.\n\n"
+                        f"🕐 {format_vn_time()}",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                    return False
+            except Exception:
+                pass
+
+        # Check quyền admin
         if mod_is_admin(chat_id, user_id):
             return True
         await update.message.reply_text("❌ Bạn cần quyền admin để dùng lệnh này!")
@@ -10979,7 +11333,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
     async def mod_ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/ban [reply/user_id] [lý do] — Cấm thành viên vĩnh viễn"""
-        if not await mod_check_admin(update): return
+        if not await mod_check_admin(update, 'kick_mute'): return
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
         target_id, target_name = await mod_get_target(update, context)
@@ -11002,7 +11356,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
     async def mod_unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/unban [user_id] — Gỡ ban"""
-        if not await mod_check_admin(update): return
+        if not await mod_check_admin(update, 'kick_mute'): return
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
         target_id, target_name = await mod_get_target(update, context)
@@ -11017,7 +11371,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
     async def mod_kick_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/kick [reply/user_id] [lý do] — Đuổi thành viên (có thể quay lại)"""
-        if not await mod_check_admin(update): return
+        if not await mod_check_admin(update, 'kick_mute'): return
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
         target_id, target_name = await mod_get_target(update, context)
@@ -11036,7 +11390,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
     async def mod_mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/mute [reply/user_id] [thời gian: 1h/30m/2d] [lý do] — Tắt tiếng"""
-        if not await mod_check_admin(update): return
+        if not await mod_check_admin(update, 'kick_mute'): return
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
         target_id, target_name = await mod_get_target(update, context)
@@ -11084,7 +11438,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
     async def mod_unmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/unmute [reply/user_id] — Bật tiếng lại"""
-        if not await mod_check_admin(update): return
+        if not await mod_check_admin(update, 'kick_mute'): return
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
         target_id, _ = await mod_get_target(update, context)
@@ -11108,7 +11462,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
     async def mod_warn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/warn [reply/user_id] [lý do] — Cảnh cáo thành viên"""
-        if not await mod_check_admin(update): return
+        if not await mod_check_admin(update, 'kick_mute'): return
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
         target_id, target_name = await mod_get_target(update, context)
@@ -11166,7 +11520,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
     async def mod_unwarn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/unwarn [reply/user_id] — Xóa 1 cảnh cáo"""
-        if not await mod_check_admin(update): return
+        if not await mod_check_admin(update, 'kick_mute'): return
         chat_id = update.effective_chat.id
         target_id, _ = await mod_get_target(update, context)
         if not target_id:
@@ -11186,6 +11540,11 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
     async def mod_warns_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/warns [reply/user_id] — Xem số cảnh cáo"""
         chat_id = update.effective_chat.id
+        if not is_owner(update.effective_user.id):
+            try:
+                if not mg_has_feature(chat_id, 'kick_mute'):
+                    await update.message.reply_text("🚫 Tính năng *Kick/Mute* chưa được bật trong nhóm này.", parse_mode=ParseMode.MARKDOWN); return
+            except Exception: pass
         target_id, _ = await mod_get_target(update, context)
         if not target_id:
             target_id = update.effective_user.id
@@ -11208,7 +11567,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
     async def mod_setwarn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/setwarn [max] [action: ban/kick/mute] — Cấu hình hệ thống warn"""
-        if not await mod_check_admin(update): return
+        if not await mod_check_admin(update, 'kick_mute'): return
         chat_id = update.effective_chat.id
         if not context.args or len(context.args) < 2:
             await update.message.reply_text(
@@ -11334,7 +11693,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
     async def mod_setcaptcha_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/setcaptcha [on/off] [button/math] — Cấu hình CAPTCHA"""
-        if not await mod_check_admin(update): return
+        if not await mod_check_admin(update, 'anti_spam'): return
         chat_id = update.effective_chat.id
         if not context.args:
             await update.message.reply_text(
@@ -11403,7 +11762,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
     async def mod_setflood_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/setflood [on/off] [max_msgs] [interval_sec] [action] — Cấu hình anti-flood"""
-        if not await mod_check_admin(update): return
+        if not await mod_check_admin(update, 'anti_spam'): return
         chat_id = update.effective_chat.id
         if not context.args:
             await update.message.reply_text(
@@ -11430,7 +11789,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
     async def mod_setwelcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/setwelcome [nội dung] — Đặt tin nhắn chào mừng tùy chỉnh
         Biến: {name} {id} {group} {count}"""
-        if not await mod_check_admin(update): return
+        if not await mod_check_admin(update, 'welcome'): return
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
         if not context.args:
@@ -11456,7 +11815,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
     async def mod_welcome_off_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/welcomeoff — Tắt chào mừng"""
-        if not await mod_check_admin(update): return
+        if not await mod_check_admin(update, 'welcome'): return
         chat_id = update.effective_chat.id
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -11488,7 +11847,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
     async def mod_setrules_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/setrules [nội quy] — Đặt nội quy nhóm"""
-        if not await mod_check_admin(update): return
+        if not await mod_check_admin(update, 'kick_mute'): return
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
         if not context.args:
@@ -11520,7 +11879,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
     async def mod_filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/filter [từ khóa] [reply/nội dung] — Thêm bộ lọc tự động"""
-        if not await mod_check_admin(update): return
+        if not await mod_check_admin(update, 'filter_kw'): return
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
         if not context.args:
@@ -11552,7 +11911,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
     async def mod_unfilter_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/unfilter [từ khóa] — Xóa bộ lọc"""
-        if not await mod_check_admin(update): return
+        if not await mod_check_admin(update, 'filter_kw'): return
         chat_id = update.effective_chat.id
         if not context.args:
             await update.message.reply_text("📖 Cách dùng: `/unfilter [từ khóa]`",
@@ -11570,6 +11929,11 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
     async def mod_filters_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/filters — Xem danh sách bộ lọc"""
         chat_id = update.effective_chat.id
+        if not is_owner(update.effective_user.id):
+            try:
+                if not mg_has_feature(chat_id, 'filter_kw'):
+                    await update.message.reply_text("🚫 Tính năng *Lọc từ khóa* chưa được bật trong nhóm này.", parse_mode=ParseMode.MARKDOWN); return
+            except Exception: pass
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("SELECT keyword, action, reply FROM mod_filters WHERE group_id=? ORDER BY keyword", (chat_id,))
@@ -11606,7 +11970,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
     async def mod_addcmd_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/addcmd [lệnh] [nội dung] — Thêm lệnh tùy chỉnh"""
-        if not await mod_check_admin(update): return
+        if not await mod_check_admin(update, 'kick_mute'): return
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
         if not context.args or len(context.args) < 2:
@@ -11628,7 +11992,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
     async def mod_delcmd_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/delcmd [lệnh] — Xóa lệnh tùy chỉnh"""
-        if not await mod_check_admin(update): return
+        if not await mod_check_admin(update, 'kick_mute'): return
         chat_id = update.effective_chat.id
         if not context.args:
             await update.message.reply_text("📖 Cách dùng: `/delcmd [lệnh]`",
@@ -11679,7 +12043,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
     async def mod_purge_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/purge — Reply vào tin nhắn đầu tiên cần xóa → xóa từ đó đến hiện tại"""
-        if not await mod_check_admin(update): return
+        if not await mod_check_admin(update, 'del_msg'): return
         if not update.message.reply_to_message:
             await update.message.reply_text("❌ Reply vào tin nhắn đầu tiên muốn xóa!"); return
         chat_id = update.effective_chat.id
@@ -11705,7 +12069,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
     async def mod_spurge_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/spurge — Xóa không để lại thông báo"""
-        if not await mod_check_admin(update): return
+        if not await mod_check_admin(update, 'del_msg'): return
         if not update.message.reply_to_message:
             await update.message.reply_text("❌ Reply vào tin nhắn đầu tiên muốn xóa!"); return
         chat_id = update.effective_chat.id
@@ -11721,7 +12085,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
     async def mod_logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/adminlogs — Xem nhật ký hành động admin"""
-        if not await mod_check_admin(update): return
+        if not await mod_check_admin(update, 'kick_mute'): return
         chat_id = update.effective_chat.id
         limit = int(context.args[0]) if context.args else 20
         conn = sqlite3.connect(DB_PATH)
@@ -11752,6 +12116,11 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         """/report [lý do] — Báo cáo tin nhắn (reply vào tin cần báo cáo)"""
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
+        if not is_owner(user_id):
+            try:
+                if not mg_has_feature(chat_id, 'kick_mute'):
+                    await update.message.reply_text("🚫 Tính năng báo cáo vi phạm chưa được bật trong nhóm này."); return
+            except Exception: pass
         if not update.message.reply_to_message:
             await update.message.reply_text("❌ Reply vào tin nhắn muốn báo cáo!"); return
         target = update.message.reply_to_message.from_user
@@ -11816,7 +12185,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
     async def mod_joinfed_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/joinfed [fed_id] — Thêm nhóm vào liên minh"""
-        if not await mod_check_admin(update): return
+        if not await mod_check_admin(update, 'kick_mute'): return
         chat_id = update.effective_chat.id
         if not context.args:
             await update.message.reply_text("📖 Cách dùng: `/joinfed [fed_id]`",
@@ -11841,7 +12210,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
 
     async def mod_leavefed_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/leavefed — Rời liên minh"""
-        if not await mod_check_admin(update): return
+        if not await mod_check_admin(update, 'kick_mute'): return
         chat_id = update.effective_chat.id
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -12675,6 +13044,10 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         logger.info("🔄 Loading group owners...")
         load_group_owners()
         
+        # 2b. Load co-owners
+        logger.info("🔄 Loading co-owners...")
+        load_co_owners()
+        
         # 3. Kiểm tra dữ liệu trong database
         try:
             conn = sqlite3.connect(DB_PATH)
@@ -12835,6 +13208,10 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             app.add_handler(CommandHandler("checkperm", check_perm_command))
             app.add_handler(CommandHandler("syncdata", sync_data_command))
             app.add_handler(CommandHandler("owner", owner_panel))
+            app.add_handler(CommandHandler("addcoowner", addcoowner_command))
+            app.add_handler(CommandHandler("removecoowner", removecoowner_command))
+            app.add_handler(CommandHandler("coowners", listcoowners_command))
+            app.add_handler(CommandHandler("movemaster", movemaster_command))
             app.add_handler(CommandHandler("debugperm", debug_perm_command))
             app.add_handler(CommandHandler("setupgroup", setup_group_command))
             app.add_handler(CommandHandler("groupinfo", group_info_command))
