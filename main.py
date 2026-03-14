@@ -11073,7 +11073,10 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
     async def handle_mg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Xử lý tất cả callback mg_* của multi-group system"""
         query = update.callback_query
-        await query.answer()
+        try:
+            await query.answer()
+        except Exception:
+            pass  # Đã được answer() từ handle_callback
         user_id = query.from_user.id
         data = query.data
 
@@ -11367,15 +11370,22 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             logger.error(f"❌ mod_log: {e}")
 
     def mod_is_admin(group_id, user_id):
-        """Kiểm tra user có quyền manage trong nhóm không"""
-        return is_owner(user_id) or check_permission(group_id, user_id, 'manage')
+        """Kiểm tra user có quyền mod trong nhóm không:
+        - Owner bot / co-owner
+        - Group owner (đã /setupgroup)
+        - Có quyền manage trong bảng permissions
+        Lưu ý: admin Telegram thực sự được check async trong mod_check_admin
+        """
+        return (is_owner(user_id)
+                or is_group_owner(group_id, user_id)
+                or check_permission(group_id, user_id, 'manage'))
 
     async def mod_check_admin(update: Update, feature_key: str = None) -> bool:
         """Trả về True nếu tính năng bật VÀ user là admin, ngược lại reply lỗi"""
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
 
-        # Owner bot vượt qua mọi check
+        # Owner bot / co-owner vượt qua mọi check
         if is_owner(user_id):
             return True
 
@@ -11402,9 +11412,18 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             except Exception:
                 pass
 
-        # Check quyền admin
+        # Check quyền trong DB (owner nhóm, manage permission)
         if mod_is_admin(chat_id, user_id):
             return True
+
+        # Check admin Telegram thực sự (async — gọi Telegram API)
+        try:
+            member = await update.effective_chat.get_member(user_id)
+            if member.status in ['administrator', 'creator']:
+                return True
+        except Exception:
+            pass
+
         await update.message.reply_text("❌ Bạn cần quyền admin để dùng lệnh này!")
         return False
 
@@ -12449,21 +12468,21 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         keyboard = [
             [InlineKeyboardButton(f"{'🟢' if cap_on else '🔴'} CAPTCHA ({cap[1]})", callback_data=f"mod_menu_captcha_{chat_id}"),
              InlineKeyboardButton(f"{'🟢' if flood_on else '🔴'} Anti-flood", callback_data=f"mod_menu_flood_{chat_id}")],
-            [InlineKeyboardButton(f"{'🟢' if welcome_on else '🔴'} Chao mung", callback_data=f"mod_menu_welcome_{chat_id}"),
-             InlineKeyboardButton(f"{'🟢' if rules_set else '⚪'} Noi quy", callback_data=f"mod_menu_rules_{chat_id}")],
-            [InlineKeyboardButton(f"⚠️ Warns (max:{warn_cfg[0]}→{warn_cfg[1]})", callback_data=f"mod_menu_warn_{chat_id}")],
-            [InlineKeyboardButton(f"🔍 Filters ({filter_count})", callback_data=f"mod_menu_filters_{chat_id}"),
-             InlineKeyboardButton(f"⚡ Lenh TC ({cmd_count})", callback_data=f"mod_menu_cmds_{chat_id}")],
-            [InlineKeyboardButton("👮 Hanh dong thanh vien", callback_data=f"mod_menu_actions_{chat_id}"),
-             InlineKeyboardButton("📋 Nhat ky", callback_data=f"mod_menu_logs_{chat_id}")],
-            [InlineKeyboardButton(f"🏛️ Lien minh {'✅' if fed else '❌'}", callback_data=f"mod_menu_fed_{chat_id}"),
-             InlineKeyboardButton("🔄 Lam moi", callback_data=f"mod_menu_refresh_{chat_id}")],
+            [InlineKeyboardButton(f"{'🟢' if welcome_on else '🔴'} Chào mừng", callback_data=f"mod_menu_welcome_{chat_id}"),
+             InlineKeyboardButton(f"{'🟢' if rules_set else '⚪'} Nội quy", callback_data=f"mod_menu_rules_{chat_id}")],
+            [InlineKeyboardButton(f"⚠️ Cảnh cáo (max:{warn_cfg[0]}→{warn_cfg[1]})", callback_data=f"mod_menu_warn_{chat_id}")],
+            [InlineKeyboardButton(f"🔍 Bộ lọc ({filter_count})", callback_data=f"mod_menu_filters_{chat_id}"),
+             InlineKeyboardButton(f"⚡ Lệnh tắt ({cmd_count})", callback_data=f"mod_menu_cmds_{chat_id}")],
+            [InlineKeyboardButton("👮 Hành động thành viên", callback_data=f"mod_menu_actions_{chat_id}"),
+             InlineKeyboardButton("📋 Nhật ký", callback_data=f"mod_menu_logs_{chat_id}")],
+            [InlineKeyboardButton(f"🏛️ Liên minh {'✅' if fed else '❌'}", callback_data=f"mod_menu_fed_{chat_id}"),
+             InlineKeyboardButton("🔄 Làm mới", callback_data=f"mod_menu_refresh_{chat_id}")],
         ]
         text = (
-            "🛡️ *BANG DIEU KHIEN NHOM*\n"
+            "🛡️ *BẢNG ĐIỀU KHIỂN NHÓM*\n"
             "━━━━━━━━━━━━━━━━\n\n"
-            "🟢 Bat  🔴 Tat  ⚪ Chua cai\n\n"
-            "Nhan vao de cau hinh tung tinh nang.\n"
+            "🟢 Bật  🔴 Tắt  ⚪ Chưa cài\n\n"
+            "Nhấn vào để cấu hình từng tính năng.\n"
             + "🕐 " + format_vn_time()
         )
         markup = InlineKeyboardMarkup(keyboard)
@@ -12480,13 +12499,13 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         conn.close()
         enabled, ctype, timeout = cfg
         keyboard = [
-            [InlineKeyboardButton(f"{'✅' if enabled else '⬜'} Bat CAPTCHA", callback_data=f"mod_cap_toggle_{chat_id}")],
+            [InlineKeyboardButton(f"{'✅' if enabled else '⬜'} Bật CAPTCHA", callback_data=f"mod_cap_toggle_{chat_id}")],
             [InlineKeyboardButton(f"{'🔵' if ctype=='button' else '⬜'} Nut bam", callback_data=f"mod_cap_type_{chat_id}_button"),
              InlineKeyboardButton(f"{'🔵' if ctype=='math' else '⬜'} Toan hoc", callback_data=f"mod_cap_type_{chat_id}_math")],
             [InlineKeyboardButton("🔙 Quay lai", callback_data=f"mod_menu_main_{chat_id}")],
         ]
         await safe_edit_message(query,
-            f"🤖 *CAPTCHA*\nTrang thai: {'🟢 BAT' if enabled else '🔴 TAT'}\nLoai: *{ctype}* | Timeout: *{timeout}s*",
+            f"🤖 *CAPTCHA*\nTrạng thái: {'🟢 BẬT' if enabled else '🔴 TẮT'}\nLoại: *{ctype}* | Timeout: *{timeout}s*",
             reply_markup=InlineKeyboardMarkup(keyboard))
 
     async def _mod_panel_flood(query, chat_id):
@@ -12497,9 +12516,9 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         conn.close()
         enabled, max_m, interval, action = cfg
         keyboard = [
-            [InlineKeyboardButton(f"{'✅' if enabled else '⬜'} Bat Anti-flood", callback_data=f"mod_flood_toggle_{chat_id}")],
+            [InlineKeyboardButton(f"{'✅' if enabled else '⬜'} Bật Anti-flood", callback_data=f"mod_flood_toggle_{chat_id}")],
             [InlineKeyboardButton("➖", callback_data=f"mod_flood_max_{chat_id}_dec"),
-             InlineKeyboardButton(f"Max: {max_m} tin", callback_data="mod_noop"),
+             InlineKeyboardButton(f"Max: {max_m} tin/s", callback_data="mod_noop"),
              InlineKeyboardButton("➕", callback_data=f"mod_flood_max_{chat_id}_inc")],
             [InlineKeyboardButton("➖", callback_data=f"mod_flood_int_{chat_id}_dec"),
              InlineKeyboardButton(f"Trong: {interval}s", callback_data="mod_noop"),
@@ -12510,7 +12529,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             [InlineKeyboardButton("🔙 Quay lai", callback_data=f"mod_menu_main_{chat_id}")],
         ]
         await safe_edit_message(query,
-            f"🌊 *ANTI-FLOOD*\nTrang thai: {'🟢 BAT' if enabled else '🔴 TAT'}\nGioi han: *{max_m}* tin/{interval}s → *{action.upper()}*",
+            f"🌊 *ANTI-FLOOD*\nTrạng thái: {'🟢 BẬT' if enabled else '🔴 TẮT'}\nGiới hạn: *{max_m}* tin/{interval}s → *{action.upper()}*",
             reply_markup=InlineKeyboardMarkup(keyboard))
 
     async def _mod_panel_warn(query, chat_id):
@@ -12522,7 +12541,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         max_w, action = cfg
         keyboard = [
             [InlineKeyboardButton("➖", callback_data=f"mod_warn_max_{chat_id}_dec"),
-             InlineKeyboardButton(f"Toi da: {max_w} lan", callback_data="mod_noop"),
+             InlineKeyboardButton(f"Tối đa: {max_w} lần", callback_data="mod_noop"),
              InlineKeyboardButton("➕", callback_data=f"mod_warn_max_{chat_id}_inc")],
             [InlineKeyboardButton(f"{'🔵' if action=='mute' else '⬜'} Mute", callback_data=f"mod_warn_act_{chat_id}_mute"),
              InlineKeyboardButton(f"{'🔵' if action=='kick' else '⬜'} Kick", callback_data=f"mod_warn_act_{chat_id}_kick"),
@@ -12530,7 +12549,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             [InlineKeyboardButton("🔙 Quay lai", callback_data=f"mod_menu_main_{chat_id}")],
         ]
         await safe_edit_message(query,
-            f"⚠️ *CANH CAO*\nKhi dat *{max_w}* lan → *{action.upper()}*\nDung ➕/➖ de dieu chinh.",
+            f"⚠️ *CẢNH CÁO*\nKhi đạt *{max_w}* lần → *{action.upper()}*\nDùng ➕/➖ để điều chỉnh.",
             reply_markup=InlineKeyboardMarkup(keyboard))
 
     async def _mod_panel_welcome(query, chat_id):
@@ -12542,11 +12561,11 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         enabled = row and row[1] == 1
         msg_text = (row[0][:60] + "...") if row and row[0] and len(row[0]) > 60 else (row[0] if row else "Chua dat")
         keyboard = [
-            [InlineKeyboardButton(f"{'✅' if enabled else '⬜'} Bat chao mung", callback_data=f"mod_welcome_toggle_{chat_id}")],
+            [InlineKeyboardButton(f"{'✅' if enabled else '⬜'} Bật chào mừng", callback_data=f"mod_welcome_toggle_{chat_id}")],
             [InlineKeyboardButton("🔙 Quay lai", callback_data=f"mod_menu_main_{chat_id}")],
         ]
         await safe_edit_message(query,
-            f"👋 *CHAO MUNG*\nTrang thai: {'🟢 BAT' if enabled else '🔴 TAT'}\n\nNoi dung: _{msg_text}_\n\nBien: {{name}} {{id}} {{group}} {{count}}\nDat: /setwelcome [noi dung]",
+            f"👋 *CHÀO MỪNG*\nTrạng thái: {'🟢 BẬT' if enabled else '🔴 TẮT'}\n\nNội dung: _{msg_text}_\n\nBiến: {{name}} {{id}} {{group}} {{count}}\nĐặt: /setwelcome [nội dung]",
             reply_markup=InlineKeyboardMarkup(keyboard))
 
     async def _mod_panel_rules(query, chat_id):
@@ -12643,7 +12662,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             keyboard.append([InlineKeyboardButton(f"🏛 {fed[1]} ({fed[2]} bans)", callback_data="mod_noop")])
             keyboard.append([InlineKeyboardButton("🚪 Roi lien minh", callback_data=f"mod_fed_leave_{chat_id}")])
         else:
-            keyboard.append([InlineKeyboardButton("Tao: /newfed [ten]", callback_data="mod_noop")])
+            keyboard.append([InlineKeyboardButton("Tạo: /newfed [tên]", callback_data="mod_noop")])
             keyboard.append([InlineKeyboardButton("Tham gia: /joinfed [id]", callback_data="mod_noop")])
         keyboard.append([InlineKeyboardButton("🔙 Quay lai", callback_data=f"mod_menu_main_{chat_id}")])
         status = f"✅ Trong: *{fed[1]}* | 🚫 {fed[2]} fbans" if fed else "❌ Chua tham gia lien minh nao"
@@ -12655,7 +12674,12 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
     async def handle_mod_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Xử lý callbacks của moderation system"""
         query = update.callback_query
-        await query.answer()
+        # Không gọi query.answer() ở đây vì handle_callback đã gọi rồi
+        # Chỉ gọi nếu được gọi trực tiếp (từ handler riêng)
+        try:
+            await query.answer()
+        except Exception:
+            pass  # Đã được answer() từ handle_callback, bỏ qua lỗi
         user_id = query.from_user.id
         data = query.data
         chat_id = query.message.chat.id
