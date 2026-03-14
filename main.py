@@ -11991,6 +11991,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         if key not in _flood_tracker:
             _flood_tracker[key] = []
 
+        # Xóa timestamps cũ ngoài cửa sổ thời gian
         _flood_tracker[key] = [t for t in _flood_tracker[key] if now - t < interval_sec]
         _flood_tracker[key].append(now)
 
@@ -12000,6 +12001,11 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             _flood_tracker[key] = []
             logger.info(f"🌊 FLOOD DETECTED: {user_id} @ {chat_id} → {action} ({mute_duration}s)")
             try:
+                # Xóa tin nhắn vi phạm ngay lập tức
+                try:
+                    await update.message.delete()
+                except Exception:
+                    pass
                 if action == 'ban':
                     await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
                     mod_log(chat_id, 0, user_id, "auto_ban_flood")
