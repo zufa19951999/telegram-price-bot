@@ -923,6 +923,13 @@ try:
                 c.execute("ALTER TABLE mod_flood_config ADD COLUMN mute_duration INTEGER DEFAULT 300")
                 logger.info("✅ Migration: thêm cột mute_duration vào mod_flood_config")
 
+            # Migration: thêm cột mute_duration vào mod_warn_config nếu chưa có
+            c.execute("PRAGMA table_info(mod_warn_config)")
+            warn_cols = [col[1] for col in c.fetchall()]
+            if 'mute_duration' not in warn_cols and warn_cols:
+                c.execute("ALTER TABLE mod_warn_config ADD COLUMN mute_duration INTEGER DEFAULT 3600")
+                logger.info("✅ Migration: thêm cột mute_duration vào mod_warn_config")
+
             # Migration: tạo bảng co_owners nếu chưa có
             c.execute('''CREATE TABLE IF NOT EXISTS co_owners
                          (user_id INTEGER PRIMARY KEY, username TEXT, added_by INTEGER, added_at TEXT)''')
@@ -11754,9 +11761,16 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
             c2 = conn2.cursor()
             c2.execute("DELETE FROM mod_warns WHERE group_id=? AND user_id=?", (target_chat_id, target_id))
             conn2.commit(); conn2.close()
+            # Xóa tin nhắn vi phạm khi đạt giới hạn
+            try:
+                await update.message.delete()
+            except Exception:
+                pass
 
         msg += f"🕐 {format_vn_time()}"
-        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+        sent = await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+        # Tự xóa thông báo cảnh cáo sau 10 giây
+        asyncio.create_task(auto_delete_message(context, update.effective_chat.id, sent.message_id, 10))
 
     async def mod_check_admin(update: Update, feature_key: str = None) -> bool:
         """Trả về True nếu tính năng bật VÀ user là admin, ngược lại reply lỗi"""
@@ -11864,27 +11878,44 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
     async def mod_setwarn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """/setwarn [max] [action: ban/kick/mute] — Cấu hình hệ thống warn"""
+        """/setwarn [group_id] [max] [action: ban/kick/mute] [mute_duration_sec]"""
         if not await mod_check_admin(update, 'kick_mute'): return
-        chat_id = update.effective_chat.id
-        if not context.args or len(context.args) < 2:
+
+        target_chat_id, args, from_master = await mod_resolve_target_group(update, context)
+        context.args = args
+
+        if not args or len(args) < 2:
             await update.message.reply_text(
-                "📖 Cách dùng: `/setwarn [số] [ban/kick/mute]`\n"
-                "Ví dụ: `/setwarn 3 mute`", parse_mode=ParseMode.MARKDOWN); return
+                "📖 Cách dùng:\n"
+                "• `/setwarn [số] [ban/kick/mute] [giây_mute]`\n"
+                "• Từ nhóm tổng: `/setwarn [group_id] [số] [action] [giây_mute]`\n\n"
+                "Ví dụ: `/setwarn 1 mute 3600` — 1 warn → mute 1 giờ\n"
+                "Ví dụ: `/setwarn 3 ban`",
+                parse_mode=ParseMode.MARKDOWN); return
         try:
-            max_w = int(context.args[0])
-            action = context.args[1].lower()
+            max_w = int(args[0])
+            action = args[1].lower()
             if action not in ['ban', 'kick', 'mute']:
                 raise ValueError
+            mute_dur = int(args[2]) if len(args) > 2 else 3600
         except:
-            await update.message.reply_text("❌ Sai cú pháp! action phải là: ban, kick, hoặc mute"); return
+            await update.message.reply_text("❌ Sai cú pháp! `/setwarn [số] [ban/kick/mute] [giây]`",
+                                             parse_mode=ParseMode.MARKDOWN); return
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute('''INSERT OR REPLACE INTO mod_warn_config (group_id, max_warns, action)
-                     VALUES (?, ?, ?)''', (chat_id, max_w, action))
+        c.execute('''INSERT OR REPLACE INTO mod_warn_config (group_id, max_warns, action, mute_duration)
+                     VALUES (?, ?, ?, ?)''', (target_chat_id, max_w, action, mute_dur))
         conn.commit(); conn.close()
+        if mute_dur < 60: dur_text = f"{mute_dur}s"
+        elif mute_dur < 3600: dur_text = f"{mute_dur//60} phút"
+        else: dur_text = f"{mute_dur//3600} giờ"
+        suffix = f"\n📌 Nhóm: `{target_chat_id}`" if from_master else ""
         await update.message.reply_text(
-            f"✅ Đã cấu hình warns:\n🔢 Tối đa: *{max_w}* cảnh cáo\n⚡ Hành động: *{action.upper()}*",
+            f"✅ Đã cấu hình warn:\n"
+            f"🔢 Tối đa: *{max_w}* cảnh cáo\n"
+            f"⚡ Hành động: *{action.upper()}*"
+            + (f" *{dur_text}*" if action == 'mute' else "")
+            + suffix,
             parse_mode=ParseMode.MARKDOWN)
 
     # ==================== CAPTCHA ====================
@@ -12072,7 +12103,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                     f"⚠️ [{update.effective_user.first_name}](tg://user?id={user_id}) Chậm thôi bạn ơi\\! "
                     f"Tiếp tục spam sẽ bị *{action}*\\.",
                     parse_mode=ParseMode.MARKDOWN)
-                asyncio.create_task(auto_delete_message(context, chat_id, warn_msg.message_id, 100))
+                asyncio.create_task(auto_delete_message(context, chat_id, warn_msg.message_id, 10))
             except Exception as e:
                 logger.error(f"❌ Flood warning error: {e}")
             return True
@@ -12093,7 +12124,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                     msg = await update.effective_chat.send_message(
                         f"🚫 [{update.effective_user.first_name}](tg://user?id={user_id}) bị *ban* do tiếp tục spam\\!",
                         parse_mode=ParseMode.MARKDOWN)
-                    asyncio.create_task(auto_delete_message(context, chat_id, msg.message_id, 100))
+                    asyncio.create_task(auto_delete_message(context, chat_id, msg.message_id, 10))
                 elif action == 'kick':
                     await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
                     await context.bot.unban_chat_member(chat_id=chat_id, user_id=user_id)
@@ -12101,7 +12132,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                     msg = await update.effective_chat.send_message(
                         f"👢 [{update.effective_user.first_name}](tg://user?id={user_id}) bị *kick* do tiếp tục spam\\!",
                         parse_mode=ParseMode.MARKDOWN)
-                    asyncio.create_task(auto_delete_message(context, chat_id, msg.message_id, 100))
+                    asyncio.create_task(auto_delete_message(context, chat_id, msg.message_id, 10))
                 else:  # mute
                     from telegram import ChatPermissions
                     until = datetime.utcnow() + timedelta(seconds=mute_duration)
@@ -12119,7 +12150,7 @@ bot_cache_hits_usdt {usdt_cache.get_stats()['hit_rate']}
                     msg = await update.effective_chat.send_message(
                         f"🔇 [{update.effective_user.first_name}](tg://user?id={user_id}) bị *mute {dur_text}* do tiếp tục spam\\!",
                         parse_mode=ParseMode.MARKDOWN)
-                    asyncio.create_task(auto_delete_message(context, chat_id, msg.message_id, 100))
+                    asyncio.create_task(auto_delete_message(context, chat_id, msg.message_id, 10))
             except Exception as e:
                 logger.error(f"❌ Flood action error: {e}")
             return True
